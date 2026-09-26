@@ -4,10 +4,14 @@
 package component
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -471,6 +475,151 @@ func TestLogs_WithTail(t *testing.T) {
 	assert.Contains(t, out, "first")
 	assert.Contains(t, out, "second")
 	assert.Contains(t, out, "third")
+}
+
+// logStore stands in for the observer and its log store: it holds one line every 10s,
+// the newest 5s old, and answers a query as the observer does, applying the window, the
+// sort order and the limit, a zero limit becoming the observer's default of 100.
+type logStore struct {
+	lines     []time.Time
+	requests  []client.ComponentLogsRequest
+	onRequest func(n int)
+}
+
+func newLogStore(t *testing.T, n int) *logStore {
+	t.Helper()
+	now := time.Now()
+	s := &logStore{}
+	for i := range n {
+		s.lines = append(s.lines, now.Add(-5*time.Second-time.Duration(n-1-i)*10*time.Second))
+	}
+	testutil.SetTransport(t, testutil.RoundTripFunc(s.roundTrip))
+	return s
+}
+
+func (s *logStore) roundTrip(r *http.Request) (*http.Response, error) {
+	var req client.ComponentLogsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return nil, err
+	}
+	start, err := time.Parse(time.RFC3339, req.StartTime)
+	if err != nil {
+		return nil, err
+	}
+	end, err := time.Parse(time.RFC3339, req.EndTime)
+	if err != nil {
+		return nil, err
+	}
+	s.requests = append(s.requests, req)
+	if s.onRequest != nil {
+		s.onRequest(len(s.requests))
+	}
+
+	var matched []int
+	for i, ts := range s.lines {
+		if !ts.Before(start) && !ts.After(end) {
+			matched = append(matched, i)
+		}
+	}
+	if req.SortOrder == sortOrderDesc {
+		slices.Reverse(matched)
+	}
+	limit := int(req.Limit)
+	if limit == 0 {
+		limit = 100
+	}
+	if len(matched) > limit {
+		matched = matched[:limit]
+	}
+
+	logs := make([]client.LogEntry, 0, len(matched))
+	for _, i := range matched {
+		logs = append(logs, client.LogEntry{
+			Timestamp: s.lines[i].UTC().Format(time.RFC3339Nano),
+			Log:       fmt.Sprintf("line-%03d", i),
+		})
+	}
+	return testutil.JSONResp(http.StatusOK, client.LogResponse{Logs: logs}), nil
+}
+
+// printedLines returns the messages of the printed log lines, in order.
+func printedLines(out string) []string {
+	var lines []string
+	for _, line := range strings.Split(out, "\n") {
+		if fields := strings.Fields(line); len(fields) == 2 {
+			lines = append(lines, fields[1])
+		}
+	}
+	return lines
+}
+
+func TestLogs_WithoutTailShowsNewestLines(t *testing.T) {
+	setupLogsConfig(t)
+
+	mc := mocks.NewMockInterface(t)
+	setupMockForLogs(t, mc, observerTestURL)
+	store := newLogStore(t, 300)
+
+	out := testutil.CaptureStdout(t, func() {
+		require.NoError(t, New(mc).Logs(LogsParams{
+			Namespace: "ns", Project: "my-proj", Component: "my-comp",
+		}))
+	})
+
+	require.Len(t, store.requests, 1)
+	assert.Equal(t, int64(defaultLogLimit), store.requests[0].Limit)
+	assert.Equal(t, sortOrderDesc, store.requests[0].SortOrder)
+
+	// The newest page of the window, printed oldest to newest.
+	lines := printedLines(out)
+	require.Len(t, lines, defaultLogLimit)
+	assert.Equal(t, "line-200", lines[0])
+	assert.Equal(t, "line-299", lines[len(lines)-1])
+}
+
+func TestFollowLogs_StartsAtNewestAndPollsInFullPages(t *testing.T) {
+	tests := []struct {
+		name        string
+		tail        int
+		wantInitial int
+	}{
+		{name: "without tail", tail: 0, wantInitial: defaultLogLimit},
+		{name: "with tail", tail: 5, wantInitial: 5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupLogsConfig(t)
+			store := newLogStore(t, 300)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			store.onRequest = func(n int) {
+				if n == 2 {
+					// One poll is enough; stop well before the next tick.
+					time.AfterFunc(100*time.Millisecond, cancel)
+				}
+			}
+
+			out := testutil.CaptureStdout(t, func() {
+				require.NoError(t, New(nil).followLogs(ctx, observerTestURL, "token", "env-uid-123", LogsParams{
+					Namespace: "ns", Project: "my-proj", Component: "my-comp", Tail: tt.tail,
+				}, time.Now().Add(-time.Hour), time.Now()))
+			})
+
+			require.Len(t, store.requests, 2, "expected the initial fetch and one poll")
+			initial, poll := store.requests[0], store.requests[1]
+			assert.Equal(t, int64(tt.wantInitial), initial.Limit)
+			assert.Equal(t, sortOrderDesc, initial.SortOrder)
+			assert.Equal(t, int64(followPollLimit), poll.Limit, "--tail must not limit the polls")
+			assert.Equal(t, sortOrderAsc, poll.SortOrder)
+
+			// The initial batch is the newest page, printed oldest to newest.
+			lines := printedLines(out)
+			require.GreaterOrEqual(t, len(lines), tt.wantInitial)
+			assert.Equal(t, fmt.Sprintf("line-%03d", 300-tt.wantInitial), lines[0])
+			assert.Equal(t, "line-299", lines[tt.wantInitial-1])
+		})
+	}
 }
 
 func TestLogs_WithContainerFilter(t *testing.T) {

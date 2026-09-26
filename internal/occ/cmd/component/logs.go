@@ -18,6 +18,20 @@ import (
 
 const defaultPlaneName = "default"
 
+const (
+	// defaultLogLimit is the page size of a query without --tail. It matches the
+	// observer's own default, which it applies to a request that sends no limit.
+	defaultLogLimit = 100
+
+	// followPollLimit is the page size of a --follow poll, the observer's maximum.
+	// Combined with ascending order it means a burst larger than one page is delivered
+	// oldest-first and the next poll resumes where this one stopped.
+	followPollLimit = 1000
+
+	sortOrderAsc  = "asc"
+	sortOrderDesc = "desc"
+)
+
 // Logs fetches and displays logs for a component
 func (cp *Component) Logs(params LogsParams) error {
 	ctx := context.Background()
@@ -105,15 +119,14 @@ func (cp *Component) fetchAndPrintLogs(
 	startTime time.Time,
 	endTime time.Time,
 ) error {
-	logs, err := cp.fetchLogs(ctx, observerURL, token, environmentID, params, startTime, endTime)
+	logs, err := cp.fetchLogs(ctx, observerURL, token, environmentID, params, startTime, endTime,
+		tailLimit(params.Tail), sortOrderDesc)
 	if err != nil {
 		return err
 	}
 
-	// When --tail is used, logs are fetched in desc order; reverse for chronological display
-	if params.Tail > 0 {
-		reverseLogs(logs)
-	}
+	// Logs are fetched newest-first; reverse for chronological display
+	reverseLogs(logs)
 
 	printLogs(logs, params.Container)
 
@@ -151,6 +164,14 @@ func printLogs(logs []client.LogEntry, container string) {
 	}
 }
 
+// tailLimit resolves --tail into a page size, an unset flag meaning the default page.
+func tailLimit(tail int) int {
+	if tail <= 0 {
+		return defaultLogLimit
+	}
+	return tail
+}
+
 // reverseLogs reverses a slice of log entries in place
 func reverseLogs(logs []client.LogEntry) {
 	for i, j := 0, len(logs)-1; i < j; i, j = i+1, j-1 {
@@ -172,16 +193,15 @@ func (cp *Component) followLogs(
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Initial fetch (respects --tail for the initial batch)
-	logs, err := cp.fetchLogs(ctx, observerURL, token, environmentID, params, startTime, endTime)
+	// Initial fetch: the newest --tail (or default) entries, as in a one-shot query
+	logs, err := cp.fetchLogs(ctx, observerURL, token, environmentID, params, startTime, endTime,
+		tailLimit(params.Tail), sortOrderDesc)
 	if err != nil {
 		return err
 	}
 
-	// When --tail is used, initial logs are fetched in desc order; reverse for chronological display
-	if params.Tail > 0 {
-		reverseLogs(logs)
-	}
+	// Initial logs are fetched newest-first; reverse for chronological display
+	reverseLogs(logs)
 
 	// Print initial logs
 	printLogs(logs, params.Container)
@@ -195,9 +215,6 @@ func (cp *Component) followLogs(
 		}
 	}
 
-	// Clear tail for subsequent polls — fetch all new logs in ascending order
-	params.Tail = 0
-
 	// Poll for new logs
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -210,7 +227,10 @@ func (cp *Component) followLogs(
 		case <-ticker.C:
 			endTime = time.Now()
 
-			logs, err := cp.fetchLogs(ctx, observerURL, token, environmentID, params, startTime, endTime)
+			// Polls read ascending so entries print in order and a burst larger than one
+			// page resumes where this one stopped; --tail applies to the initial fetch only.
+			logs, err := cp.fetchLogs(ctx, observerURL, token, environmentID, params, startTime, endTime,
+				followPollLimit, sortOrderAsc)
 			if err != nil {
 				// Check if context was cancelled
 				if ctx.Err() != nil {
@@ -248,12 +268,9 @@ func (cp *Component) fetchLogs(
 	params LogsParams,
 	startTime time.Time,
 	endTime time.Time,
+	limit int,
+	sortOrder string,
 ) ([]client.LogEntry, error) {
-	sortOrder := "asc"
-	if params.Tail > 0 {
-		sortOrder = "desc"
-	}
-
 	reqBody := client.ComponentLogsRequest{
 		StartTime:       startTime.Format(time.RFC3339),
 		EndTime:         endTime.Format(time.RFC3339),
@@ -262,7 +279,7 @@ func (cp *Component) fetchLogs(
 		ProjectName:     params.Project,
 		NamespaceName:   params.Namespace,
 		EnvironmentName: params.Environment,
-		Limit:           int64(params.Tail),
+		Limit:           int64(limit),
 		SortOrder:       sortOrder,
 		LogType:         "runtime",
 	}

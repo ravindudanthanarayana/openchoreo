@@ -216,7 +216,8 @@ func newLogsCmd(f client.NewClientFunc) *cobra.Command {
 		Use:   "logs COMPONENT_NAME",
 		Short: "Get logs for a component",
 		Long: `Retrieve logs for a component from a specific environment.
-If --env is not specified, uses the lowest environment from the deployment pipeline.`,
+If --env is not specified, uses the lowest environment from the deployment pipeline.
+Shows the newest 100 lines within --since (default 1h) unless --tail is set.`,
 		Example: `  # Get logs for a component (uses lowest environment if --env not specified)
   occ component logs my-component
 
