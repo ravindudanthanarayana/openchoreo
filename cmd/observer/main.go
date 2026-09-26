@@ -13,10 +13,17 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
+	"github.com/openchoreo/openchoreo/internal/auditconfig"
+	authzcore "github.com/openchoreo/openchoreo/internal/authz/core"
+	"github.com/openchoreo/openchoreo/internal/observer/aggregator"
+	"github.com/openchoreo/openchoreo/internal/observer/api/gen"
 	apihandler "github.com/openchoreo/openchoreo/internal/observer/api/handlers"
+	"github.com/openchoreo/openchoreo/internal/observer/api/internalgen"
+	observeraudit "github.com/openchoreo/openchoreo/internal/observer/audit"
 	observerAuthz "github.com/openchoreo/openchoreo/internal/observer/authz"
 	k8s "github.com/openchoreo/openchoreo/internal/observer/clients"
 	"github.com/openchoreo/openchoreo/internal/observer/config"
@@ -24,12 +31,16 @@ import (
 	observermiddleware "github.com/openchoreo/openchoreo/internal/observer/middleware"
 	"github.com/openchoreo/openchoreo/internal/observer/service"
 	"github.com/openchoreo/openchoreo/internal/observer/store/alertentry"
+	"github.com/openchoreo/openchoreo/internal/observer/store/deliveryinsights"
 	"github.com/openchoreo/openchoreo/internal/observer/store/incidententry"
 	apiconfig "github.com/openchoreo/openchoreo/internal/openchoreo-api/config"
 	"github.com/openchoreo/openchoreo/internal/server/middleware"
+	"github.com/openchoreo/openchoreo/internal/server/middleware/audit"
+	"github.com/openchoreo/openchoreo/internal/server/middleware/auth"
 	"github.com/openchoreo/openchoreo/internal/server/middleware/auth/jwt"
+	apilogger "github.com/openchoreo/openchoreo/internal/server/middleware/logger"
 	mcpmiddleware "github.com/openchoreo/openchoreo/internal/server/middleware/mcp"
-	"github.com/openchoreo/openchoreo/internal/server/oauth"
+	"github.com/openchoreo/openchoreo/pkg/mcp/mcpaudit"
 	"github.com/openchoreo/openchoreo/pkg/observability"
 )
 
@@ -72,6 +83,19 @@ func main() {
 	)
 	logger.Info("Metrics adapter initialized", "adapter_url", sanitizeURL(cfg.Adapters.MetricsAdapterURL))
 
+	// Initialize FinOps adapter (forwards cost-insights queries to external adapter)
+	finopsAdapter, err := service.NewFinOpsAdapter(
+		cfg.Adapters.FinOpsAdapterURL,
+		cfg.Adapters.FinOpsAdapterTimeout,
+		uidResolver,
+		logger.With("component", "finops-adapter"),
+	)
+	if err != nil {
+		logger.Error("Failed to create finops adapter", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("FinOps adapter initialized", "adapter_url", sanitizeURL(cfg.Adapters.FinOpsAdapterURL))
+
 	// Initialize metrics adapter HTTP client for alert CRUD forwarding
 	metricsAdapterClient := &http.Client{
 		Timeout: cfg.Adapters.MetricsAdapterTimeout,
@@ -107,6 +131,13 @@ func main() {
 	if err != nil {
 		logger.Error("Failed to create authz client", "error", err)
 		os.Exit(1)
+	}
+
+	// A nil PDP makes the authz-wrapped services skip authorization checks entirely.
+	var pdp authzcore.PDP = authzClient
+	if cfg.Authz.Disabled {
+		logger.Warn("Authorization is DISABLED (AUTHZ_DISABLED=true) - all requests will be permitted")
+		pdp = nil
 	}
 
 	// Initialize HTTP server
@@ -184,6 +215,13 @@ func main() {
 		}
 	}()
 
+	deliveryInsightsStore, closeDeliveryInsightsStore, err := newDeliveryInsightsStore(
+		cfg, logger.With("component", "delivery-insights-store"))
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	defer closeDeliveryInsightsStore()
+
 	// Initialize alert service for the internal v1alpha1 API
 	alertService := service.NewAlertService(
 		alertEntryStore,
@@ -201,27 +239,59 @@ func main() {
 		cfg.Alerting.FinOpsAgentEnabled,
 	)
 
+	// Assigned once the aggregator is started, below, and nil when collection is
+	// off. The service reads it through a closure rather than a method value,
+	// which would bind the nil receiver here and never see the assignment.
+	//
+	// It only reads while serving a request, which cannot happen before the server
+	// goroutine starts, so the write is ordered ahead of every read.
+	var (
+		doraAggregator *aggregator.Aggregator
+		backgroundWG   *sync.WaitGroup
+	)
+
+	deliveryInsightsService := newDeliveryInsightsService(
+		cfg, deliveryInsightsStore, uidResolver,
+		func() bool { return doraAggregator.EventsActive() },
+		logger,
+	)
+
 	// Wrap services with authorization checks.
 	// Both the API handler and MCP handler share the same authz-wrapped instances
 	// so authorization logic is enforced once, in the service layer.
-	authzLogsService := service.NewLogsServiceWithAuthz(logsService, authzClient, logger.With("component", "authz-logs"))
+	authzLogsService := service.NewLogsServiceWithAuthz(logsService, pdp, logger.With("component", "authz-logs"))
+	authzPlatformLogsService := service.NewPlatformLogsServiceWithAuthz(
+		service.NewPlatformLogsService(concreteLogsAdapter, logger.With("component", "platform-logs")),
+		pdp, logger.With("component", "authz-platform-logs"))
+	authzAuditLogsService := service.NewAuditLogsServiceWithAuthz(
+		service.NewAuditLogsService(concreteLogsAdapter, logger.With("component", "audit-logs")),
+		pdp, logger.With("component", "authz-audit-logs"))
 	authzEventsService := service.NewEventsServiceWithAuthz(
-		eventsService, authzClient, logger.With("component", "authz-events"))
+		eventsService, pdp, logger.With("component", "authz-events"))
 	authzMetricsService := service.NewMetricsServiceWithAuthz(
-		metricsService, authzClient, logger.With("component", "authz-metrics"))
+		metricsService, pdp, logger.With("component", "authz-metrics"))
 	authzTracesService := service.NewTracesServiceWithAuthz(
-		tracesService, authzClient, logger.With("component", "authz-traces"))
+		tracesService, pdp, logger.With("component", "authz-traces"))
+	authzFinOpsService := service.NewFinOpsServiceWithAuthz(
+		finopsAdapter, pdp, logger.With("component", "authz-finops"))
 	authzAlertIncidentService := service.NewAlertIncidentServiceWithAuthz(
-		alertService, authzClient, logger.With("component", "authz-alerts-incidents"))
+		alertService, pdp, logger.With("component", "authz-alerts-incidents"))
+	authzDeliveryInsightsService := service.NewDeliveryInsightsServiceWithAuthz(
+		deliveryInsightsService, pdp, logger.With("component", "authz-delivery-insights"))
 
 	// Initialize new API handler
 	newAPIHandler := apihandler.NewHandler(
 		healthService,
 		authzLogsService,
+		authzPlatformLogsService,
+		authzAuditLogsService,
 		authzEventsService,
 		authzMetricsService,
 		authzAlertIncidentService,
 		authzTracesService,
+		authzFinOpsService,
+		oauthMetadataConfig(logger),
+		authzDeliveryInsightsService,
 		logger.With("component", "api-handler"),
 	)
 
@@ -233,62 +303,121 @@ func main() {
 
 	// ===== Initialize Middlewares =====
 
-	// Global middlewares - applies to all routes
-	loggerMiddleware := observermiddleware.Logger(logger)
+	// Global middlewares - applied to the non-spec routes below. The generated
+	// routes get their own composed chain from apihandler.ObserverMiddlewares
+	// and apihandler.InternalMiddlewares.
+	loggerMiddleware := apilogger.Middleware(logger)
 	recoveryMiddleware := observermiddleware.Recovery(logger)
 
-	// Create route builder with global middleware
-	routes := middleware.NewRouteBuilder(mux).With(loggerMiddleware, recoveryMiddleware)
-
-	// ===== Public Routes (No Authentication Required) =====
-
-	// Health check endpoint (new API)
-	routes.HandleFunc("GET /health", newAPIHandler.Health)
-
-	// OAuth Protected Resource Metadata endpoint
-	routes.HandleFunc("GET /.well-known/oauth-protected-resource", oauthProtectedResourceMetadata(logger))
-
-	// ===== Protected API Routes (JWT Authentication Required) =====
+	// One Emitter shared across all three surfaces, so one policy applies to
+	// every one of them. The middlewares that consume it are built inside the
+	// composers, mirroring openchoreo-api's OpenAPIMiddlewares.
+	auditEmitter, err := initAuditEmitter(cfg)
+	if err != nil {
+		logger.Error("Failed to initialize audit", "error", err)
+		os.Exit(1)
+	}
+	auditMiddlewareConfig := cfg.Audit.MiddlewareConfig()
 
 	// Initialize JWT middleware
 	jwtAuth := initJWTMiddleware(cfg, logger)
 
-	// Create protected route group with JWT auth
-	api := routes.With(jwtAuth)
-
-	// ===== New API Routes (v1) =====
-	api.HandleFunc("POST /api/v1/logs/query", newAPIHandler.QueryLogs)
-	api.HandleFunc("POST /api/v1/events/query", newAPIHandler.QueryEvents)
-	api.HandleFunc("POST /api/v1/metrics/query", newAPIHandler.QueryMetrics)
-
-	// ===== New API Routes (v1alpha1) Traces, Incidents & Runtime topology =====
-	api.HandleFunc("POST /api/v1alpha1/metrics/runtime-topology", newAPIHandler.QueryRuntimeTopology)
-	api.HandleFunc("POST /api/v1alpha1/traces/query", newAPIHandler.QueryTraces)
-	api.HandleFunc("POST /api/v1alpha1/traces/{traceId}/spans/query", newAPIHandler.QuerySpansForTrace)
-	api.HandleFunc("GET /api/v1alpha1/traces/{traceId}/spans/{spanId}", newAPIHandler.GetSpanDetailsForTrace)
-	api.HandleFunc("POST /api/v1alpha1/alerts/query", newAPIHandler.QueryAlerts)
-	api.HandleFunc("POST /api/v1alpha1/incidents/query", newAPIHandler.QueryIncidents)
-	api.HandleFunc("PUT /api/v1alpha1/incidents/{incidentId}", newAPIHandler.UpdateIncident)
+	// ===== Non-spec routes =====
+	//
+	// /mcp cannot be a spec operation: it is streaming JSON-RPC rather than
+	// request/response, and the generated chain's wrapped ResponseWriter breaks
+	// the http.Hijacker it needs. It is registered on the base mux before the
+	// generated routes are layered on.
+	//
+	// The generated routes carry their middleware via HandlerWithOptions, so
+	// anything registered directly on the mux must be wrapped here or it gets no
+	// logger and no recovery, turning a handler panic into a dropped connection.
+	routes := middleware.NewRouteBuilder(mux).With(loggerMiddleware, recoveryMiddleware)
 
 	// Initialize new MCP handler backed by the authz-wrapped service layer
 	newMCPHandler, err := observermcp.NewMCPHandler(
 		healthService,
 		authzLogsService,
+		authzPlatformLogsService,
 		authzEventsService,
 		authzMetricsService,
 		authzAlertIncidentService,
 		authzTracesService,
+		authzFinOpsService,
+		authzAuditLogsService,
+		authzDeliveryInsightsService,
 		logger.With("component", "mcp-handler"),
 	)
 	if err != nil {
 		log.Fatalf("Failed to create MCP handler: %v", err)
 	}
-	newMCPServer := observermcp.NewHTTPServer(newMCPHandler)
 
-	// MCP endpoint with chained middleware (logger -> recovery -> auth401 -> jwt -> handler)
-	mcpMiddleware := initMCPMiddleware(logger)
-	mcpRoutes := routes.Group(mcpMiddleware, jwtAuth)
-	mcpRoutes.Handle("/mcp", newMCPServer)
+	mcpBindings, err := observeraudit.MCPBindings()
+	if err != nil {
+		logger.Error("Failed to build MCP audit bindings", "error", err)
+		os.Exit(1)
+	}
+	newMCPServer, err := observermcp.NewHTTPServer(newMCPHandler, mcpaudit.MiddlewareOptions{
+		Emitter:  auditEmitter,
+		Bindings: mcpBindings,
+		Config:   auditMiddlewareConfig,
+	})
+	if err != nil {
+		logger.Error("Failed to create MCP server", "error", err)
+		os.Exit(1)
+	}
+
+	// MCP endpoint. Ordering lives in apihandler.MCPMiddlewares, matching the
+	// two generated-route composers — main.go supplies dependencies only.
+	mcpMiddlewares, err := apihandler.MCPMiddlewares(apihandler.MCPMiddlewareOptions{
+		Auth401: initMCPMiddleware(logger),
+		JWTAuth: jwtAuth,
+	})
+	if err != nil {
+		logger.Error("Failed to build MCP middlewares", "error", err)
+		os.Exit(1)
+	}
+	routes.Group(mcpMiddlewares...).Handle("/mcp", newMCPServer)
+
+	// ===== Public API routes (port 9097) =====
+	//
+	// Registered by generated code from openapi/observer-api.yaml, layered onto
+	// the same mux carrying the non-spec routes above.
+	//
+	// Authentication is spec-driven: auth.OpenAPIAuth reads the scopes context
+	// key the generated wrapper sets, so the operations marked `security: []`
+	// stay public and the rest require a Bearer token. No route is selected by
+	// hand here.
+	publicAPILogger := logger.With("component", "public-api")
+	authMiddleware := auth.OpenAPIAuth(jwtAuth, gen.BearerAuthScopes)
+
+	observerMiddlewares, err := apihandler.ObserverMiddlewares(apihandler.ObserverMiddlewareOptions{
+		Logger:         publicAPILogger,
+		AuthMiddleware: authMiddleware,
+		AuditEmitter:   auditEmitter,
+		AuditConfig:    auditMiddlewareConfig,
+	})
+	if err != nil {
+		logger.Error("Failed to build observer middlewares", "error", err)
+		os.Exit(1)
+	}
+
+	publicStrictHandler := gen.NewStrictHandlerWithOptions(
+		newAPIHandler,
+		nil,
+		gen.StrictHTTPServerOptions{
+			RequestErrorHandlerFunc:  apihandler.StrictRequestErrorHandler(publicAPILogger),
+			ResponseErrorHandlerFunc: apihandler.StrictResponseErrorHandler(publicAPILogger),
+		},
+	)
+
+	publicHTTPHandler := gen.HandlerWithOptions(publicStrictHandler, gen.StdHTTPServerOptions{
+		BaseRouter:  mux,
+		Middlewares: observerMiddlewares,
+		// Parameter binding rejects a request before the handler runs; without
+		// this hook that response is plain text rather than gen.ErrorResponse.
+		ErrorHandlerFunc: apihandler.ParamBindingErrorHandler(publicAPILogger),
+	})
 
 	// Create HTTP server
 	// CORS wraps the entire mux so it intercepts OPTIONS preflight requests
@@ -296,33 +425,65 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      observermiddleware.CORS(cfg.CORS.AllowedOrigins)(mux),
+		Handler:      observermiddleware.CORS(cfg.CORS.AllowedOrigins)(publicHTTPHandler),
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
 
 	// ===== Internal Server (port 8081) — v1alpha1 alert CRUD =====
+	//
+	// Registered by generated code from openapi/observer-internal-api.yaml.
+	//
+	// No auth middleware: the internal spec declares no security scheme because
+	// this port has none, and the ObservabilityAlertRule controller that calls
+	// it sends no Authorization header.
+	internalAPILogger := logger.With("component", "internal-api")
 	internalMux := http.NewServeMux()
-	internalRoutes := middleware.NewRouteBuilder(internalMux).With(loggerMiddleware, recoveryMiddleware)
-	internalRoutes.HandleFunc(
-		"POST /api/v1alpha1/alerts/sources/{sourceType}/rules", internalHandler.CreateAlertRule)
-	internalRoutes.HandleFunc(
-		"GET /api/v1alpha1/alerts/sources/{sourceType}/rules/{ruleName}", internalHandler.GetAlertRule)
-	internalRoutes.HandleFunc(
-		"PUT /api/v1alpha1/alerts/sources/{sourceType}/rules/{ruleName}", internalHandler.UpdateAlertRule)
-	internalRoutes.HandleFunc(
-		"DELETE /api/v1alpha1/alerts/sources/{sourceType}/rules/{ruleName}", internalHandler.DeleteAlertRule)
 
-	// ===== v1alpha1 Alert Webhook Endpoint  =====
-	internalRoutes.HandleFunc("POST /api/v1alpha1/alerts/webhook", internalHandler.HandleAlertWebhook)
+	// The error hooks are supplied explicitly so a malformed body returns
+	// gen.ErrorResponse JSON rather than the generated default's plain text.
+	internalStrictHandler := internalgen.NewStrictHandlerWithOptions(
+		internalHandler,
+		nil,
+		internalgen.StrictHTTPServerOptions{
+			RequestErrorHandlerFunc:  apihandler.StrictRequestErrorHandler(internalAPILogger),
+			ResponseErrorHandlerFunc: apihandler.StrictResponseErrorHandler(internalAPILogger),
+		},
+	)
+
+	// Middleware ordering lives in apihandler.InternalMiddlewares; main.go
+	// supplies dependencies only.
+	internalMiddlewares, err := apihandler.InternalMiddlewares(apihandler.InternalMiddlewareOptions{
+		Logger:       internalAPILogger,
+		AuditEmitter: auditEmitter,
+		AuditConfig:  auditMiddlewareConfig,
+	})
+	if err != nil {
+		logger.Error("Failed to build internal middlewares", "error", err)
+		os.Exit(1)
+	}
+
+	internalHTTPHandler := internalgen.HandlerWithOptions(internalStrictHandler, internalgen.StdHTTPServerOptions{
+		BaseRouter:       internalMux,
+		Middlewares:      internalMiddlewares,
+		ErrorHandlerFunc: apihandler.ParamBindingErrorHandler(internalAPILogger),
+	})
 
 	internalAddr := fmt.Sprintf(":%d", cfg.Server.InternalPort)
 	internalServer := &http.Server{
 		Addr:         internalAddr,
-		Handler:      internalMux,
+		Handler:      internalHTTPHandler,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
+
+	// Graceful shutdown using signal context (also stops background workers)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Start the DORA aggregator, which folds delivery signals into the delivery insights store.
+	backgroundWG, doraAggregator = startDoraAggregator(
+		ctx, cfg, deliveryInsightsStore, incidentEntryStore, concreteLogsAdapter, logger)
 
 	// Start main server
 	go func() {
@@ -340,10 +501,6 @@ func main() {
 		}
 	}()
 
-	// Graceful shutdown using signal context
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	// Wait for interrupt signal
 	<-ctx.Done()
 
@@ -351,8 +508,26 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
 
+	shutdownServers(shutdownCtx, server, internalServer, backgroundWG, logger)
+	logger.Info("Server shutdown complete")
+}
+
+// shutdownServers drains both HTTP servers and the background workers under one
+// deadline. Split out of main so its four failure branches do not sit in main's
+// control flow.
+//
+// Background workers are drained alongside server shutdown rather than before
+// it, and bounded by the same timeout: an in-flight aggregator tick must not
+// hold the process past the deadline, or the pod is SIGKILLed before
+// connections drain.
+func shutdownServers(
+	shutdownCtx context.Context,
+	server, internalServer *http.Server,
+	backgroundWG *sync.WaitGroup,
+	logger *slog.Logger,
+) {
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
@@ -368,8 +543,132 @@ func main() {
 		}
 	}()
 
+	go func() {
+		defer wg.Done()
+		if !waitForGroup(shutdownCtx, backgroundWG) {
+			logger.Warn("Background workers did not finish before the shutdown timeout")
+		}
+	}()
+
 	wg.Wait()
-	logger.Info("Server shutdown complete")
+}
+
+// newDeliveryInsightsStore opens the delivery insights store and applies its
+// migrations, returning the store and the function that closes it. The caller
+// defers that function.
+//
+// The alert and incident stores are initialized inline in main, and this would
+// read better beside them. It cannot be: main sits at exactly the gocyclo limit
+// of 30, and the two extra failure branches inlining this adds take it to 32.
+// newDeliveryInsightsService below is the same story -- inlining it alone gives
+// 31, and inlining both gives 33.
+func newDeliveryInsightsStore(
+	cfg *config.Config,
+	logger *slog.Logger,
+) (deliveryinsights.Store, func(), error) {
+	// Delivery Insights is behind a feature flag, so nothing is set up until it
+	// is on. The read API then reports nothing collected, which matches the flag:
+	// with it off nothing is being written either.
+	//
+	// The gate is here rather than at the call site because main sits on the
+	// gocyclo limit; see the note above.
+	if !cfg.DeliveryInsights.Enabled {
+		return nil, func() {}, nil
+	}
+	store, err := deliveryinsights.New(cfg.DeliveryInsights.StoreBackend, cfg.DeliveryInsights.StoreDSN, logger)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to initialize delivery insights store: %w", err)
+	}
+	if err := store.Initialize(context.Background()); err != nil {
+		return nil, nil, fmt.Errorf("failed to initialize delivery insights store schema: %w", err)
+	}
+	return store, func() {
+		if closeErr := store.Close(); closeErr != nil {
+			logger.Error("Failed to close delivery insights store", "error", closeErr)
+		}
+	}, nil
+}
+
+// newDeliveryInsightsService builds the delivery insights (DORA metrics) query service.
+// The passthrough resolver is a development affordance: it treats scope names as
+// UIDs so the read API can be exercised without a control plane to resolve them
+// against.
+func newDeliveryInsightsService(
+	cfg *config.Config,
+	store deliveryinsights.Store,
+	uidResolver service.ScopeUIDResolver,
+	eventsAvailable func() bool,
+	logger *slog.Logger,
+) *service.DoraMetricsService {
+	resolver := uidResolver
+	if cfg.DeliveryInsights.UIDResolution == "passthrough" {
+		logger.Warn("Delivery Insights UID resolution is set to passthrough - scope names are used as UIDs directly")
+		resolver = service.NewPassthroughUIDResolver()
+	}
+	// Data availability travels with every metrics response, so a client can tell
+	// "nothing was deployed" from "nothing is being collected".
+	return service.NewDeliveryInsightsService(
+		store, resolver, logger.With("component", "delivery-insights-service"),
+		cfg.DeliveryInsights.Enabled,
+		eventsAvailable,
+	)
+}
+
+// startDoraAggregator starts the DORA aggregator, which folds incidents and delivery
+// events into the delivery insights store. It returns a WaitGroup that completes once
+// the aggregator has stopped; when aggregation is disabled the group is already done.
+func startDoraAggregator(
+	ctx context.Context,
+	cfg *config.Config,
+	store deliveryinsights.Store,
+	incidents incidententry.IncidentEntryStore,
+	logsAdapter aggregator.EventsSource,
+	logger *slog.Logger,
+) (*sync.WaitGroup, *aggregator.Aggregator) {
+	var wg sync.WaitGroup
+	if !cfg.DeliveryInsights.Enabled {
+		logger.Info("Delivery Insights is disabled (FEATURE_PREVIEW_DELIVERY_INSIGHTS_ENABLED=false)")
+		return &wg, nil
+	}
+
+	// The sweep is always attempted. Whether the deployed adapter can serve it is
+	// discovered from a 501 on the first tick, not declared up front.
+	eventsSource := logsAdapter
+
+	doraAggregator := aggregator.New(
+		store,
+		incidents,
+		eventsSource,
+		aggregator.Config{
+			Interval:          cfg.DeliveryInsights.AggregationInterval,
+			Overlap:           cfg.DeliveryInsights.AggregationOverlap,
+			AttributionWindow: cfg.DeliveryInsights.AttributionWindow,
+			IncidentLookback:  cfg.DeliveryInsights.IncidentLookback,
+		},
+		logger.With("component", "dora-aggregator"),
+	)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		doraAggregator.Run(ctx)
+	}()
+	return &wg, doraAggregator
+}
+
+// waitForGroup waits for wg, returning false if ctx is done first.
+func waitForGroup(ctx context.Context, wg *sync.WaitGroup) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // sanitizeURL strips userinfo (user:password) from a URL so it can be safely logged.
@@ -431,7 +730,7 @@ func createBootstrapLogger() *slog.Logger {
 
 // initJWTMiddleware initializes the JWT authentication middleware with configuration from environment
 func initJWTMiddleware(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
-	jwtDisabled := os.Getenv(apiconfig.EnvJWTDisabled) == "true"
+	jwtDisabled := !jwtEnabled()
 	jwksURL := os.Getenv(apiconfig.EnvJWKSURL)
 	jwtIssuer := os.Getenv(apiconfig.EnvJWTIssuer)
 	jwtAudience := os.Getenv(apiconfig.EnvJWTAudience)
@@ -470,6 +769,36 @@ func initJWTMiddleware(cfg *config.Config, logger *slog.Logger) func(http.Handle
 }
 
 // initMCPMiddleware initializes the MCP middleware that adds WWW-Authenticate header to 401 responses
+// initAuditEmitter validates the generated audit table against the specs
+// observer actually serves, then builds the single Emitter every surface
+// shares.
+//
+// The partition check comes first and is fatal: OperationsIn filters the table
+// per spec, so an operation matching neither spec would be dropped from both
+// ports and silently never audited. Failing at startup matches how the
+// middleware composers treat a nil emitter or an unresolvable
+// RESTResourceParam.
+func initAuditEmitter(cfg *config.Config) (*audit.Emitter, error) {
+	publicSwagger, err := gen.GetSwagger()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load public OpenAPI spec: %w", err)
+	}
+	internalSwagger, err := internalgen.GetSwagger()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load internal OpenAPI spec: %w", err)
+	}
+	if err := observeraudit.VerifyOperationsPartition(publicSwagger, internalSwagger); err != nil {
+		return nil, err
+	}
+
+	auditPolicies, err := cfg.Audit.BuildPolicySet(
+		auditconfig.NewVocabulary(observeraudit.GetOperations()), cfg.Auth.KnownActorTypes())
+	if err != nil {
+		return nil, fmt.Errorf("failed to build audit policy set: %w", err)
+	}
+	return audit.NewEmitter("observer", auditPolicies, audit.NewLogger(os.Stdout))
+}
+
 func initMCPMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	// Get observer base URL from environment variables
 	observerBaseURL := os.Getenv("OBSERVER_BASE_URL")
@@ -480,12 +809,13 @@ func initMCPMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 	resourceMetadataURL := observerBaseURL + "/.well-known/oauth-protected-resource"
 
-	return mcpmiddleware.Auth401Interceptor(resourceMetadataURL)
+	return mcpmiddleware.Auth401Interceptor(resourceMetadataURL, mcpOAuthScopes())
 }
 
-// oauthProtectedResourceMetadata returns a handler for OAuth 2.0 protected resource metadata
-// as defined in RFC 9728 and related OAuth standards
-func oauthProtectedResourceMetadata(logger *slog.Logger) http.HandlerFunc {
+// oauthMetadataConfig resolves what the RFC 9728 protected-resource metadata
+// advertises. apihandler.GetOAuthProtectedResourceMetadata renders it; this
+// only supplies the values.
+func oauthMetadataConfig(logger *slog.Logger) apihandler.OAuthMetadataConfig {
 	// Get configuration from environment variables
 	observerBaseURL := os.Getenv("OBSERVER_BASE_URL")
 	if observerBaseURL == "" {
@@ -499,13 +829,36 @@ func oauthProtectedResourceMetadata(logger *slog.Logger) http.HandlerFunc {
 		authServerBaseURL = apiconfig.DefaultThunderBaseURL
 	}
 
-	// Create and return metadata handler
-	return oauth.NewMetadataHandler(oauth.MetadataHandlerConfig{
+	return apihandler.OAuthMetadataConfig{
 		ResourceName: "OpenChoreo Observer MCP Server",
 		ResourceURL:  observerBaseURL + "/mcp",
 		AuthorizationServers: []string{
 			authServerBaseURL,
 		},
-		Logger: logger,
-	})
+		ScopesSupported: mcpOAuthScopes(),
+		SecurityEnabled: jwtEnabled(),
+	}
+}
+
+// jwtEnabled reports whether the JWT middleware will enforce authentication.
+// Shared by initJWTMiddleware and the protected-resource metadata so the two
+// cannot disagree about it.
+func jwtEnabled() bool {
+	return os.Getenv(apiconfig.EnvJWTDisabled) != "true"
+}
+
+// mcpOAuthScopes returns the OAuth scopes to advertise for the MCP endpoint.
+// Operators can override via MCP_OAUTH_SCOPES (space-delimited) when an
+// authorization server's scopes_supported doesn't match what the app client
+// actually allows (see issue #3217).
+func mcpOAuthScopes() []string {
+	raw := os.Getenv(apiconfig.EnvMCPOAuthScopes)
+	if raw == "" {
+		return []string{"openid", "profile", "email"}
+	}
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return []string{"openid", "profile", "email"}
+	}
+	return fields
 }

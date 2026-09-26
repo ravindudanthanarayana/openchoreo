@@ -55,6 +55,26 @@ func (c *SecurityConfig) Validate(path *config.Path) config.ValidationErrors {
 	return errs
 }
 
+// KnownActorTypes returns every actor.Type value ExtractActor can produce:
+// "anonymous" (no subject context), "user" (a subject context with no Type
+// configured — audit.ExtractActor's fallback), and every configured subject
+// type name. Used to validate audit.policies[].match.actor_types against the
+// same set audit.Actor.Type is actually drawn from, so a typo there doesn't
+// silently produce a selector that never matches.
+func (c *SecurityConfig) KnownActorTypes() []string {
+	types := make([]string, 0, len(c.Subjects)+2)
+	types = append(types, "anonymous", "user")
+	subjectNames := make([]string, 0, len(c.Subjects))
+	for name := range c.Subjects {
+		subjectNames = append(subjectNames, name)
+	}
+	// Subjects is a map, so its iteration order is randomized per run —
+	// sorting keeps the "must be one of: ..." validation message (and any
+	// test asserting it) deterministic across runs.
+	sort.Strings(subjectNames)
+	return append(types, subjectNames...)
+}
+
 // validateSubjects validates the subjects map configuration.
 func (c *SecurityConfig) validateSubjects(path *config.Path) config.ValidationErrors {
 	var errs config.ValidationErrors
@@ -205,6 +225,9 @@ func (c *SubjectConfig) Validate(path *config.Path) config.ValidationErrors {
 
 // MechanismConfig defines an authentication mechanism for a subject type.
 type MechanismConfig struct {
+	// ReadableIDClaim is the claim recorded as an audit event's actor.id.
+	// Optional: audit falls back to audit.actor.id_claim and then to sub.
+	ReadableIDClaim string `koanf:"readable_id_claim"`
 	// Entitlement defines how to extract entitlement claims.
 	Entitlement EntitlementConfig `koanf:"entitlement"`
 }
@@ -250,7 +273,8 @@ func (c *SecurityConfig) ToSubjectUserTypeConfigs() []subject.UserTypeConfig {
 		mechanisms := make([]subject.AuthMechanismConfig, 0, len(subj.Mechanisms))
 		for mechType, mech := range subj.Mechanisms {
 			mechanisms = append(mechanisms, subject.AuthMechanismConfig{
-				Type: mechType,
+				Type:            mechType,
+				ReadableIDClaim: mech.ReadableIDClaim,
 				Entitlement: subject.EntitlementConfig{
 					Claim:       mech.Entitlement.Claim,
 					DisplayName: mech.Entitlement.DisplayName,

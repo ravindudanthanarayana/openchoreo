@@ -23,11 +23,33 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/portal-assistant/configmap.yaml") . | sha256sum }}
+        checksum/auth-config: {{ include (print $.Template.BasePath "/portal-assistant/auth-configmap.yaml") . | sha256sum }}
       labels:
         {{- include "openchoreo-control-plane.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: portal-assistant
+        {{- include "openchoreo-control-plane.platformIdentityLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "openchoreo-control-plane.portalAssistant.serviceAccountName" . }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.portalAssistant.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.portalAssistant.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.portalAssistant.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.portalAssistant.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 12000
@@ -35,7 +57,7 @@ spec:
         fsGroup: 12000
       containers:
       - name: portal-assistant
-        image: "{{ .Values.portalAssistant.image.repository }}:{{ .Values.portalAssistant.image.tag | default .Chart.AppVersion }}"
+        image: "{{ include "openchoreo-control-plane.image" (dict "context" . "image" .Values.portalAssistant.image) }}"
         imagePullPolicy: {{ .Values.portalAssistant.image.pullPolicy }}
         ports:
         - name: http
@@ -98,7 +120,7 @@ spec:
         # its tokenizer downloads under XDG_CACHE_HOME=/tmp/.cache.
         - name: tmp
           mountPath: /tmp
-        {{- if .Values.portalAssistant.authConfigConfigMap }}
+        {{- if include "openchoreo-control-plane.portalAssistant.authConfigMapName" . }}
         - name: auth-config
           mountPath: /etc/openchoreo
           readOnly: true
@@ -111,9 +133,9 @@ spec:
       volumes:
       - name: tmp
         emptyDir: {}
-      {{- if .Values.portalAssistant.authConfigConfigMap }}
+      {{- with include "openchoreo-control-plane.portalAssistant.authConfigMapName" . }}
       - name: auth-config
         configMap:
-          name: {{ .Values.portalAssistant.authConfigConfigMap }}
+          name: {{ . }}
       {{- end }}
 {{- end }}

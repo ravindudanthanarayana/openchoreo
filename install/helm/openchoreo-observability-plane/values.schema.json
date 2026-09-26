@@ -7,7 +7,7 @@
       "description": "Cluster Agent configuration for WebSocket-based communication with the control plane's cluster gateway",
       "properties": {
         "affinity": {
-          "additionalProperties": false,
+          "additionalProperties": true,
           "default": {},
           "description": "Affinity rules for pod scheduling",
           "required": [],
@@ -82,7 +82,9 @@
         },
         "planeID": {
           "default": "default",
-          "description": "Logical plane identifier for multi-tenancy. Multiple CRs with the same planeID share one agent.\nDefaults to Helm release name if not specified.\n",
+          "description": "Logical plane identifier for multi-tenancy. Multiple CRs with the same planeID share one agent.\nShips as the literal \"default\"; falls back to Helm release name if set as \"\". Rendered as\nthe openchoreo.dev/plane-id pod label, so it must be a valid Kubernetes label value.\n",
+          "maxLength": 63,
+          "pattern": "^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$",
           "title": "planeID",
           "type": "string"
         },
@@ -441,6 +443,16 @@
           },
           "title": "tolerations",
           "type": "array"
+        },
+        "topologySpreadConstraints": {
+          "default": [],
+          "description": "Topology spread constraints for pod distribution across failure domains",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "topologySpreadConstraints",
+          "type": "array"
         }
       },
       "required": [],
@@ -452,53 +464,11 @@
       "description": "Configuration for the observability plane controller manager that reconciles ObservabilityAlertRules and other CRDs",
       "properties": {
         "affinity": {
-          "additionalProperties": false,
+          "additionalProperties": true,
           "default": {},
           "description": "Affinity rules for pod scheduling",
           "required": [],
           "title": "affinity",
-          "type": "object"
-        },
-        "clusterGateway": {
-          "additionalProperties": false,
-          "description": "Cluster gateway configuration for multi-cluster communication",
-          "properties": {
-            "enabled": {
-              "default": false,
-              "description": "Enable cluster gateway integration for multi-cluster setups",
-              "title": "enabled",
-              "type": "boolean"
-            },
-            "tls": {
-              "additionalProperties": false,
-              "description": "TLS configuration for cluster gateway communication",
-              "properties": {
-                "caConfigMap": {
-                  "default": "cluster-gateway-ca",
-                  "description": "Name of the ConfigMap containing the gateway CA certificate",
-                  "title": "caConfigMap",
-                  "type": "string"
-                },
-                "caPath": {
-                  "default": "/etc/cluster-gateway/ca.crt",
-                  "description": "Path to the CA certificate file for gateway verification",
-                  "title": "caPath",
-                  "type": "string"
-                }
-              },
-              "required": [],
-              "title": "tls",
-              "type": "object"
-            },
-            "url": {
-              "default": "https://cluster-gateway.openchoreo-control-plane.svc.cluster.local:8443",
-              "description": "URL of the cluster gateway service in the control plane",
-              "title": "url",
-              "type": "string"
-            }
-          },
-          "required": [],
-          "title": "clusterGateway",
           "type": "object"
         },
         "containerSecurityContext": {
@@ -830,6 +800,14 @@
       "additionalProperties": false,
       "description": "FinOps Agent Configuration",
       "properties": {
+        "affinity": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Affinity rules for pod scheduling",
+          "required": [],
+          "title": "affinity",
+          "type": "object"
+        },
         "analysisTimeoutSeconds": {
           "default": 600,
           "description": "Analysis timeout in seconds",
@@ -949,6 +927,12 @@
           "title": "image",
           "type": "object"
         },
+        "llmBaseUrl": {
+          "default": "",
+          "description": "Optional OpenAI-compatible base URL for LLM calls. Set this to route through the ai-gateway-agentgateway module (e.g., http://agentgateway-proxy.openchoreo-data-plane) instead of calling the provider directly. When set, the provider API key is managed at the gateway and LLM_API_KEY may be a placeholder.",
+          "title": "llmBaseUrl",
+          "type": "string"
+        },
         "llmName": {
           "default": "",
           "description": "LLM model name (e.g., gpt-5.2)",
@@ -967,6 +951,16 @@
           "minimum": 1,
           "title": "maxConcurrentAnalyses",
           "type": "integer"
+        },
+        "nodeSelector": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Node selector for pod scheduling",
+          "required": [],
+          "title": "nodeSelector",
+          "type": "object"
         },
         "oauth": {
           "additionalProperties": false,
@@ -1126,6 +1120,26 @@
           "description": "Skip TLS certificate verification for MCP server connections (use for self-signed certs)",
           "title": "tlsInsecureSkipVerify",
           "type": "boolean"
+        },
+        "tolerations": {
+          "default": [],
+          "description": "Tolerations for pod scheduling",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "tolerations",
+          "type": "array"
+        },
+        "topologySpreadConstraints": {
+          "default": [],
+          "description": "Topology spread constraints for pod distribution across failure domains",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "topologySpreadConstraints",
+          "type": "array"
         }
       },
       "required": [],
@@ -1172,7 +1186,23 @@
         },
         "infrastructure": {
           "additionalProperties": true,
-          "description": "Gateway infrastructure configuration passed to the generated Service.\nUsed to configure cloud provider load balancer settings via annotations.\nExample for AWS with Elastic IP:\n  infrastructure:\n    annotations:\n      service.beta.kubernetes.io/aws-load-balancer-type: \"external\"",
+          "description": "Gateway infrastructure configuration passed to the generated Service.\nUsed to configure cloud provider load balancer settings via annotations.\nExample for AWS with Elastic IP:\n  infrastructure:\n    annotations:\n      service.beta.kubernetes.io/aws-load-balancer-type: \"external\"\n\nThe chart always renders spec.infrastructure so platform identity labels\nreach the kgateway proxy pods. That field needs Gateway API \u003e= v1.2 - on\nolder CRDs it is pruned and the proxy pods lose plane attribution.\nlabels is capped at 8 entries by Gateway API, platform identity included.\n",
+          "properties": {
+            "annotations": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "required": [],
+              "type": "object"
+            },
+            "labels": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "required": [],
+              "type": "object"
+            }
+          },
           "required": [],
           "title": "infrastructure",
           "type": "object"
@@ -1259,6 +1289,22 @@
           "title": "commonLabels",
           "type": "object"
         },
+        "imagePullSecrets": {
+          "default": [],
+          "description": "Image pull secrets applied to all first-party pods, for pulling images from authenticated private registries. Entries are LocalObjectReferences (name only).",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "imagePullSecrets",
+          "type": "array"
+        },
+        "imageRegistry": {
+          "default": "",
+          "description": "Registry override for all first-party container images. When set, it replaces the registry host of each image repository. May include a path (e.g. registry.example.com/ghcr.io) for path-preserving mirrors. Empty uses each image's default registry.",
+          "title": "imageRegistry",
+          "type": "string"
+        },
         "installationMode": {
           "default": "singleCluster",
           "description": "Installation mode of OpenChoreo",
@@ -1281,10 +1327,55 @@
       "title": "kubernetesClusterDomain",
       "type": "string"
     },
+    "networkPolicy": {
+      "additionalProperties": false,
+      "description": "Namespace ingress isolation for observability-plane workloads. Requires a NetworkPolicy-capable CNI.",
+      "properties": {
+        "additionalIngress": {
+          "default": [],
+          "description": "Additional ingress rules appended to the built-in rules",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "additionalIngress",
+          "type": "array"
+        },
+        "enabled": {
+          "default": true,
+          "description": "Restrict ingress to the release namespace, except for explicitly exempted applications and rules",
+          "title": "enabled",
+          "type": "boolean"
+        },
+        "unrestrictedIngressAppNames": {
+          "default": [
+            "gateway-default",
+            "opentelemetry-collector"
+          ],
+          "description": "app.kubernetes.io/name values allowed unrestricted ingress",
+          "items": {
+            "type": "string"
+          },
+          "title": "unrestrictedIngressAppNames",
+          "type": "array"
+        }
+      },
+      "required": [],
+      "title": "networkPolicy",
+      "type": "object"
+    },
     "observer": {
       "additionalProperties": true,
       "description": "OpenChoreo Observer service configuration - REST API that abstracts observability backends for logging, metrics, and tracing via adapters",
       "properties": {
+        "affinity": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Affinity rules for pod scheduling",
+          "required": [],
+          "title": "affinity",
+          "type": "object"
+        },
         "alertStoreBackend": {
           "default": "sqlite",
           "description": "Alert entry storage backend for fired alerts",
@@ -1306,6 +1397,73 @@
           "description": "Duration within which duplicate alerts for the same alert rule are suppressed. Set to \"0\" to disable.",
           "title": "alertSuppressionWindow",
           "type": "string"
+        },
+        "audit": {
+          "additionalProperties": false,
+          "description": "Audit logging configuration",
+          "properties": {
+            "actor": {
+              "additionalProperties": false,
+              "description": "Audit actor settings",
+              "properties": {
+                "idClaim": {
+                  "default": "username",
+                  "description": "Fallback claim recorded as actor.id and matched by policies[].match.actors, used when the subject's mechanism sets no readable_id_claim or its token omits that claim. sub is recorded if this claim is missing too",
+                  "title": "idClaim",
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "title": "actor",
+              "type": "object"
+            },
+            "defaults": {
+              "additionalProperties": false,
+              "description": "Policy settings applied when no policies entry matches",
+              "properties": {
+                "publish": {
+                  "default": true,
+                  "description": "Emit an audit event by default",
+                  "title": "publish",
+                  "type": "boolean"
+                }
+              },
+              "required": [],
+              "title": "defaults",
+              "type": "object"
+            },
+            "enabled": {
+              "default": false,
+              "description": "Enable audit event emission for state-modifying observer API requests",
+              "title": "enabled",
+              "type": "boolean"
+            },
+            "policies": {
+              "default": [
+                {
+                  "match": {
+                    "operations": [
+                      "QueryAuditLogs"
+                    ]
+                  },
+                  "set": {
+                    "publish": false
+                  }
+                }
+              ],
+              "description": "Ordered, first-match-wins policy overrides. Each entry has a `match` selector and a `set` block of overrides. See the audit logging docs for the selector-admissibility rules enforced at startup.\n",
+              "items": {
+                "additionalProperties": true,
+                "required": [],
+                "type": "object"
+              },
+              "title": "policies",
+              "type": "array"
+            }
+          },
+          "required": [],
+          "title": "audit",
+          "type": "object"
         },
         "authzTlsInsecureSkipVerify": {
           "default": false,
@@ -1354,6 +1512,51 @@
           },
           "title": "extraEnvs",
           "type": "array"
+        },
+        "featurePreview": {
+          "additionalProperties": false,
+          "description": "Features available for evaluation and not recommended for production use. They are off by default, may change or be removed, and are not covered by upgrade guarantees.",
+          "properties": {
+            "deliveryInsights": {
+              "additionalProperties": false,
+              "description": "Delivery Insights (DORA metrics) collection in the Observer.",
+              "properties": {
+                "enabled": {
+                  "default": false,
+                  "description": "Feature preview, not recommended for production. Collect DORA delivery metrics in the Observer. Requires a logs adapter that can filter events by reason across all namespaces; without one only Mean Time to Recovery is derived. Safe with multiple replicas, but more than one replica needs alertStoreBackend postgresql. Maps to FEATURE_PREVIEW_DELIVERY_INSIGHTS_ENABLED in the Observer container.",
+                  "title": "enabled",
+                  "type": "boolean"
+                }
+              },
+              "required": [],
+              "title": "deliveryInsights",
+              "type": "object"
+            }
+          },
+          "required": [],
+          "title": "featurePreview",
+          "type": "object"
+        },
+        "finOpsAdapter": {
+          "additionalProperties": false,
+          "description": "Configurations for FinOps adapter connectivity",
+          "properties": {
+            "timeout": {
+              "default": "30s",
+              "description": "Timeout for FinOps adapter requests",
+              "title": "timeout",
+              "type": "string"
+            },
+            "url": {
+              "default": "http://finops-adapter:9101",
+              "description": "URL of the FinOps adapter service",
+              "title": "url",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "finOpsAdapter",
+          "type": "object"
         },
         "http": {
           "additionalProperties": false,
@@ -1460,6 +1663,16 @@
           "title": "logsAdapter",
           "type": "object"
         },
+        "nodeSelector": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Node selector for pod scheduling",
+          "required": [],
+          "title": "nodeSelector",
+          "type": "object"
+        },
         "oauthClientId": {
           "default": "openchoreo-observer-resource-reader-client",
           "description": "OAuth2 client ID used by the Observer when calling the control plane API",
@@ -1561,6 +1774,10 @@
                           "required": [],
                           "type": "object"
                         },
+                        "readable_id_claim": {
+                          "description": "JWT claim carrying a human-readable identity, recorded as an audit event's actor.id. Falls back to audit.actor.idClaim, then sub, when unset or absent from the token",
+                          "type": "string"
+                        },
                         "type": {
                           "description": "Authentication mechanism type (oauth2, etc.)",
                           "type": "string"
@@ -1623,6 +1840,26 @@
           "title": "service",
           "type": "object"
         },
+        "tolerations": {
+          "default": [],
+          "description": "Tolerations for pod scheduling",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "tolerations",
+          "type": "array"
+        },
+        "topologySpreadConstraints": {
+          "default": [],
+          "description": "Topology spread constraints for pod distribution across failure domains",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "topologySpreadConstraints",
+          "type": "array"
+        },
         "tracingAdapter": {
           "additionalProperties": false,
           "description": "Configurations for tracing adapter connectivity",
@@ -1653,6 +1890,14 @@
       "additionalProperties": false,
       "description": "AI-powered Root Cause Analysis agent configuration",
       "properties": {
+        "affinity": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Affinity rules for pod scheduling",
+          "required": [],
+          "title": "affinity",
+          "type": "object"
+        },
         "authz": {
           "additionalProperties": false,
           "description": "Authorization configuration for RCA agent",
@@ -1769,6 +2014,12 @@
           "additionalProperties": false,
           "description": "LLM configuration for AI-powered analysis",
           "properties": {
+            "baseUrl": {
+              "default": "",
+              "description": "Optional OpenAI-compatible base URL for LLM calls. Set this to route through the ai-gateway-agentgateway module (e.g., http://agentgateway-proxy.openchoreo-data-plane) instead of calling the provider directly. When set, the provider API key is managed at the gateway and RCA_LLM_API_KEY may be a placeholder.",
+              "title": "baseUrl",
+              "type": "string"
+            },
             "modelName": {
               "default": "",
               "description": "LLM model name (e.g., gpt-5.2)",
@@ -1791,6 +2042,16 @@
           "description": "Name of the RCA agent deployment",
           "title": "name",
           "type": "string"
+        },
+        "nodeSelector": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Node selector for pod scheduling",
+          "required": [],
+          "title": "nodeSelector",
+          "type": "object"
         },
         "oauth": {
           "additionalProperties": false,
@@ -1938,6 +2199,26 @@
           "description": "PVC storage size for SQLite (only used when reportBackend is sqlite)",
           "title": "sqliteStorageSize",
           "type": "string"
+        },
+        "tolerations": {
+          "default": [],
+          "description": "Tolerations for pod scheduling",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "tolerations",
+          "type": "array"
+        },
+        "topologySpreadConstraints": {
+          "default": [],
+          "description": "Topology spread constraints for pod distribution across failure domains",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "topologySpreadConstraints",
+          "type": "array"
         }
       },
       "required": [],
@@ -1996,6 +2277,14 @@
               "description": "Skip TLS verification for JWKS URL",
               "title": "jwksUrlTlsInsecureSkipVerify",
               "type": "string"
+            },
+            "mcpOAuthScopes": {
+              "description": "OAuth scopes advertised by the observer's MCP endpoint via the protected-resource metadata (RFC 9728) and WWW-Authenticate 401 challenge. Leave empty to use the default (openid profile email).",
+              "items": {
+                "required": []
+              },
+              "title": "mcpOAuthScopes",
+              "type": "array"
             },
             "tokenUrl": {
               "default": "",

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -206,6 +207,32 @@ func TestParseComponentTypeName(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestClusterComponentTypeSpec_PreservesValidationFields guards the shared CCT->CT
+// conversion (ClusterComponentTypeSpec.ToComponentTypeSpec, which clusterComponentTypeSpec
+// and the component controller both delegate to): because ClusterComponentTypeSpec and
+// ComponentTypeSpec are not directly convertible, a new field must be copied by hand in that
+// method or it silently drops from every consumer.
+func TestClusterComponentTypeSpec_PreservesValidationFields(t *testing.T) {
+	cct := &openchoreov1alpha1.ClusterComponentType{
+		Spec: openchoreov1alpha1.ClusterComponentTypeSpec{
+			WorkloadType:         "deployment",
+			PreRenderValidations: []openchoreov1alpha1.ValidationRule{{Rule: "${1 == 1}", Message: "pre"}},
+			PostRenderValidations: []openchoreov1alpha1.PostRenderValidation{{
+				Target:  openchoreov1alpha1.PostRenderTarget{PatchTarget: openchoreov1alpha1.PatchTarget{Group: "apps", Version: "v1", Kind: "Deployment"}},
+				Rule:    "${resource.spec.replicas == 1}",
+				Message: "single replica",
+			}},
+		},
+	}
+
+	got := clusterComponentTypeSpec(cct)
+
+	require.Len(t, got.PreRenderValidations, 1)
+	assert.Equal(t, "pre", got.PreRenderValidations[0].Message)
+	require.Len(t, got.PostRenderValidations, 1)
+	assert.Equal(t, "single replica", got.PostRenderValidations[0].Message)
 }
 
 func TestBuildTraitEnvironmentConfigsSchema(t *testing.T) {
@@ -480,6 +507,42 @@ func TestGenerateRelease(t *testing.T) {
 		assert.Equal(t, "nginx:latest", result.Spec.Workload.Container.Image)
 		assert.Equal(t, testProjectName, result.Labels[labels.LabelKeyProjectName])
 		assert.Equal(t, testComponentName, result.Labels[labels.LabelKeyComponentName])
+	})
+
+	t.Run("carries the workload's commit provenance into the release", func(t *testing.T) {
+		// GenerateRelease used to rebuild WorkloadTemplateSpec field by field, so
+		// each field added to it had to be remembered here or it was silently
+		// dropped -- Dependencies already went missing that way once (#2934), and
+		// Source after it. The whole spec is passed through now; this asserts the
+		// field that is easiest to lose, because nothing else fails without it.
+		wl := testWorkload()
+		authoredAt := metav1.NewTime(time.Date(2026, 8, 30, 9, 15, 0, 0, time.UTC))
+		wl.Spec.Source = &openchoreov1alpha1.WorkloadSource{
+			Commit:     "9f2c1ab4d5e6f70819a2b3c4d5e6f70819a2b3c4",
+			Branch:     "main",
+			Repository: "https://github.com/acme/widgets",
+			AuthoredAt: &authoredAt,
+		}
+
+		objs := tier3SeedObjects()
+		for i, o := range objs {
+			if _, ok := o.(*openchoreov1alpha1.Workload); ok {
+				objs[i] = wl
+			}
+		}
+		svc := newService(t, objs...)
+
+		result, err := svc.GenerateRelease(ctx, testNamespace, testComponentName,
+			&GenerateReleaseRequest{ReleaseName: "v1"})
+		require.NoError(t, err)
+		require.NotNil(t, result.Spec.Workload.Source,
+			"the release must carry the workload's commit provenance; without it "+
+				"Lead Time for Changes cannot be computed for this rollout")
+		assert.Equal(t, "9f2c1ab4d5e6f70819a2b3c4d5e6f70819a2b3c4", result.Spec.Workload.Source.Commit)
+		assert.Equal(t, "main", result.Spec.Workload.Source.Branch)
+		assert.Equal(t, "https://github.com/acme/widgets", result.Spec.Workload.Source.Repository)
+		require.NotNil(t, result.Spec.Workload.Source.AuthoredAt)
+		assert.True(t, result.Spec.Workload.Source.AuthoredAt.Time.Equal(authoredAt.Time))
 	})
 
 	t.Run("success with auto-generated name", func(t *testing.T) {

@@ -31,6 +31,30 @@ on:
         description: 'Explicit commit SHA to tag (overrides automatic resolution)'
         required: false
         type: string
+      logs_opensearch_version:
+        description: 'observability-logs-opensearch chart version to pin (required only when creating a release branch)'
+        required: false
+        type: string
+      tracing_opensearch_version:
+        description: 'observability-tracing-opensearch chart version to pin (required only when creating a release branch)'
+        required: false
+        type: string
+      metrics_prometheus_version:
+        description: 'observability-metrics-prometheus chart version to pin (required only when creating a release branch)'
+        required: false
+        type: string
+      events_otel_collector_version:
+        description: 'observability-events-otel-collector chart version to pin (required only when creating a release branch)'
+        required: false
+        type: string
+      logs_openobserve_version:
+        description: 'observability-logs-openobserve chart version to pin (required only when creating a release branch)'
+        required: false
+        type: string
+      finops_opencost_version:
+        description: 'finops-opencost chart version for the versioned docs (required only when creating a release branch; nothing in this repo installs it, so it is recorded, not pinned)'
+        required: false
+        type: string
       skip_e2e:
         description: 'Skip the e2e gate (emergency releases only)'
         required: false
@@ -69,7 +93,7 @@ jobs:
           owner: ${{ github.repository_owner }}
 
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
           fetch-depth: 0
@@ -130,6 +154,46 @@ jobs:
           else
             echo "branch-exists=false" >> $GITHUB_OUTPUT
             echo "BRANCH_EXISTS=false" >> $GITHUB_ENV
+          fi
+
+      # main tracks 0.0.0-latest-dev module charts; a new release branch must pin
+      # released versions, which the branch job writes with the same script.
+      - name: Validate observability module versions
+        env:
+          ACTION: ${{ github.event.inputs.action }}
+          BRANCH_EXISTS: ${{ steps.check-branch.outputs.branch-exists }}
+          RELEASE_BRANCH: ${{ steps.resolve-version.outputs.release-branch }}
+          LOGS_OPENSEARCH_VERSION: ${{ github.event.inputs.logs_opensearch_version || '' }}
+          TRACING_OPENSEARCH_VERSION: ${{ github.event.inputs.tracing_opensearch_version || '' }}
+          METRICS_PROMETHEUS_VERSION: ${{ github.event.inputs.metrics_prometheus_version || '' }}
+          EVENTS_OTEL_COLLECTOR_VERSION: ${{ github.event.inputs.events_otel_collector_version || '' }}
+          LOGS_OPENOBSERVE_VERSION: ${{ github.event.inputs.logs_openobserve_version || '' }}
+          FINOPS_OPENCOST_VERSION: ${{ github.event.inputs.finops_opencost_version || '' }}
+        run: |
+          CREATES_BRANCH=false
+          if [[ "$ACTION" == "full" || "$ACTION" == "branch" ]] && [ "$BRANCH_EXISTS" = "false" ]; then
+            CREATES_BRANCH=true
+          fi
+
+          if [ "$CREATES_BRANCH" = "true" ]; then
+            if ! hack/pin-observability-modules.sh --validate --remote \
+              --logs-opensearch-version "$LOGS_OPENSEARCH_VERSION" \
+              --tracing-opensearch-version "$TRACING_OPENSEARCH_VERSION" \
+              --metrics-prometheus-version "$METRICS_PROMETHEUS_VERSION" \
+              --events-otel-collector-version "$EVENTS_OTEL_COLLECTOR_VERSION" \
+              --logs-openobserve-version "$LOGS_OPENOBSERVE_VERSION" \
+              --finops-opencost-version "$FINOPS_OPENCOST_VERSION"; then
+              echo "::error::Creating ${RELEASE_BRANCH} requires a published release version for every community module input (see log above)"
+              exit 1
+            fi
+          elif [ -n "${LOGS_OPENSEARCH_VERSION}${TRACING_OPENSEARCH_VERSION}${METRICS_PROMETHEUS_VERSION}${EVENTS_OTEL_COLLECTOR_VERSION}${LOGS_OPENOBSERVE_VERSION}${FINOPS_OPENCOST_VERSION}" ]; then
+            if [ "$ACTION" = "tag" ]; then
+              REASON="action=tag does not create a release branch"
+            else
+              REASON="${RELEASE_BRANCH} already exists"
+            fi
+            echo "::error::Community module version inputs only apply when creating a release branch, but ${REASON}. To change pinned versions, open a PR against ${RELEASE_BRANCH} that runs hack/pin-observability-modules.sh. finops-opencost is not pinned here: change it in the versioned docs' _constants.mdx."
+            exit 1
           fi
 
       - name: Fail if tag mode without release branch
@@ -268,7 +332,7 @@ jobs:
           owner: ${{ github.repository_owner }}
 
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
           ref: ${{ needs.validate.outputs.checkout-sha }}
@@ -280,6 +344,13 @@ jobs:
           git config user.email "${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com"
 
       - name: Create release branch
+        env:
+          LOGS_OPENSEARCH_VERSION: ${{ github.event.inputs.logs_opensearch_version }}
+          TRACING_OPENSEARCH_VERSION: ${{ github.event.inputs.tracing_opensearch_version }}
+          METRICS_PROMETHEUS_VERSION: ${{ github.event.inputs.metrics_prometheus_version }}
+          EVENTS_OTEL_COLLECTOR_VERSION: ${{ github.event.inputs.events_otel_collector_version }}
+          LOGS_OPENOBSERVE_VERSION: ${{ github.event.inputs.logs_openobserve_version }}
+          FINOPS_OPENCOST_VERSION: ${{ github.event.inputs.finops_opencost_version }}
         run: |
           BRANCH="${{ needs.validate.outputs.release-branch }}"
 
@@ -297,8 +368,38 @@ jobs:
             git commit -s -m "chore: update sample URLs to ${BRANCH}"
           fi
 
+          # Pin observability modules (0.0.0-latest-dev on main) to the versions validated above.
+          # finops-opencost has no location in this repo, so it is only echoed back
+          # for the versioned docs' finOpsOpenCostModule constant.
+          hack/pin-observability-modules.sh \
+            --logs-opensearch-version "$LOGS_OPENSEARCH_VERSION" \
+            --tracing-opensearch-version "$TRACING_OPENSEARCH_VERSION" \
+            --metrics-prometheus-version "$METRICS_PROMETHEUS_VERSION" \
+            --events-otel-collector-version "$EVENTS_OTEL_COLLECTOR_VERSION" \
+            --logs-openobserve-version "$LOGS_OPENOBSERVE_VERSION" \
+            --finops-opencost-version "$FINOPS_OPENCOST_VERSION"
+          hack/pin-observability-modules.sh --check
+          git add -u
+          if ! git diff --cached --quiet; then
+            git commit -s -m "chore: pin observability module versions for ${BRANCH}"
+          fi
+
           git push origin "${BRANCH}"
           echo "Pushed branch: ${BRANCH}"
+
+          # The docs constants are set by hand from these versions; --check cannot
+          # report finops-opencost, so record it in the run summary.
+          {
+            echo "### Module versions for the ${BRANCH} docs constants"
+            echo ""
+            echo "| \`_constants.mdx\` key | Version |"
+            echo "| --- | --- |"
+            echo "| \`logsOpensearchModule\` | ${LOGS_OPENSEARCH_VERSION} |"
+            echo "| \`tracingOpensearchModule\` | ${TRACING_OPENSEARCH_VERSION} |"
+            echo "| \`metricsPrometheusModule\` | ${METRICS_PROMETHEUS_VERSION} |"
+            echo "| \`eventsOtelCollectorModule\` | ${EVENTS_OTEL_COLLECTOR_VERSION} |"
+            echo "| \`finOpsOpenCostModule\` | ${FINOPS_OPENCOST_VERSION} |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ----------------------------------------------------------------
   # Resolve target: pin the exact commit to gate and tag, then wait for
@@ -323,7 +424,7 @@ jobs:
       e2e-already-passed: ${{ steps.e2e-status.outputs.e2e-already-passed }}
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.checkout-sha }}
           fetch-depth: 0
@@ -357,6 +458,17 @@ jobs:
           echo "target=${TARGET}" >> $GITHUB_OUTPUT
           echo "helm-chart-version=0.0.0-${SHORT_SHA}" >> $GITHUB_OUTPUT
 
+      # Never gate or tag a commit that still installs 0.0.0-latest-dev modules
+      # (e.g. a backport from main, or an explicit commit_sha on main).
+      - name: Verify observability modules are pinned at target
+        env:
+          TARGET: ${{ steps.resolve-target.outputs.target }}
+        run: |
+          if ! hack/pin-observability-modules.sh --check --ref "${TARGET}"; then
+            echo "::error::${TARGET} installs unpinned observability modules. Pin them on the release branch with hack/pin-observability-modules.sh before releasing."
+            exit 1
+          fi
+
       - name: Resolve backstage-plugins image tag
         id: backstage-tag
         env:
@@ -386,8 +498,8 @@ jobs:
       - name: Wait for build-and-test workflow
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_SHA: ${{ steps.resolve-target.outputs.target }}
         run: |
-          TARGET_SHA="${{ steps.resolve-target.outputs.target }}"
           SHORT_SHA=$(git rev-parse --short=8 "${TARGET_SHA}")
           echo "Waiting for build-and-test workflow for commit ${SHORT_SHA}..."
           for i in $(seq 1 30); do
@@ -426,23 +538,29 @@ jobs:
         id: e2e-status
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET: ${{ steps.resolve-target.outputs.target }}
+          HELM_CHART_VERSION: ${{ steps.resolve-target.outputs.helm-chart-version }}
+          BACKSTAGE_IMAGE_TAG: ${{ steps.backstage-tag.outputs.backstage-image-tag }}
         run: |
-          TARGET="${{ steps.resolve-target.outputs.target }}"
-          # The tag run reuses a green gate when the commit is unchanged since
-          # branching: record-e2e stamps the gated commit with a
-          # release-e2e-gate commit status, which we look up here. The combined
-          # status endpoint returns the latest status per context, so this is
-          # deterministic regardless of how many other statuses the commit has.
-          # Fall back to "none" on any gh api error so a transient lookup
-          # failure runs the gate (safe default) instead of aborting the release.
-          if ! STATE=$(gh api "repos/${{ github.repository }}/commits/${TARGET}/status" \
-            --jq '.statuses | map(select(.context == "release-e2e-gate"))[0].state // "none"'); then
+          # e2e-gate.yml stamps `e2e-gate` on its tested commit regardless of
+          # trigger, so this reuses any prior passing gate at this commit —
+          # only if it also tested the same Helm/Backstage versions (encoded
+          # in the description, since backstage_image_tag can drift between
+          # runs at the same commit).
+          EXPECTED_DESC="e2e gate passed (helm=${HELM_CHART_VERSION}, backstage=${BACKSTAGE_IMAGE_TAG:-none})"
+          if ! STATUS_JSON=$(gh api "repos/${{ github.repository }}/commits/${TARGET}/status" \
+            --jq '.statuses | map(select(.context == "e2e-gate"))[0] // {}'); then
             echo "::warning::Failed to query commit status for ${TARGET}; assuming no prior e2e gate."
-            STATE="none"
+            STATUS_JSON="{}"
           fi
-          if [ "$STATE" = "success" ]; then
-            echo "e2e gate already passed at ${TARGET}; it will be reused."
+          STATE=$(echo "$STATUS_JSON" | jq -r '.state // "none"')
+          DESCRIPTION=$(echo "$STATUS_JSON" | jq -r '.description // ""')
+          if [ "$STATE" = "success" ] && [ "$DESCRIPTION" = "$EXPECTED_DESC" ]; then
+            echo "e2e gate already passed at ${TARGET} for ${EXPECTED_DESC}; it will be reused."
             echo "e2e-already-passed=true" >> $GITHUB_OUTPUT
+          elif [ "$STATE" = "success" ]; then
+            echo "e2e gate passed at ${TARGET} but for different artifacts ('${DESCRIPTION}' vs expected '${EXPECTED_DESC}'); the gate will run again."
+            echo "e2e-already-passed=false" >> $GITHUB_OUTPUT
           else
             echo "No passing e2e gate at ${TARGET} (state: ${STATE}); the gate will run."
             echo "e2e-already-passed=false" >> $GITHUB_OUTPUT
@@ -453,14 +571,15 @@ jobs:
   # at the exact commit being released before the tag is created. Also
   # runs on branch creation so the new release tip is gated up front.
   # Legs run in parallel, one k3d cluster each. Skipped when the target
-  # commit already has a passing gate (reused via record-e2e), and
-  # skip_e2e bypasses the gate for declared emergencies only.
+  # commit already has a passing gate (see resolve-target), and skip_e2e
+  # bypasses the gate for declared emergencies only.
   # ----------------------------------------------------------------
   e2e:
     needs: [validate, resolve-target]
     if: ${{ always() && !failure() && !cancelled() && (github.event.inputs.action == 'full' || github.event.inputs.action == 'tag' || github.event.inputs.action == 'branch') && !inputs.skip_e2e && needs.resolve-target.outputs.e2e-already-passed != 'true' }}
     permissions:
       contents: read
+      statuses: write
     uses: ./.github/workflows/e2e-gate.yml
     with:
       ref: ${{ needs.resolve-target.outputs.target }}
@@ -468,42 +587,7 @@ jobs:
       backstage_image_tag: ${{ needs.resolve-target.outputs.backstage-image-tag }}
     secrets:
       E2E_GITHUB_PAT: ${{ secrets.E2E_GITHUB_PAT }}
-
-  # ----------------------------------------------------------------
-  # Record e2e pass: stamp the gated commit with a release-e2e-gate
-  # commit status so a later tag run at the same commit reuses the green
-  # gate (see resolve-target) instead of re-running the full suite.
-  # Side-effect only — tag does not depend on it, so a recording hiccup
-  # never blocks a release whose e2e already passed.
-  # ----------------------------------------------------------------
-  record-e2e:
-    needs: [validate, resolve-target, e2e]
-    if: ${{ needs.e2e.result == 'success' }}
-    runs-on: ubuntu-24.04
-    permissions:
-      statuses: write
-    steps:
-      - name: Record passing e2e gate on target commit
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TARGET="${{ needs.resolve-target.outputs.target }}"
-          # Recording is a side-effect for future reuse; a failure must not fail
-          # the release. Retry a few times, then warn and succeed if it never lands.
-          for attempt in 1 2 3; do
-            if gh api --method POST "repos/${{ github.repository }}/statuses/${TARGET}" \
-              -f state=success \
-              -f context=release-e2e-gate \
-              -f description="Release e2e gate passed" >/dev/null; then
-              echo "Recorded release-e2e-gate=success on ${TARGET}"
-              exit 0
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              echo "Attempt ${attempt}/3 to record the e2e gate status failed; retrying in $((attempt * 5))s..."
-              sleep $((attempt * 5))
-            fi
-          done
-          echo "::warning::Could not record release-e2e-gate status on ${TARGET} after 3 attempts; a later tag run at this commit will re-run the gate instead of reusing it."
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   # ----------------------------------------------------------------
   # Tag: create and push the annotated release tag at the gated commit.
@@ -529,7 +613,7 @@ jobs:
           repositories: ${{ github.repository }}
 
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
           ref: ${{ needs.validate.outputs.checkout-sha }}

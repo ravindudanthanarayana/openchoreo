@@ -51,7 +51,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --version VER             Specify version to install (default: latest)"
             echo "  --with-build              Install with Workflow Plane (Argo Workflows + Registry)"
-            echo "  --with-observability      Install with Observability Plane"
+            echo "  --with-observability      Install with Observability Plane (enables audit logs)"
             echo "  --skip-preload            Skip image preloading from host Docker"
             echo "  --skip-resource-check     Skip system resource validation"
             echo "  --debug                   Enable debug mode"
@@ -100,6 +100,10 @@ install_cert_manager
 install_eso
 install_gateway_crds
 
+# Step 3b: Install OpenBao secret backend (seeds platform secrets + ClusterSecretStore).
+# Must run before the control plane so its ExternalSecrets can sync from the store.
+install_openbao
+
 # Step 4: Install kgateway and Thunder
 install_kgateway
 install_thunder
@@ -107,16 +111,15 @@ install_thunder
 # Step 5: Apply CoreDNS config
 apply_coredns_config
 
-# Step 6: Create backstage secret and install Control Plane
-create_backstage_secret "$CONTROL_PLANE_NS"
+# Step 6: Create backstage ExternalSecret and install Control Plane
+create_backstage_external_secret "$CONTROL_PLANE_NS"
 install_control_plane
 
 # Step 6b: Extract cluster-gateway CA into ConfigMap
 extract_cluster_gateway_ca
 
-# Step 7: Set up Data Plane CA and secret store
+# Step 7: Set up Data Plane CA
 setup_data_plane_ca
-install_openbao
 
 # Step 8: Install Data Plane
 install_data_plane
@@ -139,7 +142,7 @@ fi
 # Step 11: Install Observability Plane (optional)
 if [[ "$ENABLE_OBSERVABILITY" == "true" ]]; then
     setup_observability_plane_ca
-    create_observability_secrets "$OBSERVABILITY_NS"
+    create_observability_external_secrets "$OBSERVABILITY_NS"
 
     install_observability_plane
 
@@ -158,6 +161,9 @@ else
     log_warning "occ-login.sh not found, skipping OCC CLI login"
 fi
 
+THUNDER_ADMIN_PASSWORD=$(kubectl get secret -n "$THUNDER_NS" thunder-admin-credentials \
+    -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d 2>/dev/null || true)
+
 log_success "OpenChoreo installation completed successfully!"
 log_info "Access URLs:"
 log_info "  Backstage UI: http://openchoreo.localhost:8080/"
@@ -171,12 +177,15 @@ log_info "        Password: Dev@123"
 log_info "      Platform Engineer:"
 log_info "        Username: platform-engineer@openchoreo.dev"
 log_info "        Password: PE@123"
+log_info "      SRE:"
+log_info "        Username: sre@openchoreo.dev"
+log_info "        Password: SRE@123"
 log_info "  OpenChoreo API: http://api.openchoreo.localhost:8080/"
-log_info "  Thunder Identity Provider: http://thunder.openchoreo.localhost:8080/"
-log_info "  Thunder Identity Provider UI: http://thunder.openchoreo.localhost:8080/console"
+log_info "  ThunderID Identity Provider: http://thunder.openchoreo.localhost:8080/"
+log_info "  ThunderID Identity Provider UI: http://thunder.openchoreo.localhost:8080/console"
 log_info "    Logins:"
 log_info "      Username: admin"
-log_info "      Password: admin"
+log_info "      Password: ${THUNDER_ADMIN_PASSWORD:-<not found; check the thunder-admin-credentials Secret in the $THUNDER_NS namespace>}"
 echo ""
 log_info "OCC CLI Login:"
 log_info "  Run the following commands to login:"

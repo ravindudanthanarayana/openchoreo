@@ -33,7 +33,16 @@ const (
 	targetPlaneDataPlane          = "dataplane"
 	targetPlaneObservabilityPlane = "observabilityplane"
 
-	appsAPIGroup = "apps"
+	appsAPIGroup    = "apps"
+	deploymentKind  = "Deployment"
+	statefulSetKind = "StatefulSet"
+
+	batchAPIGroup = "batch"
+	cronJobKind   = "CronJob"
+
+	// reasonProgressDeadlineExceeded is the Deployment Progressing condition reason
+	// Kubernetes sets when a rollout exceeds progressDeadlineSeconds.
+	reasonProgressDeadlineExceeded = "ProgressDeadlineExceeded"
 
 	// ConditionResourcesApplied indicates whether resources were successfully applied to the target plane.
 	// When False, it contains the error message from the failed apply operation.
@@ -61,6 +70,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=openchoreo.dev,resources=clusterdataplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=openchoreo.dev,resources=clusterobservabilityplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups="",resources=events,verbs=create
 // +kubebuilder:rbac:groups="networking.k8s.io",resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -156,14 +166,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	// Mark resources as successfully applied and persist to API
-	if changed := controller.MarkTrueCondition(release, controller.ConditionType(ConditionResourcesApplied),
-		controller.ConditionReason(ReasonApplySucceeded), "All resources applied successfully"); changed {
-		if statusErr := r.Status().Update(ctx, release); statusErr != nil {
-			logger.Error(statusErr, "Failed to update Release status with apply success")
-			return ctrl.Result{}, statusErr
-		}
-	}
+	// Mark resources as successfully applied, but leave persisting it to the status
+	// update at the end of this reconcile.
+	// Writing it here would publish a state that contradicts itself: the condition
+	// would report this generation as applied while Status.Resources still holds
+	// the health of the generation being replaced. A consumer that reads the
+	// condition to decide whether the health beside it is current -- which is the
+	// only signal available for that -- would act on the previous revision's
+	// health. The delivery events built on it reported a rollout as succeeded
+	// before its pods existed.
+	//
+	// The apply-failure branch above still persists immediately, because there the
+	// point is to surface the error before returning.
+	controller.MarkTrueCondition(release, controller.ConditionType(ConditionResourcesApplied),
+		controller.ConditionReason(ReasonApplySucceeded), "All resources applied successfully")
 
 	// PHASE 2: Discover live resources that we manage in the target plane
 	// This queries both current resource types (from spec) and previous resource types (from status)
@@ -184,9 +200,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
+	// Build the resource statuses first so delivery events and the status update
+	// share one health evaluation
+	resourceStatuses := r.buildResourceStatus(ctx, old, desiredResources, liveResources)
+
 	// PHASE 4: Update status with applied resources inventory (done last after all operations)
 	// This maintains an inventory of what we applied for future cleanup operations
-	if statusUpdated, err := r.updateStatus(ctx, old, release, desiredResources, liveResources); err != nil || statusUpdated {
+	if statusUpdated, err := r.updateStatus(ctx, old, release, resourceStatuses); err != nil || statusUpdated {
 		// Return after updating the status to ensure it is persisted before continuing
 		return ctrl.Result{}, err
 	}
@@ -197,6 +217,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if r.hasTransitioningResources(release.Status.Resources) {
 		requeueAfter := getProgressingRequeueInterval(release)
 		logger.Info("Resources are transitioning, requeuing with configured interval",
+			"requeueAfter", requeueAfter)
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+
+	// Poll workloads scaled to zero faster so an autoscaler-driven scale-up is noticed promptly.
+	if hasResurrectableWorkload(desiredResources, liveResources) {
+		requeueAfter := getResurrectableRequeueInterval()
+		logger.Info("Workload is scaled to zero, requeuing to detect autoscaler-driven scale-up",
 			"requeueAfter", requeueAfter)
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
@@ -312,7 +340,7 @@ func (r *Reconciler) makeDesiredResources(release *openchoreov1alpha1.RenderedRe
 // can surface it instead of silently dropping the restart trigger.
 func injectRestartedAt(obj *unstructured.Unstructured, value string) error {
 	gvk := obj.GroupVersionKind()
-	if gvk.Group != appsAPIGroup || gvk.Kind != "Deployment" {
+	if gvk.Group != appsAPIGroup || gvk.Kind != deploymentKind {
 		return nil
 	}
 	annotations, _, err := unstructured.NestedStringMap(obj.Object, "spec", "template", "metadata", "annotations")
@@ -427,6 +455,12 @@ func (r *Reconciler) deleteResources(ctx context.Context, planeClient client.Cli
 	for _, obj := range staleResources {
 		resourceID := obj.GetLabels()[labels.LabelKeyRenderedReleaseResourceID]
 
+		// Skip resources already terminating on the target plane (re-deleting over
+		// the gateway tunnel is a wasted round-trip on the most expensive I/O path).
+		if obj.GetDeletionTimestamp() != nil {
+			continue
+		}
+
 		// Delete the resource from the target plane
 		if err := planeClient.Delete(ctx, obj); err != nil {
 			return fmt.Errorf("failed to delete stale resource %s: %w", resourceID, err)
@@ -449,8 +483,8 @@ var wellKnownDataPlaneGVKs = []schema.GroupVersionKind{
 	{Group: "", Version: "v1", Kind: "PersistentVolumeClaim"},
 
 	// Apps
-	{Group: "apps", Version: "v1", Kind: "Deployment"},
-	{Group: "apps", Version: "v1", Kind: "StatefulSet"},
+	{Group: appsAPIGroup, Version: "v1", Kind: deploymentKind},
+	{Group: appsAPIGroup, Version: "v1", Kind: statefulSetKind},
 
 	// Batch
 	{Group: "batch", Version: "v1", Kind: "Job"},
@@ -608,6 +642,15 @@ func getStableRequeueInterval(release *openchoreov1alpha1.RenderedRelease) time.
 	}
 
 	// Add 20% jitter
+	jitterMax := time.Duration(float64(baseInterval) * 0.2)
+	return addJitter(baseInterval, jitterMax)
+}
+
+// getResurrectableRequeueInterval returns the requeue interval for workloads scaled to zero
+// that an autoscaler may resurrect: faster than the stable cadence so a scale-up is noticed
+// promptly, but slow enough not to hammer the plane agent when many workloads sit idle.
+func getResurrectableRequeueInterval() time.Duration {
+	baseInterval := 1 * time.Minute
 	jitterMax := time.Duration(float64(baseInterval) * 0.2)
 	return addJitter(baseInterval, jitterMax)
 }

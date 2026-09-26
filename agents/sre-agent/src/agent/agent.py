@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -17,6 +17,7 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
+from common.auth.bearer import BearerTokenAuth
 from src.agent.middleware import (
     LoggingMiddleware,
     OutputTransformerMiddleware,
@@ -24,22 +25,21 @@ from src.agent.middleware import (
 )
 from src.agent.stream_parser import ChatResponseParser
 from src.agent.tool_registry import (
-    ALL_TOOL_FACTORIES,
     OBSERVABILITY_TOOLS,
     OPENCHOREO_TOOLS,
     TOOL_ACTIVE_FORMS,
     TOOLS,
 )
-from src.auth.bearer import BearerTokenAuth
-from src.auth.oauth_client import get_oauth2_auth
+from src.auth import get_oauth2_auth
 from src.clients import MCPClient, get_model, get_report_backend
 from src.config import settings
+from src.extensions import apply_extensions
 from src.helpers import AlertScope
 from src.logging_config import request_id_context
 from src.models import ChatResponse, RCAReport
 from src.models.rca_report import RootCauseIdentified
 from src.models.remediation_result import RemediationResult
-from src.template_manager import render
+from src.templates import render
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +48,15 @@ class Agent:
     def __init__(
         self,
         *,
+        name: str,
         template: str,
         tools: set[str],
         middleware: list[type],
         response_format: type[BaseModel],
         recursion_limit: int,
         use_summarization: bool = False,
-        tool_factories: list[Callable[..., BaseTool]] | None = None,
     ):
+        self.name = name
         self.template = template
         self.tools = tools
         self.response_format = response_format
@@ -63,7 +64,6 @@ class Agent:
         self.model = get_model()
         self._middleware_classes = middleware
         self._use_summarization = use_summarization
-        self._tool_factories = tool_factories or []
 
     async def create(
         self,
@@ -79,8 +79,15 @@ class Agent:
             tools = [t for t in all_tools if t.name in self.tools]
             logger.debug("Filtered to %d MCP tools: %s", len(tools), [t.name for t in tools])
 
-        for factory in self._tool_factories:
-            tools.append(factory(auth))
+            missing = self.tools - {t.name for t in tools}
+            if missing:
+                logger.warning(
+                    "Requested MCP tools not found in the server catalog: %s",
+                    sorted(missing),
+                )
+
+        extensions = await apply_extensions(self.name)
+        tools = tools + extensions.tools
 
         logger.debug("Total tools: %d — %s", len(tools), [t.name for t in tools])
 
@@ -88,6 +95,7 @@ class Agent:
             "tools": tools,
             "observability_tools": [t for t in tools if t.name in OBSERVABILITY_TOOLS],
             "openchoreo_tools": [t for t in tools if t.name in OPENCHOREO_TOOLS],
+            **extensions.prompt_context(),
         }
         if context:
             template_context.update(context)
@@ -115,14 +123,21 @@ class Agent:
 
 
 RCA_AGENT = Agent(
+    name="rca",
     template="prompts/rca_agent_prompt.j2",
     tools={
         TOOLS.QUERY_COMPONENT_LOGS,
+        TOOLS.QUERY_COMPONENT_EVENTS,
         TOOLS.QUERY_RESOURCE_METRICS,
         TOOLS.QUERY_TRACES,
         TOOLS.QUERY_TRACE_SPANS,
         TOOLS.LIST_COMPONENTS,
+        TOOLS.LIST_RELEASE_BINDINGS,
+        TOOLS.GET_RELEASE_BINDING,
         TOOLS.GET_COMPONENT_RELEASE,
+        TOOLS.GET_RESOURCE,
+        TOOLS.LIST_RESOURCE_RELEASE_BINDINGS,
+        TOOLS.GET_RESOURCE_RELEASE_BINDING,
     },
     middleware=[
         LoggingMiddleware,
@@ -136,9 +151,20 @@ RCA_AGENT = Agent(
 )
 
 REMED_AGENT = Agent(
+    name="remediation",
     template="prompts/remed_agent_prompt.j2",
-    tools=set(),
-    tool_factories=ALL_TOOL_FACTORIES,
+    tools={
+        TOOLS.LIST_COMPONENTS,
+        TOOLS.GET_COMPONENT,
+        TOOLS.LIST_WORKLOADS,
+        TOOLS.GET_WORKLOAD,
+        TOOLS.LIST_RELEASE_BINDINGS,
+        TOOLS.GET_RELEASE_BINDING,
+        TOOLS.GET_COMPONENT_RELEASE,
+        TOOLS.GET_COMPONENT_RELEASE_SCHEMA,
+        TOOLS.LIST_RESOURCE_RELEASE_BINDINGS,
+        TOOLS.GET_RESOURCE_RELEASE_BINDING,
+    },
     middleware=[
         LoggingMiddleware,
         ToolErrorHandlerMiddleware,
@@ -148,6 +174,7 @@ REMED_AGENT = Agent(
 )
 
 CHAT_AGENT = Agent(
+    name="chat",
     template="prompts/chat_agent_prompt.j2",
     tools={
         TOOLS.QUERY_COMPONENT_LOGS,
@@ -249,7 +276,7 @@ async def stream_chat(
         yield emit(
             {
                 "type": "error",
-                "message": f"An error occured (request_id: {request_id_context.get()})",
+                "message": f"An error occurred (request_id: {request_id_context.get()})",
             }
         )
 
@@ -276,7 +303,7 @@ async def run_analysis(
             usage_callback = UsageMetadataCallbackHandler()
 
             rca_agent, rca_logging = await RCA_AGENT.create(
-                auth=get_oauth2_auth(), usage_callback=usage_callback
+                auth=get_oauth2_auth(), usage_callback=usage_callback, context={"scope": scope}
             )
 
             content = render(
@@ -351,6 +378,8 @@ async def run_analysis(
                 alert_id=alert_id,
                 status="completed",
                 report=report_data,
+                namespace=scope.namespace,
+                project=scope.project,
                 environment_uid=scope.environment_uid,
                 project_uid=scope.project_uid,
             )
@@ -377,6 +406,8 @@ async def run_analysis(
                             alert_id=alert_id,
                             status="failed",
                             summary=f"Analysis cancelled during shutdown (report_id: {report_id})",
+                            namespace=scope.namespace,
+                            project=scope.project,
                             environment_uid=scope.environment_uid,
                             project_uid=scope.project_uid,
                         )
@@ -405,6 +436,8 @@ async def run_analysis(
                     alert_id=alert_id,
                     status="failed",
                     summary=f"Analysis timed out (report_id: {report_id})",
+                    namespace=scope.namespace,
+                    project=scope.project,
                     environment_uid=scope.environment_uid,
                     project_uid=scope.project_uid,
                 )
@@ -419,6 +452,8 @@ async def run_analysis(
                     alert_id=alert_id,
                     status="failed",
                     summary=f"Analysis failed (report_id: {report_id})",
+                    namespace=scope.namespace,
+                    project=scope.project,
                     environment_uid=scope.environment_uid,
                     project_uid=scope.project_uid,
                 )

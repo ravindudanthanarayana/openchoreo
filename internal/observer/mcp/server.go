@@ -6,13 +6,46 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/openchoreo/openchoreo/internal/observer/api/handlers"
+	"github.com/openchoreo/openchoreo/internal/observer/config"
+	"github.com/openchoreo/openchoreo/pkg/mcp/mcpaudit"
 )
 
-// NewHTTPServer creates a new MCP HTTP server for the observer API
-func NewHTTPServer(handler *MCPHandler) http.Handler {
+// NewHTTPServer creates a new MCP HTTP server for the observer API.
+//
+// auditOpts.Emitter should be the same *audit.Emitter the REST chain uses and
+// its Bindings should come from observeraudit.MCPBindings(), so one policy and
+// one operation table cover both surfaces.
+//
+// This is the only constructor that installs audit; NewServer registers tools
+// and nothing else. Serving a *mcpsdk.Server built any other way leaves
+// query_audit_logs reading the trail without appending to it.
+func NewHTTPServer(handler *MCPHandler, auditOpts mcpaudit.MiddlewareOptions) (http.Handler, error) {
+	server := NewServer(handler)
+
+	auditMw, err := mcpaudit.NewMiddleware(auditOpts)
+	if err != nil {
+		return nil, fmt.Errorf("create MCP audit middleware: %w", err)
+	}
+	server.AddReceivingMiddleware(auditMw)
+
+	return mcpsdk.NewStreamableHTTPHandler(func(r *http.Request) *mcpsdk.Server {
+		return server
+	}, &mcpsdk.StreamableHTTPOptions{Stateless: true}), nil
+}
+
+// NewServer creates the MCP server with every observer tool registered, and no
+// middleware. See NewHTTPServer, which adds audit.
+//
+// Exported so the audit coverage gate can enumerate the registered tools over
+// the protocol rather than trusting a hand-maintained list — the SDK offers no
+// way to read tools back off a *Server directly.
+func NewServer(handler *MCPHandler) *mcpsdk.Server {
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "openchoreo-observer",
 		Version: "1.0.0",
@@ -20,9 +53,7 @@ func NewHTTPServer(handler *MCPHandler) http.Handler {
 
 	registerTools(server, handler)
 
-	return mcpsdk.NewStreamableHTTPHandler(func(r *http.Request) *mcpsdk.Server {
-		return server
-	}, nil)
+	return server
 }
 
 // handleToolResult marshals the result to JSON and wraps it in MCP CallToolResult format
@@ -47,7 +78,7 @@ func registerTools(s *mcpsdk.Server, handler *MCPHandler) {
 		Name:        "query_component_logs",
 		Description: "Query runtime application logs for components (services, APIs, workers, scheduled tasks) deployed in OpenChoreo. Supports filtering by project, component, environment, time range, log levels, and search phrases.",
 		InputSchema: createSchema(map[string]any{
-			"namespace":     stringProperty("Organization namespace (required)"),
+			"namespace":     stringProperty("Namespace (required)"),
 			"project":       stringProperty("Project name to filter logs"),
 			"component":     stringProperty("Component name to filter logs"),
 			"environment":   stringProperty("Environment name to filter logs (e.g., 'development', 'production')"),
@@ -86,7 +117,7 @@ func registerTools(s *mcpsdk.Server, handler *MCPHandler) {
 		Name:        "query_workflow_logs",
 		Description: "Query CI/CD workflow run logs in OpenChoreo. Captures build, test, and deployment pipeline execution details. Supports filtering by workflow run name and task name.",
 		InputSchema: createSchema(map[string]any{
-			"namespace":         stringProperty("Organization namespace (required)"),
+			"namespace":         stringProperty("Namespace (required)"),
 			"workflow_run_name": stringProperty("Workflow run name to filter logs for a specific CI/CD run"),
 			"task_name":         stringProperty("Task name within a workflow run to filter logs for a specific step"),
 			"start_time":        stringProperty("Start of time range in RFC3339 format (e.g., 2025-11-04T08:29:02.452Z)"),
@@ -115,12 +146,79 @@ func registerTools(s *mcpsdk.Server, handler *MCPHandler) {
 		return handleToolResult(result, err)
 	})
 
+	// Tool: query_platform_logs
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "query_platform_logs",
+		Description: "Query platform logs: everything one observability plane collects, addressed by raw " +
+			"Kubernetes coordinates. That covers OpenChoreo's own components - the control plane " +
+			"(controller-manager, openchoreo-api, cluster-gateway), the data plane agents and gateways, " +
+			"and the workflow and observability plane infrastructure - and also the third-party " +
+			"infrastructure deployed alongside them and the workloads running on the planes it watches. " +
+			"Entries come back with no ownership check, so this reads user workload logs too: treat the " +
+			"output as privileged, and use query_component_logs for one deployed component's runtime logs, " +
+			"correlated by project, component and environment and checked against ownership. To restrict " +
+			"this tool to OpenChoreo's own components, pass the 'labels' selector. Multi-value filters " +
+			"match any of their values, and different filters must all match. Requires the cluster-scoped " +
+			"'platformlogs:view' permission.",
+		InputSchema: createSchema(map[string]any{
+			"cluster_instance": arrayProperty(
+				"Clusters the logs were collected from, as named on each cluster's logs collector (e.g. ['cluster1'])"),
+			"kubernetes_namespace": arrayProperty(
+				"Kubernetes namespaces of the pods (e.g. ['openchoreo-control-plane']). " +
+					"This is a Kubernetes namespace, not the OpenChoreo namespace other tools take"),
+			"pod_name":       arrayProperty("Pod names (e.g. ['controller-manager-7f58b689b5-pwsb5'])"),
+			"container_name": arrayProperty("Container names within the pods (e.g. ['manager'])"),
+			"labels": stringProperty(
+				"Kubernetes label selector over the pod labels, as 'key=value' pairs joined by commas, " +
+					"where a comma means AND (the syntax 'kubectl -l' accepts). This is how a plane is selected: " +
+					"'openchoreo.dev/plane=controlplane' (or dataplane, workflowplane, observabilityplane), " +
+					"narrowed further with 'openchoreo.dev/plane-id=<planeID>'. Components OpenChoreo does not " +
+					"ship carry no plane label"),
+			"start_time":    stringProperty("Start of time range in RFC3339 format (e.g., 2025-11-04T08:29:02.452Z)"),
+			"end_time":      stringProperty("End of time range in RFC3339 format (e.g., 2025-11-04T09:29:02.452Z)"),
+			"search_phrase": stringProperty("Text to search within log messages"),
+			"log_levels":    arrayProperty("Log levels to filter (e.g., ['ERROR', 'WARN', 'INFO', 'DEBUG']). Default: all levels"),
+			"limit":         limitLogsProperty(),
+			"sort_order":    sortOrderProperty(),
+			"include_sources": enumArrayProperty(
+				"Also return a breakdown of which coordinates produced the matching logs, as the distinct "+
+					"values each named coordinate takes with a count for each, ordered by count descending. "+
+					"Use it to find where a problem is concentrated - include_sources ['pod_name'] with "+
+					"log_levels ['ERROR'] answers which pods are erroring and how much. To get only the "+
+					"breakdown, set limit to 1 so the log entries themselves cost nothing",
+				platformLogSourceFieldNames),
+			"max_sources": maxSourcesProperty(),
+		}, []string{"start_time", "end_time"}),
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args struct {
+		ClusterInstance     []string `json:"cluster_instance"`
+		KubernetesNamespace []string `json:"kubernetes_namespace"`
+		PodName             []string `json:"pod_name"`
+		ContainerName       []string `json:"container_name"`
+		Labels              string   `json:"labels"`
+		StartTime           string   `json:"start_time"`
+		EndTime             string   `json:"end_time"`
+		SearchPhrase        string   `json:"search_phrase"`
+		LogLevels           []string `json:"log_levels"`
+		Limit               int      `json:"limit"`
+		SortOrder           string   `json:"sort_order"`
+		IncludeSources      []string `json:"include_sources"`
+		MaxSources          int      `json:"max_sources"`
+	}) (*mcpsdk.CallToolResult, any, error) {
+		result, err := handler.QueryPlatformLogs(ctx,
+			args.ClusterInstance, args.KubernetesNamespace, args.PodName, args.ContainerName,
+			args.Labels, args.StartTime, args.EndTime, args.SearchPhrase,
+			args.LogLevels, args.Limit, args.SortOrder,
+			args.IncludeSources, args.MaxSources,
+		)
+		return handleToolResult(result, err)
+	})
+
 	// Tool: query_component_events
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "query_component_events",
 		Description: "Query Kubernetes events for components (services, APIs, workers, scheduled tasks) deployed in OpenChoreo. Returns events such as scheduling, scaling, image pulls, and job completions. Supports filtering by project, component, environment, and time range.",
 		InputSchema: createSchema(map[string]any{
-			"namespace":   stringProperty("Organization namespace (required)"),
+			"namespace":   stringProperty("Namespace (required)"),
 			"project":     stringProperty("Project name to filter events"),
 			"component":   stringProperty("Component name to filter events"),
 			"environment": stringProperty("Environment name to filter events (e.g., 'development', 'production')"),
@@ -154,7 +252,7 @@ func registerTools(s *mcpsdk.Server, handler *MCPHandler) {
 		Name:        "query_workflow_events",
 		Description: "Query Kubernetes events for CI/CD workflow runs in OpenChoreo. Captures events emitted during build, test, and deployment pipeline execution. Supports filtering by workflow run name and time range.",
 		InputSchema: createSchema(map[string]any{
-			"namespace":         stringProperty("Organization namespace (required)"),
+			"namespace":         stringProperty("Namespace (required)"),
 			"workflow_run_name": stringProperty("Workflow run name to filter events for a specific CI/CD run"),
 			"start_time":        stringProperty("Start of time range in RFC3339 format (e.g., 2025-11-04T08:29:02.452Z)"),
 			"end_time":          stringProperty("End of time range in RFC3339 format (e.g., 2025-11-04T09:29:02.452Z)"),
@@ -181,7 +279,7 @@ func registerTools(s *mcpsdk.Server, handler *MCPHandler) {
 		Name:        "query_resource_metrics",
 		Description: "Query CPU and memory resource usage metrics for components in OpenChoreo. Returns time-series data for CPU usage/requests/limits and memory usage/requests/limits. Useful for capacity planning, identifying resource constraints, and detecting memory leaks.",
 		InputSchema: createSchema(map[string]any{
-			"namespace":   stringProperty("Organization namespace (required)"),
+			"namespace":   stringProperty("Namespace (required)"),
 			"project":     stringProperty("Project name to filter metrics"),
 			"component":   stringProperty("Component name to filter metrics"),
 			"environment": stringProperty("Environment name to filter metrics"),
@@ -217,7 +315,7 @@ func registerTools(s *mcpsdk.Server, handler *MCPHandler) {
 		Name:        "query_http_metrics",
 		Description: "Query HTTP request and latency metrics for components in OpenChoreo. Returns time-series data for request counts (total, successful, unsuccessful), mean latency, and percentile latencies (p50, p90, p99). Useful for monitoring API performance and debugging HTTP errors.",
 		InputSchema: createSchema(map[string]any{
-			"namespace":   stringProperty("Organization namespace (required)"),
+			"namespace":   stringProperty("Namespace (required)"),
 			"project":     stringProperty("Project name to filter metrics"),
 			"component":   stringProperty("Component name to filter metrics"),
 			"environment": stringProperty("Environment name to filter metrics"),
@@ -253,7 +351,7 @@ func registerTools(s *mcpsdk.Server, handler *MCPHandler) {
 		Name:        "query_traces",
 		Description: "Query distributed traces for components in OpenChoreo. Returns a list of traces with summary information including trace ID, name, span count, root span details, and duration. Useful for understanding request flows across services and identifying performance bottlenecks.",
 		InputSchema: createSchema(map[string]any{
-			"namespace":   stringProperty("Organization namespace (required)"),
+			"namespace":   stringProperty("Namespace (required)"),
 			"project":     stringProperty("Project name to filter traces"),
 			"component":   stringProperty("Component name to filter traces"),
 			"environment": stringProperty("Environment name to filter traces"),
@@ -288,7 +386,7 @@ func registerTools(s *mcpsdk.Server, handler *MCPHandler) {
 		Description: "Query all spans within a specific distributed trace in OpenChoreo. Returns span details including span ID, name, parent span, start/end times, and duration. Use the trace ID from query_traces results to drill into individual traces.",
 		InputSchema: createSchema(map[string]any{
 			"trace_id":    stringProperty("Trace ID to retrieve spans for (required). Obtained from query_traces results"),
-			"namespace":   stringProperty("Organization namespace (required)"),
+			"namespace":   stringProperty("Namespace (required)"),
 			"project":     stringProperty("Project name"),
 			"component":   stringProperty("Component name"),
 			"environment": stringProperty("Environment name"),
@@ -340,7 +438,7 @@ func registerTools(s *mcpsdk.Server, handler *MCPHandler) {
 		Name:        "query_alerts",
 		Description: "Query fired alerts in OpenChoreo. Supports filtering by project, component, environment, and time range. Useful for investigating recent alerts and details about them.",
 		InputSchema: createSchema(map[string]any{
-			"namespace":   stringProperty("Organization namespace (required)"),
+			"namespace":   stringProperty("Namespace (required)"),
 			"project":     stringProperty("Project name to filter alerts"),
 			"component":   stringProperty("Component name to filter alerts"),
 			"environment": stringProperty("Environment name to filter alerts (e.g., 'development', 'production')"),
@@ -374,7 +472,7 @@ func registerTools(s *mcpsdk.Server, handler *MCPHandler) {
 		Name:        "query_incidents",
 		Description: "Query incidents in OpenChoreo. Supports filtering by project, component, environment, and time range. Useful for tracking incident lifecycle and response status. All incidents have an accompanying alert but not the other way around.",
 		InputSchema: createSchema(map[string]any{
-			"namespace":   stringProperty("Organization namespace (required)"),
+			"namespace":   stringProperty("Namespace (required)"),
 			"project":     stringProperty("Project name to filter incidents"),
 			"component":   stringProperty("Component name to filter incidents"),
 			"environment": stringProperty("Environment name to filter incidents (e.g., 'development', 'production')"),
@@ -399,6 +497,226 @@ func registerTools(s *mcpsdk.Server, handler *MCPHandler) {
 		result, err := handler.QueryIncidents(ctx,
 			args.Namespace, args.Project, args.Component, args.Environment,
 			args.StartTime, args.EndTime, args.Limit, args.SortOrder,
+		)
+		return handleToolResult(result, err)
+	})
+
+	// Tool 10: query_costs
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "query_costs",
+		Description: "Query infrastructure costs in OpenChoreo. Returns a flat list of per-component cost records (CPU cost, memory cost, and resource efficiency) for a namespace within the given environment and time range. By default the query covers every component in the namespace+environment; set 'project' to scope it to one project, or 'project'+'component' to scope it to a single component. Useful for cost attribution and spotting inefficient workloads.",
+		InputSchema: createSchema(map[string]any{
+			"namespace":   stringProperty("Namespace (required)"),
+			"environment": stringProperty("Environment name (required, e.g., 'development', 'production')"),
+			"project":     stringProperty("Project name. When set, narrows the query to components in this project"),
+			"component":   stringProperty("Component name. When set, narrows the query to this single component. Requires project"),
+			"start_time":  stringProperty("Start of time range in RFC3339 format (e.g., 2025-11-04T08:29:02.452Z)"),
+			"end_time":    stringProperty("End of time range in RFC3339 format (e.g., 2025-11-04T09:29:02.452Z)"),
+			"granularity": stringProperty("Optional time bucket size in <count><unit> notation where unit is h (hours), d (days), or w (weeks), e.g. '1h', '2d', '3w'. Splits each component into one record per bucket"),
+		}, []string{"namespace", "environment", "start_time", "end_time"}),
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args struct {
+		Namespace   string `json:"namespace"`
+		Environment string `json:"environment"`
+		Project     string `json:"project"`
+		Component   string `json:"component"`
+		StartTime   string `json:"start_time"`
+		EndTime     string `json:"end_time"`
+		Granularity string `json:"granularity"`
+	}) (*mcpsdk.CallToolResult, any, error) {
+		result, err := handler.QueryCosts(ctx,
+			args.Namespace, args.Environment, args.Project, args.Component,
+			args.StartTime, args.EndTime, args.Granularity,
+		)
+		return handleToolResult(result, err)
+	})
+
+	// Tool 11: query_recommendations
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "query_recommendations",
+		Description: "Query right-sizing recommendations in OpenChoreo. Returns per-component recommendations comparing current CPU/memory requests and limits against recommended values derived from observed usage, with associated costs, for a namespace within the given environment and time range. By default the query covers every component in the namespace+environment; set 'project' to scope it to one project, or 'project'+'component' to scope it to a single component. Useful for reducing over-provisioning.",
+		InputSchema: createSchema(map[string]any{
+			"namespace":   stringProperty("Namespace (required)"),
+			"environment": stringProperty("Environment name (required, e.g., 'development', 'production')"),
+			"project":     stringProperty("Project name. When set, narrows the query to components in this project"),
+			"component":   stringProperty("Component name. When set, narrows the query to this single component. Requires project"),
+			"start_time":  stringProperty("Start of time range in RFC3339 format (e.g., 2025-11-04T08:29:02.452Z)"),
+			"end_time":    stringProperty("End of time range in RFC3339 format (e.g., 2025-11-04T09:29:02.452Z)"),
+		}, []string{"namespace", "environment", "start_time", "end_time"}),
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args struct {
+		Namespace   string `json:"namespace"`
+		Environment string `json:"environment"`
+		Project     string `json:"project"`
+		Component   string `json:"component"`
+		StartTime   string `json:"start_time"`
+		EndTime     string `json:"end_time"`
+	}) (*mcpsdk.CallToolResult, any, error) {
+		result, err := handler.QueryRecommendations(ctx,
+			args.Namespace, args.Environment, args.Project, args.Component,
+			args.StartTime, args.EndTime,
+		)
+		return handleToolResult(result, err)
+	})
+
+	// Tool: query_audit_logs
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "query_audit_logs",
+		Description: "Query OpenChoreo's audit trail: who did what, to which resource, and whether it " +
+			"succeeded. Use it for questions about people and authority - who deleted a component, " +
+			"what one subject did in a single login, what was denied to whom. For application or " +
+			"platform output use query_component_logs or query_platform_logs instead. " +
+			"Filter semantics: values within one filter are OR-ed, separate filters are AND-ed, and an " +
+			"omitted filter constrains nothing - so actor_id ['alice','bob'] with result ['denied'] " +
+			"means (alice OR bob) AND denied. " +
+			"Requires the cluster-scoped 'auditlogs:view' permission, evaluated before any filter is " +
+			"read, so resource_namespace narrows the results but grants no access. Reading the trail " +
+			"is itself audited.",
+		InputSchema: createSchema(map[string]any{
+			"start_time": stringProperty(
+				"Inclusive start of the event window, RFC3339 (e.g. 2026-08-14T16:30:00Z). " +
+					"At most 366 days wide; page a longer investigation a year at a time"),
+			"end_time": stringProperty(
+				"Exclusive end of the event window, RFC3339, strictly after start_time"),
+
+			"actor_id": arrayProperty(
+				"Subject identifiers (e.g. ['alice@example.com']). Unique only within an issuer, so " +
+					"pair with actor_issuer where more than one identity provider is configured"),
+			"actor_type":   arrayProperty("Kinds of subject, e.g. ['user', 'service_account', 'anonymous']"),
+			"actor_issuer": arrayProperty("Token issuers - the namespace an actor_id is unique within"),
+			"actor_session_id": arrayProperty(
+				"Session IDs from the token's 'sid' claim, joining every action taken in one login. " +
+					"Absent for client-credentials tokens, so this selects human activity only"),
+			"actor_entitlements": arrayProperty(
+				"Entitlement values such as a group name (e.g. ['platform-engineer']). Matched across " +
+					"every claim in the entitlements map, not one named claim"),
+
+			"resource_type":      arrayProperty("Resource kinds the action targeted (e.g. ['project'])"),
+			"resource_namespace": arrayProperty("OpenChoreo namespaces (e.g. ['default'])"),
+			"resource_environment": arrayProperty(
+				"Environments in '{namespace}/{name}' form (e.g. ['default/development']). " +
+					"A bare environment name will not match"),
+			"resource_project":   arrayProperty("Projects"),
+			"resource_component": arrayProperty("Components"),
+			"resource_resource":  arrayProperty("Resources, the hierarchy level that is a sibling of component"),
+			"resource_name":      arrayProperty("Resource names"),
+
+			"action": arrayProperty("Semantic action names (e.g. ['create_project', 'delete_component'])"),
+			"category": enumArrayProperty(
+				"Event categories. 'access' is disclosure rather than change; reading the trail is "+
+					"recorded under it",
+				handlers.AuditLogCategoryValues()),
+			"result": enumArrayProperty(
+				"Outcomes. 'denied' is a subject the policy refused, 'failure' an error or a call with no "+
+					"usable identity",
+				handlers.AuditLogResultValues()),
+			"producer": arrayProperty("Emitting services (e.g. ['openchoreo-api'])"),
+			"surface": enumArrayProperty(
+				"Surfaces the call arrived through. MCP wraps the same API, so the REST value is 'rest'",
+				handlers.AuditLogSurfaceValues()),
+			"operation_id": arrayProperty("Canonical operation identifiers (e.g. ['CreateProject'])"),
+			"request_id": arrayProperty(
+				"Correlation IDs, matched exactly. The pivot from an access log line to its audit record"),
+			"event_id": arrayProperty("Record identifiers, for fetching known records directly"),
+			"source_ip": arrayProperty(
+				"Client addresses, matched exactly rather than by network range. Behind a proxy the " +
+					"recorded value is the proxy"),
+			"user_agent": arrayProperty(
+				"Client identifications, matched exactly. Agent strings vary by version, so " +
+					"search_phrase is usually the better tool for 'anything occ'"),
+
+			"search_phrase": stringProperty("Free text to match within the record"),
+			"limit":         auditLimitProperty(),
+			"sort_order":    sortOrderProperty(),
+
+			"include_timeline": booleanProperty(
+				"Also return per-interval counts across the whole window, broken down by result. " +
+					"A page of records cannot be bucketed into a histogram, so ask for this to see when " +
+					"activity happened. Set limit to 1 for the shape alone"),
+			"timeline_interval": stringProperty(
+				"Bucket width, <count><unit> where unit is m, h, d or w (e.g. '15m'). Ignored unless " +
+					"include_timeline is true. A width exceeding 500 buckets is coarsened, so read the " +
+					"width actually used from timeline.interval"),
+		}, []string{"start_time", "end_time"}),
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args AuditLogsQueryArgs) (
+		*mcpsdk.CallToolResult, any, error,
+	) {
+		result, err := handler.QueryAuditLogs(ctx, args)
+		return handleToolResult(result, err)
+	})
+
+	// Tool 12: query_dora_metrics
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "query_dora_metrics",
+		Description: "Query DORA (DevOps Research and Assessment) delivery performance metrics for " +
+			"OpenChoreo components: Deployment Frequency, Lead Time for Changes, Change Failure Rate, and " +
+			"Mean Time to Recovery (MTTR). Returns a summary (value, Elite/High/Medium/Low classification, " +
+			"trend vs the previous window of equal length) plus a time-bucketed series for each requested " +
+			"metric. Use this to answer questions like 'how often do we deploy', 'what's our lead time for " +
+			"changes', 'what's our change failure rate', or 'how long does it take to recover from failures'.",
+		InputSchema: createSchema(map[string]any{
+			"namespace":   stringProperty("Namespace (required)"),
+			"project":     stringProperty("Project name to scope the metrics to"),
+			"component":   stringProperty("Component name to scope the metrics to (requires project)"),
+			"environment": stringProperty("Environment name to scope the metrics to (e.g., 'development', 'production')"),
+			"granularity": granularityProperty(),
+			"start_time":  stringProperty("Start of time range in RFC3339 format (e.g., 2025-11-04T08:29:02.452Z)"),
+			"end_time":    stringProperty("End of time range in RFC3339 format (e.g., 2025-11-04T09:29:02.452Z)"),
+			"metrics":     doraMetricsProperty(),
+		}, []string{"namespace", "start_time", "end_time"}),
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args struct {
+		Namespace   string   `json:"namespace"`
+		Project     string   `json:"project"`
+		Component   string   `json:"component"`
+		Environment string   `json:"environment"`
+		Granularity string   `json:"granularity"`
+		StartTime   string   `json:"start_time"`
+		EndTime     string   `json:"end_time"`
+		Metrics     []string `json:"metrics"`
+	}) (*mcpsdk.CallToolResult, any, error) {
+		if err := validateComponentScope(args.Namespace, args.Project, args.Component); err != nil {
+			return nil, nil, err
+		}
+		result, err := handler.QueryDoraMetrics(ctx,
+			args.Namespace, args.Project, args.Component, args.Environment,
+			args.Granularity, args.StartTime, args.EndTime, args.Metrics,
+		)
+		return handleToolResult(result, err)
+	})
+
+	// Tool 13: query_dora_deployments
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "query_dora_deployments",
+		Description: "List the individual deployments behind the DORA metrics: each rollout with when it " +
+			"was deployed, its project, component and environment, the commit it carried, its outcome " +
+			"(succeeded or failed) and its lead time. Use this after query_dora_metrics to show the work " +
+			"behind a number -- which deployments failed, what shipped in a window, or which rollout took " +
+			"longest -- and to answer questions like 'what did we deploy to production last week' or " +
+			"'which deployments failed'.",
+		InputSchema: createSchema(map[string]any{
+			"namespace":   stringProperty("Namespace (required)"),
+			"project":     stringProperty("Project name to scope the deployments to"),
+			"component":   stringProperty("Component name to scope the deployments to (requires project)"),
+			"environment": stringProperty("Environment name to scope the deployments to (e.g., 'development', 'production')"),
+			"start_time":  stringProperty("Start of time range in RFC3339 format (e.g., 2025-11-04T08:29:02.452Z)"),
+			"end_time":    stringProperty("End of time range in RFC3339 format (e.g., 2025-11-04T09:29:02.452Z)"),
+			"limit":       limitProperty(),
+			"sort_order":  sortOrderProperty(),
+		}, []string{"namespace", "start_time", "end_time"}),
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args struct {
+		Namespace   string `json:"namespace"`
+		Project     string `json:"project"`
+		Component   string `json:"component"`
+		Environment string `json:"environment"`
+		StartTime   string `json:"start_time"`
+		EndTime     string `json:"end_time"`
+		Limit       int    `json:"limit"`
+		SortOrder   string `json:"sort_order"`
+	}) (*mcpsdk.CallToolResult, any, error) {
+		if err := validateComponentScope(args.Namespace, args.Project, args.Component); err != nil {
+			return nil, nil, err
+		}
+		result, err := handler.QueryDoraDeployments(ctx,
+			args.Namespace, args.Project, args.Component, args.Environment,
+			args.StartTime, args.EndTime, args.SortOrder, args.Limit,
 		)
 		return handleToolResult(result, err)
 	})
@@ -438,6 +756,66 @@ func limitProperty() map[string]any {
 	return map[string]any{
 		"type":        "number",
 		"description": "Maximum number of entries to return. Default: 100",
+	}
+}
+
+// auditLimitProperty declares the cap as well as the default, unlike
+// limitProperty: exceeding it is an error rather than a clamp, so a caller that
+// cannot see the ceiling only learns it from a failed call.
+func auditLimitProperty() map[string]any {
+	return map[string]any{
+		"type": "number",
+		"description": fmt.Sprintf(
+			"Maximum number of records to return. Default: 100, maximum: %d. Page a larger "+
+				"investigation by narrowing the window rather than raising this",
+			config.MaxLimit),
+		"maximum": config.MaxLimit,
+	}
+}
+
+func granularityProperty() map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"description": "Time bucket size for the series: 'daily', 'weekly', or 'monthly'. Default: 'daily'",
+		"enum":        []string{"daily", "weekly", "monthly"},
+	}
+}
+
+func doraMetricsProperty() map[string]any {
+	return map[string]any{
+		"type": "array",
+		"description": "Which DORA metrics to compute: 'deploymentFrequency', 'leadTime', " +
+			"'changeFailureRate', 'mttr'. Default: all four",
+		"items": map[string]any{
+			"type": "string",
+			"enum": []string{"deploymentFrequency", "leadTime", "changeFailureRate", "mttr"},
+		},
+	}
+}
+
+func maxSourcesProperty() map[string]any {
+	return map[string]any{
+		"type": "number",
+		"description": fmt.Sprintf(
+			"Maximum number of values to return per coordinate in 'sources'. Default: %d", defaultMaxSources),
+	}
+}
+
+func enumArrayProperty(description string, values []string) map[string]any {
+	return map[string]any{
+		"type":        "array",
+		"description": description,
+		"items": map[string]any{
+			"type": "string",
+			"enum": values,
+		},
+	}
+}
+
+func booleanProperty(description string) map[string]any {
+	return map[string]any{
+		"type":        "boolean",
+		"description": description,
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
 	"github.com/openchoreo/openchoreo/internal/controller"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/api/gen"
+	"github.com/openchoreo/openchoreo/internal/server/middleware/audit"
 	"github.com/openchoreo/openchoreo/pkg/mcp/tools"
 )
 
@@ -25,7 +26,13 @@ func (h *MCPHandler) ListProjects(ctx context.Context, namespaceName string, opt
 	return wrapTransformedList("projects", result.Items, result.NextCursor, projectSummary), nil
 }
 
-func (h *MCPHandler) CreateProject(ctx context.Context, namespaceName string, req *gen.CreateProjectJSONRequestBody) (any, error) {
+// CreateProject creates the Project CR only. ProjectReleaseBindings, which bind
+// the project to an environment, are created separately via
+// CreateProjectReleaseBinding so this tool's required authz stays exactly
+// project:create rather than also depending on projectreleasebinding:create.
+func (h *MCPHandler) CreateProject(
+	ctx context.Context, namespaceName string, req *gen.CreateProjectJSONRequestBody,
+) (any, error) {
 	annotations := map[string]string{}
 	if req.Metadata.Annotations != nil {
 		for key, value := range *req.Metadata.Annotations {
@@ -82,6 +89,7 @@ func (h *MCPHandler) CreateProject(ctx context.Context, namespaceName string, re
 	if err != nil {
 		return nil, err
 	}
+	setAuditResource(ctx, created)
 	return mutationResult(created, "created"), nil
 }
 
@@ -125,6 +133,7 @@ func (h *MCPHandler) UpdateProject(
 			namespaceName, projectName, deploymentPipeline, err,
 		)
 	}
+	setAuditResource(ctx, updated)
 	return mutationResult(updated, "updated", map[string]any{
 		"deploymentPipelineRef": updated.Spec.DeploymentPipelineRef.Name,
 	}), nil
@@ -134,6 +143,9 @@ func (h *MCPHandler) DeleteProject(ctx context.Context, namespaceName, projectNa
 	if err := h.services.ProjectService.DeleteProject(ctx, namespaceName, projectName); err != nil {
 		return nil, err
 	}
+	// No UID here: ProjectService.DeleteProject returns only an error, not the
+	// deleted object, so the identifier that survives the deletion is the name.
+	audit.SetResource(ctx, &audit.Resource{Namespace: namespaceName, Name: projectName})
 	return map[string]any{
 		"name":      projectName,
 		"namespace": namespaceName,

@@ -13,7 +13,7 @@ from langchain.tools.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from src.agent.tool_registry import TOOLS
-from src.template_manager import render
+from src.templates import render
 
 logger = logging.getLogger(__name__)
 
@@ -267,16 +267,21 @@ def _build_span_tree(spans: list[dict[str, Any]]) -> list[dict[str, Any]]:
             k: v for k, v in attrs.items() if k not in ("data_stream",)
         }
 
+        status = span.get("status") or {}
+
         result.append(
             {
                 "spanId": span["spanId"],
                 "spanName": span["spanName"],
+                "spanKind": span.get("spanKind"),
                 "serviceName": resource_attrs.get("service.name", "unknown"),
                 "component": resource_attrs.get("openchoreo.dev/component"),
                 "project": resource_attrs.get("openchoreo.dev/project"),
                 "namespace": resource_attrs.get("openchoreo.dev/namespace"),
                 "durationNs": span.get("durationNs", 0),
                 "startTime": span.get("startTime"),
+                "statusCode": status.get("code"),
+                "statusMessage": status.get("message"),
                 "depth": depth,
                 "attributes": relevant_attrs,
             }

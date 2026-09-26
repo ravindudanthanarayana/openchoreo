@@ -5,6 +5,7 @@ package tools
 
 import (
 	"context"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -28,13 +29,9 @@ const (
 // the client requested via the ?toolsets= query param.
 type requestedToolsetsCtxKey struct{}
 
-// filterByAuthzCtxKey is the context key used to carry the per-session
+// filterByAuthzCtxKey is the context key used to carry the per-request
 // filterByAuthz flag from the ?filterByAuthz= query param.
 type filterByAuthzCtxKey struct{}
-
-// includeDeprecatedToolsCtxKey is the context key used to carry the per-session
-// includeDeprecatedTools flag from the ?includeDeprecatedTools= query param.
-type includeDeprecatedToolsCtxKey struct{}
 
 // WithRequestedToolsets returns a copy of ctx that carries the set of toolsets
 // the client requested. Empty or nil set means "no narrowing" — the middleware
@@ -47,49 +44,26 @@ func WithRequestedToolsets(ctx context.Context, requested map[ToolsetType]bool) 
 }
 
 // RequestedToolsetsFromContext returns the set of toolsets the client requested
-// for this session, if any. The second return value reports whether the client
+// for this request, if any. The second return value reports whether the client
 // supplied any narrowing.
 func RequestedToolsetsFromContext(ctx context.Context) (map[ToolsetType]bool, bool) {
 	v, ok := ctx.Value(requestedToolsetsCtxKey{}).(map[ToolsetType]bool)
 	return v, ok && len(v) > 0
 }
 
-// WithFilterByAuthz returns a copy of ctx carrying the per-session decision of
+// WithFilterByAuthz returns a copy of ctx carrying the per-request decision of
 // whether to apply MCP-layer authz filtering. The default (no value in ctx) is
 // true.
 func WithFilterByAuthz(ctx context.Context, filter bool) context.Context {
 	return context.WithValue(ctx, filterByAuthzCtxKey{}, filter)
 }
 
-// FilterByAuthzFromContext returns the per-session filterByAuthz flag if the
+// FilterByAuthzFromContext returns the per-request filterByAuthz flag if the
 // client explicitly supplied one. The second return value reports whether a
 // value was set; callers should default to true when not set.
 func FilterByAuthzFromContext(ctx context.Context) (bool, bool) {
 	v, ok := ctx.Value(filterByAuthzCtxKey{}).(bool)
 	return v, ok
-}
-
-// WithIncludeDeprecatedTools returns a copy of ctx carrying the per-session
-// decision of whether tools/list should include deprecated compatibility-alias
-// tools. The default (no value in ctx) is false as of v1.2: deprecated aliases
-// are hidden from tools/list, though they remain callable and still return a
-// runtime deprecation warning. Clients that have not yet migrated can set this
-// to true to keep listing the aliases (each carrying a description-level
-// deprecation banner and a structured _meta marker) until they are removed in
-// v1.3.
-func WithIncludeDeprecatedTools(ctx context.Context, include bool) context.Context {
-	return context.WithValue(ctx, includeDeprecatedToolsCtxKey{}, include)
-}
-
-// IncludeDeprecatedToolsFromContext reports whether tools/list should include
-// the deprecated compatibility-alias tools for this session. Defaults to false
-// when the client did not set the flag.
-func IncludeDeprecatedToolsFromContext(ctx context.Context) bool {
-	v, ok := ctx.Value(includeDeprecatedToolsCtxKey{}).(bool)
-	if !ok {
-		return false
-	}
-	return v
 }
 
 // DefaultPageSize is the default number of items per page for MCP list operations.
@@ -122,6 +96,70 @@ type Toolsets struct {
 	ResourceToolset   ResourceToolsetHandler
 }
 
+// AllToolsetsHandler is satisfied by a single handler implementing every
+// toolset's interface. NewToolsets takes one so a caller that wants several
+// (or all) toolsets backed by the same handler value doesn't need its own
+// struct literal naming every field — see mcphandlers.MCPHandler, the only
+// production implementation, which backs every field in practice today.
+type AllToolsetsHandler interface {
+	NamespaceToolsetHandler
+	ProjectToolsetHandler
+	ComponentToolsetHandler
+	DeploymentToolsetHandler
+	BuildToolsetHandler
+	PEToolsetHandler
+	ResourceToolsetHandler
+}
+
+// AllToolsetTypes returns every known ToolsetType mapped to true. This is the
+// one place the full set is enumerated — callers that need "every toolset"
+// (constructing a from-scratch registry for documentation or coverage
+// tooling, e.g. tools/auditcoverage) should build off this rather than
+// re-listing the ToolsetType consts by hand, which is what let the coverage
+// tool and its test silently drift out of sync with each other and with
+// production's toolset switch before this existed.
+func AllToolsetTypes() map[ToolsetType]bool {
+	return map[ToolsetType]bool{
+		ToolsetNamespace:  true,
+		ToolsetProject:    true,
+		ToolsetComponent:  true,
+		ToolsetDeployment: true,
+		ToolsetBuild:      true,
+		ToolsetPE:         true,
+		ToolsetResource:   true,
+	}
+}
+
+// NewToolsets builds a Toolsets struct with handler backing every toolset
+// named true in enabled, leaving the rest nil (nil is exactly Register's
+// signal to skip a toolset — see register.go). Pass AllToolsetTypes() for
+// enabled to back every toolset with the same handler.
+func NewToolsets(handler AllToolsetsHandler, enabled map[ToolsetType]bool) *Toolsets {
+	t := &Toolsets{}
+	if enabled[ToolsetNamespace] {
+		t.NamespaceToolset = handler
+	}
+	if enabled[ToolsetProject] {
+		t.ProjectToolset = handler
+	}
+	if enabled[ToolsetComponent] {
+		t.ComponentToolset = handler
+	}
+	if enabled[ToolsetDeployment] {
+		t.DeploymentToolset = handler
+	}
+	if enabled[ToolsetBuild] {
+		t.BuildToolset = handler
+	}
+	if enabled[ToolsetPE] {
+		t.PEToolset = handler
+	}
+	if enabled[ToolsetResource] {
+		t.ResourceToolset = handler
+	}
+	return t
+}
+
 // PEToolsetHandler handles platform engineering operations on openchoreo
 type PEToolsetHandler interface {
 	// Environment operations
@@ -147,6 +185,16 @@ type PEToolsetHandler interface {
 		req *gen.CreateResourceReleaseJSONRequestBody,
 	) (any, error)
 	GetResourceRelease(ctx context.Context, namespaceName, releaseName string) (any, error)
+
+	// Project release operations (delete lives on the deployment toolset).
+	ListProjectReleases(
+		ctx context.Context, namespaceName, projectName string, opts ListOpts,
+	) (any, error)
+	CreateProjectRelease(
+		ctx context.Context, namespaceName string,
+		req *gen.CreateProjectReleaseJSONRequestBody,
+	) (any, error)
+	GetProjectRelease(ctx context.Context, namespaceName, releaseName string) (any, error)
 
 	// DeploymentPipeline operations
 	CreateDeploymentPipeline(ctx context.Context, namespaceName string,
@@ -255,12 +303,40 @@ type PEToolsetHandler interface {
 	) (any, error)
 	DeleteClusterResourceType(ctx context.Context, crtName string) (any, error)
 
+	// Project types (namespace-scoped) — read
+	ListProjectTypes(ctx context.Context, namespaceName string, opts ListOpts) (any, error)
+	GetProjectType(ctx context.Context, namespaceName, ptName string) (any, error)
+	GetProjectTypeSchema(ctx context.Context, namespaceName, ptName string) (any, error)
+
+	// Project types (namespace-scoped) — write
+	CreateProjectType(
+		ctx context.Context, namespaceName string, req *gen.CreateProjectTypeJSONRequestBody,
+	) (any, error)
+	UpdateProjectType(
+		ctx context.Context, namespaceName string, req *gen.UpdateProjectTypeJSONRequestBody,
+	) (any, error)
+	DeleteProjectType(ctx context.Context, namespaceName, ptName string) (any, error)
+
+	// Project types (cluster-scoped) — read
+	ListClusterProjectTypes(ctx context.Context, opts ListOpts) (any, error)
+	GetClusterProjectType(ctx context.Context, cptName string) (any, error)
+	GetClusterProjectTypeSchema(ctx context.Context, cptName string) (any, error)
+
+	// Project types (cluster-scoped) — write
+	CreateClusterProjectType(
+		ctx context.Context, req *gen.CreateClusterProjectTypeJSONRequestBody,
+	) (any, error)
+	UpdateClusterProjectType(
+		ctx context.Context, req *gen.UpdateClusterProjectTypeJSONRequestBody,
+	) (any, error)
+	DeleteClusterProjectType(ctx context.Context, cptName string) (any, error)
+
 	// Diagnostics
 	GetResourceTree(ctx context.Context, namespaceName, releaseBindingName string) (any, error)
 	GetResourceEvents(ctx context.Context, namespaceName, releaseBindingName,
 		group, version, kind, name string) (any, error)
 	GetResourceLogs(ctx context.Context, namespaceName, releaseBindingName,
-		podName string, sinceSeconds *int64) (any, error)
+		podName, container string, sinceSeconds *int64) (any, error)
 
 	// Authz roles (namespace-scoped)
 	ListAuthzRoles(ctx context.Context, namespaceName string, opts ListOpts) (any, error)
@@ -333,6 +409,16 @@ type ProjectToolsetHandler interface {
 	CreateProject(ctx context.Context, namespaceName string, req *gen.CreateProjectJSONRequestBody) (any, error)
 	UpdateProject(ctx context.Context, namespaceName, projectName string, req *gen.PatchProjectRequest) (any, error)
 	DeleteProject(ctx context.Context, namespaceName, projectName string) (any, error)
+
+	// Project types (read-only, namespace-scoped)
+	ListProjectTypes(ctx context.Context, namespaceName string, opts ListOpts) (any, error)
+	GetProjectType(ctx context.Context, namespaceName, ptName string) (any, error)
+	GetProjectTypeSchema(ctx context.Context, namespaceName, ptName string) (any, error)
+
+	// Project types (read-only, cluster-scoped)
+	ListClusterProjectTypes(ctx context.Context, opts ListOpts) (any, error)
+	GetClusterProjectType(ctx context.Context, cptName string) (any, error)
+	GetClusterProjectTypeSchema(ctx context.Context, cptName string) (any, error)
 }
 
 // ComponentToolsetHandler handles component definition and configuration operations
@@ -402,6 +488,9 @@ type DeploymentToolsetHandler interface {
 	// Resource release delete (dev-side cleanup; mirrors DeleteComponentRelease).
 	DeleteResourceRelease(ctx context.Context, namespaceName, resourceReleaseName string) (any, error)
 
+	// Project release delete (dev-side cleanup; mirrors DeleteResourceRelease).
+	DeleteProjectRelease(ctx context.Context, namespaceName, projectReleaseName string) (any, error)
+
 	// Resource release binding operations
 	ListResourceReleaseBindings(
 		ctx context.Context, namespaceName, resourceName string, opts ListOpts,
@@ -416,6 +505,21 @@ type DeploymentToolsetHandler interface {
 		req *gen.UpdateResourceReleaseBindingJSONRequestBody,
 	) (any, error)
 	DeleteResourceReleaseBinding(ctx context.Context, namespaceName, bindingName string) (any, error)
+
+	// Project release binding operations
+	ListProjectReleaseBindings(
+		ctx context.Context, namespaceName, projectName string, opts ListOpts,
+	) (any, error)
+	GetProjectReleaseBinding(ctx context.Context, namespaceName, bindingName string) (any, error)
+	CreateProjectReleaseBinding(
+		ctx context.Context, namespaceName string,
+		req *gen.CreateProjectReleaseBindingJSONRequestBody,
+	) (any, error)
+	UpdateProjectReleaseBinding(
+		ctx context.Context, namespaceName string,
+		req *gen.UpdateProjectReleaseBindingJSONRequestBody,
+	) (any, error)
+	DeleteProjectReleaseBinding(ctx context.Context, namespaceName, bindingName string) (any, error)
 }
 
 // BuildToolsetHandler handles workflow and CI/CD operations
@@ -511,6 +615,23 @@ func (p ToolPermission) Actions() []string {
 		return nil
 	}
 	return []string{p.Action}
+}
+
+// IsReadOnly reports whether every action this permission may require is a
+// "view" verb, meaning the tool needs no audit binding or exemption. A tool
+// with no actions at all is conservatively treated as not read-only, since
+// there is nothing here confirming it's safe to skip.
+func (p ToolPermission) IsReadOnly() bool {
+	actions := p.Actions()
+	if len(actions) == 0 {
+		return false
+	}
+	for _, a := range actions {
+		if !strings.HasSuffix(a, ":view") {
+			return false
+		}
+	}
+	return true
 }
 
 // ActionForScope returns the authz action required for the given scope value. For

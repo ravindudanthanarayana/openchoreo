@@ -30,8 +30,8 @@ const (
 	obsAdminClientID     = "service_mcp_client"
 	obsAdminClientSecret = "service_mcp_client_secret" //nolint:gosec
 
-	// Subject identity (mcp-e2e-subject-client) is seeded unbound by the Thunder
-	// bootstrap (install/k3d/common/values-thunder.yaml `61-mcp-e2e-subject-app.sh`)
+	// Subject identity (mcp-e2e-subject-client) is seeded unbound by the ThunderID
+	// bootstrap (install/k3d/common/values-thunder.yaml `61-mcp-e2e-subject-app.yaml`)
 	// and uses client_secret_post. It is the same permission-less subject the
 	// control-plane MCP suite owns; the observer's PDP is the same CP authz API,
 	// so grants/denials on it are controlled by ClusterAuthzRole(Binding) CRs on
@@ -44,12 +44,13 @@ const (
 	obsMCPAuthzLabelKey = "e2e-obsmcp/run"
 )
 
-// allObserverTools is the exact set of 11 tools the observer MCP server
+// allObserverTools is the exact set of 17 tools the observer MCP server
 // registers (internal/observer/mcp/server.go). Pinned here so O3 catches an
 // accidental add/remove.
 var allObserverTools = []string{
 	"query_component_logs",
 	"query_workflow_logs",
+	"query_platform_logs",
 	"query_component_events",
 	"query_workflow_events",
 	"query_resource_metrics",
@@ -59,6 +60,11 @@ var allObserverTools = []string{
 	"get_span_details",
 	"query_alerts",
 	"query_incidents",
+	"query_costs",
+	"query_recommendations",
+	"query_audit_logs",
+	"query_dora_metrics",
+	"query_dora_deployments",
 }
 
 var _ = Describe("Observer MCP", Ordered, Label("tier3"), func() {
@@ -165,15 +171,15 @@ var _ = Describe("Observer MCP", Ordered, Label("tier3"), func() {
 		Expect(names).NotTo(BeEmpty(), "observer tool list should not be empty")
 	})
 
-	It("O3: all 11 observer tools are registered/visible (no visibility filter)", func() {
-		// O3: all 11 observer tools must be registered/visible; observer has NO visibility filter,
-		// so an unbound subject still sees all 11 (unlike the control-plane MCP). Pins the live registered
+	It("O3: all 17 observer tools are registered/visible (no visibility filter)", func() {
+		// O3: all 17 observer tools must be registered/visible; observer has NO visibility filter,
+		// so an unbound subject still sees all 17 (unlike the control-plane MCP). Pins the live registered
 		// inventory and the no-filter behavior end to end.
 		//
-		// Toolset narrowing / filterByAuthz / deprecated-tool specs are N/A here:
-		// the observer's NewHTTPServer (internal/observer/mcp/server.go:15-26)
-		// registers no filter middleware, so there is no per-tool authz visibility
-		// filter and the unbound subject sees the same 11 tools (pinned in O6).
+		// Toolset narrowing / filterByAuthz specs are N/A here: the observer's
+		// NewHTTPServer registers no tool-filter middleware — only audit — so there
+		// is no per-tool authz visibility filter and the unbound subject sees the
+		// same 17 tools (pinned in O6).
 		adminNames, err := framework.ListMCPToolNames(adminSession)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(adminNames).To(ConsistOf(allObserverTools),
@@ -188,38 +194,40 @@ var _ = Describe("Observer MCP", Ordered, Label("tier3"), func() {
 	// O4 — tool chain: exactly one tool per distinct signal/service path
 	// (logs / metrics / events / traces).
 	//
-	// Selection rationale (4 of the 11 tools, not 7):
+	// Selection rationale (4 of the 17 tools):
 	//
-	// The 11 observer MCP tools share one integration path — jwt → MCP handler → authz-wrapped
-	// service → CP PDP → JSON-marshalled `TextContent` (internal/observer/mcp/server.go:29-42).
+	// The 17 observer MCP tools share one integration path — jwt → MCP handler → authz-wrapped
+	// service → CP PDP (only for the tools that carry an authz check; get_span_details passes
+	// through, see traces_authz.go:67-70) → JSON-marshalled `TextContent`
+	// (internal/observer/mcp/server.go:29-42).
 	// What actually differs per tool, and therefore needs a *live cluster* to verify, is the
 	// distinct signal/service path each tool drives — its own service + adapter + authz wrapper,
 	// and (for most) a distinct external dependency:
-	//   - logs   → logs service → OpenSearch
+	//   - logs   → logs service → OpenObserve
 	//   - metrics → metrics service → Prometheus
 	//   - events → events service + `events_adapter.go` (forwards to the logs adapter →
-	//     OpenSearch); NOT a separate backend, but a separate service/adapter AND the only observer
+	//     OpenObserve); NOT a separate backend, but a separate service/adapter AND the only observer
 	//     authz wrapper with zero unit coverage (`events_authz.go`, see O5b) — so it earns an e2e
-	//   - traces → traces service → tracing receiver (make/e2e.mk:984-993)
+	//   - traces → traces service → tracing receiver (make/e2e.mk:1043-1050)
 	// e2e earns its (expensive, ingestion-lag-prone, CPU-starved tier3) keep by exercising one
 	// representative tool per signal/service path — query_component_logs, query_resource_metrics,
 	// query_component_events, query_traces — which proves the wiring to each external system end
-	// to end. The remaining 7 tools add no new signal path: they are the same service behind a
+	// to end. The remaining 13 tools add no new signal path: they are the same service behind a
 	// different query (query_workflow_logs/query_http_metrics/query_workflow_events/
 	// query_incidents), a follow-up read off a trace_id (query_trace_spans, get_span_details),
 	// or owned by another suite's fixtures (query_alerts/query_incidents ← alerts suite). Their
 	// per-tool logic (arg validation, validateComponentScope, query construction, response
-	// decoding, defaults) is pure and is covered by unit/integration tests. Testing all 7 here
-	// would re-prove the same integration path 7× at full e2e cost for zero new signal-path coverage.
+	// decoding, defaults) is pure and is covered by unit/integration tests. Testing all 13 here
+	// would re-prove the same integration path 9× at full e2e cost for zero new signal-path coverage.
 	//
-	// (O3 already asserts all 11 tools are registered/visible; O4 deliberately exercises only the
+	// (O3 already asserts all 17 tools are registered/visible; O4 deliberately exercises only the
 	// 4 backend-representatives. Distinguishing "listed" from "exercised" is intentional.)
 	//
 	// Tools deliberately NOT exercised in e2e, and where their coverage lives instead:
 	//
 	//   | Cut tool            | Why no e2e                                                       | Coverage home                          |
 	//   |---------------------|-----------------------------------------------------------------|----------------------------------------|
-	//   | query_workflow_logs | same OpenSearch backend as query_component_logs, different query;| unit/integration: logs adapter +       |
+	//   | query_workflow_logs | same OpenObserve backend as query_component_logs, different query;| unit/integration: logs adapter +      |
 	//   |                     | no WorkflowRun fixture here (build suite owns it)               | query builder                          |
 	//   | query_workflow_events| same events service path as query_component_events; no WorkflowRun| unit/integration: events adapter      |
 	//   | query_http_metrics  | same Prometheus backend as query_resource_metrics; no envoy/    | unit/integration: metrics adapter      |
@@ -231,11 +239,20 @@ var _ = Describe("Observer MCP", Ordered, Label("tier3"), func() {
 	//   |                     | (traces_authz.go:67-71), already unit-tested                   | NOT add e2e or claim an authz gap.     |
 	//   | query_alerts,       | alert/incident firing is owned by the alerts suite's fixtures;  | alerts suite (firing) +                |
 	//   | query_incidents     | same authz/PDP path as O5/O6 proves the wiring                 | unit/integration (query/decode)        |
+	//   | query_costs,        | finops service derives both from the SAME Prometheus backend as | unit/integration: finops service +     |
+	//   | query_recommendations| query_resource_metrics; needs hours of usage history no e2e has | scope/granularity validation           |
+	//   | query_audit_logs    | reads the audit trail, which no e2e fixture produces on a known  | unit: filter mapping + validation      |
+	//   |                     | schedule; same audit-logs service as the REST query path, which  | (mcp/auditlogs_test.go); audit wiring  |
+	//   |                     | has no e2e either                                                | (TestMCPAuditWiring)                   |
+	//   | query_platform_logs  | same logs service as query_component_logs with platform scope;    | unit/integration: logs service +        |
+	//   |                      | needs platform-level log sources no e2e fixture produces          | mcp/platformlogs_test.go                |
+	//   | query_dora_metrics,  | delivery insights derives both from deployment history, not       | unit/integration: delivery insights     |
+	//   | query_dora_deployments| a schedule e2e can reproduce (needs hours of usage)               | service + handler tests                 |
 
-	It("O4a: query_component_logs returns the greeter's logs (logs → OpenSearch)", func() {
-		// O4a: query_component_logs must return the greeter's logs. Verifies the logs -> OpenSearch
+	It("O4a: query_component_logs returns the greeter's logs (logs → OpenObserve)", func() {
+		// O4a: query_component_logs must return the greeter's logs. Verifies the logs -> OpenObserve
 		// signal path end to end. Genuinely needs e2e: real log ingestion (pod stdout -> adapter ->
-		// OpenSearch -> query) is the actual value here and can't be reproduced at integration level.
+		// OpenObserve -> query) is the actual value here and can't be reproduced at integration level.
 		Eventually(func(g Gomega) {
 			start, end := observerTimeWindow()
 			var out struct {
@@ -280,7 +297,7 @@ var _ = Describe("Observer MCP", Ordered, Label("tier3"), func() {
 
 	It("O4c: query_component_events succeeds + decodes (events service + events_adapter.go)", func() {
 		// O4c: query_component_events must succeed and decode — this exercises the events service +
-		// events_adapter.go path (distinct service code, though it reuses the logs/OpenSearch backend).
+		// events_adapter.go path (distinct service code, though it reuses the logs/OpenObserve backend).
 		// Assert succeeds+decodes, NOT non-empty events: greeter events come from deployment-time
 		// activity (pod scheduling/image pull), not the traffic burst, and may not be queryable within
 		// the e2e window. Keeping it non-fatal also avoids blocking the later specs in this Ordered
@@ -367,9 +384,9 @@ var _ = Describe("Observer MCP", Ordered, Label("tier3"), func() {
 		}, "insufficient permissions to perform this action")
 	})
 
-	It("O6: grant developer role → query succeeds → revoke → denied (and tool count stays 11)", func() {
+	It("O6: grant developer role → query succeeds → revoke → denied (and tool count stays 14)", func() {
 		// O6: grant developer role -> query succeeds -> revoke -> denied (allow-after-grant +
-		// revocation propagation) on the observer path. Also pins tool count stays 11 before/after grant
+		// revocation propagation) on the observer path. Also pins tool count stays 14 before/after grant
 		// (no visibility filtering). The PDP decision is unit-tested in pdp_test.go; e2e adds real binding
 		// propagation across the OP and CP clusters over the live authz-API call.
 		bindingName := "e2e-obsmcp-dev-" + obsRunID

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,6 +198,42 @@ func TestLoader_Raw(t *testing.T) {
 	}
 }
 
+func TestLoader_RawAt(t *testing.T) {
+	configPath := filepath.Join("testdata", "resource_tree_config.yaml")
+
+	loader := NewLoader("OC_TEST")
+	if err := loader.LoadWithDefaults(testDefaults(), configPath); err != nil {
+		t.Fatalf("LoadWithDefaults failed: %v", err)
+	}
+
+	section, ok := loader.RawAt("resource_tree").(map[string]any)
+	if !ok {
+		t.Fatalf("expected resource_tree to be a map, got: %v", loader.RawAt("resource_tree"))
+	}
+	rules, ok := section["rules"].([]any)
+	if !ok {
+		t.Fatalf("expected resource_tree.rules to be a list, got: %v", section["rules"])
+	}
+	if len(rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(rules))
+	}
+	rule, ok := rules[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected the rule to be a map, got: %v", rules[0])
+	}
+	root, ok := rule["root"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected the rule root to be a map, got: %v", rule["root"])
+	}
+	if root["kind"] != "Deployment" {
+		t.Errorf("expected root kind Deployment, got %v", root["kind"])
+	}
+
+	if got := loader.RawAt("does_not_exist"); got != nil {
+		t.Errorf("expected nil for an absent key, got %v", got)
+	}
+}
+
 func TestLoader_FlagsOverrideEnvVars(t *testing.T) {
 	configPath := filepath.Join("testdata", "test_config.yaml")
 
@@ -304,5 +341,49 @@ func TestLoader_UnmarshalAndValidate_Fails(t *testing.T) {
 	err := loader.UnmarshalAndValidate("", &cfg)
 	if err == nil {
 		t.Fatal("expected validation error")
+	}
+}
+
+func TestLoader_UnmarshalStrict_Succeeds(t *testing.T) {
+	loader := NewLoader("OC_TEST")
+	if err := loader.LoadWithDefaults(testDefaults(), ""); err != nil {
+		t.Fatalf("LoadWithDefaults failed: %v", err)
+	}
+
+	var cfg testConfig
+	if err := loader.UnmarshalStrict("", &cfg); err != nil {
+		t.Fatalf("UnmarshalStrict failed on an all-recognized-keys config: %v", err)
+	}
+	if cfg.Server.Port != 8080 {
+		t.Errorf("expected port 8080, got %d", cfg.Server.Port)
+	}
+}
+
+// TestLoader_UnmarshalStrict_RejectsUnknownKey guards the reason
+// UnmarshalStrict exists: a key with no matching struct field must fail
+// loudly instead of being silently dropped by the lenient Unmarshal.
+func TestLoader_UnmarshalStrict_RejectsUnknownKey(t *testing.T) {
+	loader := NewLoader("OC_TEST")
+	if err := loader.LoadWithDefaults(testDefaults(), ""); err != nil {
+		t.Fatalf("LoadWithDefaults failed: %v", err)
+	}
+	if err := loader.Set("server.bogus_key", "x"); err != nil {
+		t.Fatalf("loader.Set failed: %v", err)
+	}
+
+	var cfg testConfig
+	err := loader.UnmarshalStrict("", &cfg)
+	if err == nil {
+		t.Fatal("expected UnmarshalStrict to reject the unrecognized key, got nil error")
+	}
+	if !strings.Contains(err.Error(), "bogus_key") {
+		t.Errorf("error = %q, want it to name the unrecognized key bogus_key", err.Error())
+	}
+
+	// The lenient Unmarshal must still succeed on the exact same data —
+	// UnmarshalStrict's rejection is opt-in per call, not a global mode.
+	var lenientCfg testConfig
+	if err := loader.Unmarshal("", &lenientCfg); err != nil {
+		t.Errorf("Unmarshal (non-strict) unexpectedly failed on the same data: %v", err)
 	}
 }

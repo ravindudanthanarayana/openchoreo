@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/go-viper/mapstructure/v2"
 	koanfyaml "github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/providers/file"
@@ -98,6 +99,22 @@ func (l *Loader) Unmarshal(path string, out any) error {
 	return l.k.Unmarshal(path, out)
 }
 
+// UnmarshalStrict is like Unmarshal but rejects unrecognized keys instead of
+// silently dropping them. Use it for config sections where a typo changes
+// behavior rather than just leaving a field at its zero value.
+//
+// Does not carry koanf's default decode hooks (duration parsing,
+// TextUnmarshaler support) — they're unexported in koanf and can't be
+// replicated here — so a section decoded this way must not rely on either.
+func (l *Loader) UnmarshalStrict(path string, out any) error {
+	return l.k.UnmarshalWithConf(path, out, koanf.UnmarshalConf{
+		DecoderConfig: &mapstructure.DecoderConfig{
+			WeaklyTypedInput: true,
+			ErrorUnused:      true,
+		},
+	})
+}
+
 // UnmarshalAndValidate unmarshals the configuration and validates it.
 // If out implements Validator, Validate() is called after unmarshaling.
 func (l *Loader) UnmarshalAndValidate(path string, out any) error {
@@ -118,6 +135,13 @@ func (l *Loader) Set(key string, value any) error {
 // Raw returns all loaded configuration as a nested map.
 func (l *Loader) Raw() map[string]any {
 	return l.k.Raw()
+}
+
+// RawAt returns the loaded configuration under key as a nested value, or nil if
+// the key is not set. Use it to inspect a section before it is unmarshaled, for
+// example to reject unknown keys that unmarshaling would silently drop.
+func (l *Loader) RawAt(key string) any {
+	return l.k.Get(key)
 }
 
 // DumpYAML writes the loaded configuration as YAML to the provided writer.

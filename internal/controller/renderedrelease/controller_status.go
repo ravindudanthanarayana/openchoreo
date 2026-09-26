@@ -25,19 +25,16 @@ import (
 
 // updateStatus updates the Release status with applied resources
 // Returns true if the status was updated, false if unchanged
-func (r *Reconciler) updateStatus(ctx context.Context, old, release *openchoreov1alpha1.RenderedRelease, appliedResources, liveResources []*unstructured.Unstructured) (bool, error) {
+func (r *Reconciler) updateStatus(ctx context.Context, old, release *openchoreov1alpha1.RenderedRelease, resourceStatuses []openchoreov1alpha1.RenderedManifestStatus) (bool, error) {
 	logger := log.FromContext(ctx)
-
-	// Build resource status from applied and live resources
-	resourceStatuses := r.buildResourceStatus(ctx, old, appliedResources, liveResources)
 
 	// Update the status
 	release.Status.Resources = resourceStatuses
 
-	// Sync conditions in old to match release before comparison, because conditions
-	// (e.g., ResourcesApplied) were already persisted earlier in the reconcile loop.
-	// Without this, DeepEqual sees a false diff and triggers a redundant status update.
-	old.Status.Conditions = release.Status.Conditions
+	// Conditions are deliberately part of the comparison. The apply-success
+	// condition is no longer persisted mid-reconcile, so this update is what
+	// publishes it -- masking it here would drop it whenever the resource
+	// statuses happened not to change.
 
 	// Check if the entire status actually changed and skip update if not
 	if apiequality.Semantic.DeepEqual(old.Status, release.Status) {
@@ -117,6 +114,18 @@ func (r *Reconciler) buildResourceStatus(ctx context.Context, old *openchoreov1a
 				healthStatus = openchoreov1alpha1.HealthStatusUnknown
 			}
 
+			// The live snapshot can predate the apply this reconcile just made:
+			// server-side apply is a quorum write, while List is served from the
+			// API server's watch cache, which can lag it. Judging that snapshot
+			// reports the previous revision's health under the current generation
+			// -- for a Deployment mid-rollout, Healthy for a revision whose new
+			// ReplicaSet does not exist yet. The apply response carries the
+			// server's generation for the spec that was written, so a live object
+			// behind it has not been observed yet.
+			if snapshotPrecedesApply(desiredObj, liveResource) {
+				healthStatus = openchoreov1alpha1.HealthStatusProgressing
+			}
+
 			// Check if this resource existed before and if its status changed
 			if oldResource, exists := oldResourceMap[resourceID]; exists {
 				// Check if the resource status has actually changed
@@ -152,6 +161,19 @@ func (r *Reconciler) buildResourceStatus(ctx context.Context, old *openchoreov1a
 	return resourceStatuses
 }
 
+// snapshotPrecedesApply reports whether live was read before the spec that
+// applied wrote became visible.
+//
+// applied is the object handed to server-side apply, which controller-runtime
+// replaces with the server's response, so its generation is the one the write
+// produced. Generation is absent for kinds that do not track it (ConfigMap,
+// Secret, HTTPRoute status aside), which reads as zero on both sides and so
+// never trips this.
+func snapshotPrecedesApply(applied, live *unstructured.Unstructured) bool {
+	appliedGen, liveGen := applied.GetGeneration(), live.GetGeneration()
+	return appliedGen > 0 && liveGen > 0 && liveGen < appliedGen
+}
+
 // hasTransitioningResources checks if any resources are in a transitioning state
 func (r *Reconciler) hasTransitioningResources(resources []openchoreov1alpha1.RenderedManifestStatus) bool {
 	for _, resource := range resources {
@@ -168,19 +190,70 @@ func (r *Reconciler) hasTransitioningResources(resources []openchoreov1alpha1.Re
 	return false
 }
 
+// hasResurrectableWorkload reports whether any managed Deployment or StatefulSet is scaled to
+// zero without being paused, so an autoscaler (HPA/KEDA scale-from-zero) could bring it back
+// up at any time. Replicas are read from the live object, not the rendered spec: the control
+// plane strips spec.replicas from autoscaled workloads, so only the live object reflects what
+// the autoscaler set. Live items carry no GVK, so workloads are matched by the desired GVK and
+// paired to the live object by resource ID.
+func hasResurrectableWorkload(desiredResources, liveResources []*unstructured.Unstructured) bool {
+	liveByID := make(map[string]*unstructured.Unstructured, len(liveResources))
+	for _, live := range liveResources {
+		if id := live.GetLabels()[labels.LabelKeyRenderedReleaseResourceID]; id != "" {
+			liveByID[id] = live
+		}
+	}
+
+	for _, desired := range desiredResources {
+		gvk := desired.GroupVersionKind()
+		if gvk.Group != appsAPIGroup || (gvk.Kind != deploymentKind && gvk.Kind != statefulSetKind) {
+			continue
+		}
+		live, ok := liveByID[desired.GetLabels()[labels.LabelKeyRenderedReleaseResourceID]]
+		if !ok {
+			continue
+		}
+		if paused, _, _ := unstructured.NestedBool(live.Object, "spec", "paused"); paused {
+			continue
+		}
+		if replicas, found, err := unstructured.NestedInt64(live.Object, "spec", "replicas"); err == nil && found && replicas == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func GetHealthCheckFunc(gvk schema.GroupVersionKind) func(obj *unstructured.Unstructured) (openchoreov1alpha1.HealthStatus, error) {
-	switch {
-	case gvk.Group == "apps" && gvk.Kind == "Deployment":
-		return getDeploymentHealth
-	case gvk.Group == "apps" && gvk.Kind == "StatefulSet":
-		return getStatefulSetHealth
-	case gvk.Group == "" && gvk.Kind == "Pod":
-		return getPodHealth
-	case gvk.Group == "batch" && gvk.Kind == "CronJob":
-		return getCronJobHealth
-		// TODO: Add gateway http route health check, and other resources as needed
+	if check, ok := kindHealthCheckFunc(gvk); ok {
+		return check
 	}
 	return getUnknownResourceHealth
+}
+
+// HasKindHealthCheck reports whether gvk has a calculator that reads the
+// object's spec and status, as opposed to the presence-only fallback every other
+// kind gets. Callers holding a partial object need the difference: a
+// presence-only answer stays true of a projection that kept only metadata, while
+// a spec/status calculator reading one is answering about fields that are not
+// there.
+func HasKindHealthCheck(gvk schema.GroupVersionKind) bool {
+	_, ok := kindHealthCheckFunc(gvk)
+	return ok
+}
+
+func kindHealthCheckFunc(gvk schema.GroupVersionKind) (func(obj *unstructured.Unstructured) (openchoreov1alpha1.HealthStatus, error), bool) {
+	switch {
+	case gvk.Group == appsAPIGroup && gvk.Kind == deploymentKind:
+		return getDeploymentHealth, true
+	case gvk.Group == appsAPIGroup && gvk.Kind == statefulSetKind:
+		return getStatefulSetHealth, true
+	case gvk.Group == "" && gvk.Kind == "Pod":
+		return getPodHealth, true
+	case gvk.Group == batchAPIGroup && gvk.Kind == cronJobKind:
+		return getCronJobHealth, true
+		// TODO: Add gateway http route health check, and other resources as needed
+	}
+	return nil, false
 }
 
 func getDeploymentHealth(obj *unstructured.Unstructured) (openchoreov1alpha1.HealthStatus, error) {
@@ -217,7 +290,7 @@ func getDeploymentHealth(obj *unstructured.Unstructured) (openchoreov1alpha1.Hea
 	availableCond, progressingCond, replicaFailCond := extractDeploymentConditions(deployment.Status.Conditions)
 
 	// Progress deadline or replica failure -> Degraded
-	if progressingCond != nil && progressingCond.Reason == "ProgressDeadlineExceeded" {
+	if progressingCond != nil && progressingCond.Reason == reasonProgressDeadlineExceeded {
 		return openchoreov1alpha1.HealthStatusDegraded, nil
 	}
 	if replicaFailCond != nil && replicaFailCond.Status == corev1.ConditionTrue {

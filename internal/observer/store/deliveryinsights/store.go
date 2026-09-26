@@ -1,0 +1,257 @@
+// Copyright 2026 The OpenChoreo Authors
+// SPDX-License-Identifier: Apache-2.0
+
+// Package deliveryinsights persists normalized delivery facts and pre-computed DORA metric
+// rollups for the Delivery Insights feature. Facts are derived from data-plane delivery
+// events and incident data by the DORA aggregator and survive beyond the raw-event
+// retention window; rollups serve the Insights read API.
+package deliveryinsights
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+)
+
+const (
+	BackendSQLite     = "sqlite"
+	BackendPostgreSQL = "postgresql"
+)
+
+// Deployment outcome values.
+const (
+	OutcomeInProgress = "in_progress"
+	OutcomeSuccess    = "success"
+	OutcomeFailed     = "failed"
+)
+
+// Failure attribution values.
+const (
+	FailedByRollout  = "rollout"
+	FailedByIncident = "incident"
+)
+
+// Recovery fact sources.
+const (
+	RecoverySourceIncident = "incident"
+	RecoverySourceHealth   = "health"
+)
+
+// Rollup scope types.
+const (
+	ScopeTypeNamespace = "namespace"
+	ScopeTypeProject   = "project"
+	ScopeTypeComponent = "component"
+)
+
+// Rollup granularities.
+const (
+	GranularityDaily   = "daily"
+	GranularityWeekly  = "weekly"
+	GranularityMonthly = "monthly"
+)
+
+// DeploymentFact is one normalized deployment: the unit DORA metrics are computed from.
+// Exactly one row exists per rendered-release UID; retries and reconcile churn collapse
+// into it via upsert. All timestamps are epoch milliseconds (UTC); nil means unknown.
+type DeploymentFact struct {
+	ReleaseUID       string
+	Namespace        string
+	ProjectUID       string
+	ComponentUID     string
+	EnvironmentUID   string
+	ProjectName      string
+	ComponentName    string
+	EnvironmentName  string
+	ComponentRelease string
+	CommitSHA        string
+	CommitAuthoredMs *int64
+	StartedMs        *int64
+	ReadyMs          *int64
+	Outcome          string
+	FailedBy         string
+	FailureReason    string
+	IncidentID       string
+	LeadTimeMs       *int64
+	UpdatedAtMs      int64
+}
+
+// OccurredMs is the best-known moment the deployment happened: ready time for successful
+// rollouts, start time for rollouts that never became ready, last update as a fallback.
+func (f *DeploymentFact) OccurredMs() int64 {
+	if f.ReadyMs != nil {
+		return *f.ReadyMs
+	}
+	if f.StartedMs != nil {
+		return *f.StartedMs
+	}
+	return f.UpdatedAtMs
+}
+
+// RecoveryFact is one failure→recovery episode, sourced from an incident lifecycle or
+// from workload health transitions. RecoveredMs/DurationMs are nil while still failing.
+type RecoveryFact struct {
+	ID               string
+	Namespace        string
+	ProjectUID       string
+	ComponentUID     string
+	EnvironmentUID   string
+	ReleaseUID       string
+	IncidentID       string
+	Severity         string
+	Source           string
+	FailureStartedMs int64
+	RecoveredMs      *int64
+	DurationMs       *int64
+	UpdatedAtMs      int64
+}
+
+// MetricRollup is one pre-computed metrics bucket for a scope. EnvironmentUID slices the
+// scope per environment; empty string is the all-environments rollup. Count metrics
+// (deployments, failures) are authoritative here; distribution metrics (lead time, MTTR)
+// are cached snapshots — exact-window percentiles are recomputed from facts at read time.
+type MetricRollup struct {
+	ScopeType      string
+	ScopeUID       string
+	EnvironmentUID string
+	Namespace      string
+	ProjectUID     string
+	Granularity    string
+	BucketStartMs  int64
+	DeployTotal    int
+	DeploySuccess  int
+	DeployFailed   int
+	LeadTimeP50Ms  *int64
+	LeadTimeP75Ms  *int64
+	LeadTimeP95Ms  *int64
+	MTTRMeanMs     *int64
+	MTTRP50Ms      *int64
+	RecoveryCount  int
+	ComputedAtMs   int64
+}
+
+// RollupQuery selects rollup rows for one scope, granularity, and time range.
+// StartMs is inclusive and EndMs exclusive, both against bucket_start_ms.
+type RollupQuery struct {
+	ScopeType      string
+	ScopeUID       string
+	EnvironmentUID string
+	Granularity    string
+	StartMs        int64
+	EndMs          int64
+	// Namespace and ProjectUID place the scope. They are filtered on rather than
+	// taken on trust: the scope UID alone would return a component's rollups to a
+	// caller who named a project the component is not in, which is the shape a
+	// project-scoped grant authorizes.
+	Namespace  string
+	ProjectUID string
+}
+
+// FactQuery filters fact rows by scope and time range. Empty scope fields are not
+// filtered on; StartMs is inclusive and EndMs exclusive. Time filtering applies to the
+// deployment moment for deployment facts and to failure start for recovery facts.
+type FactQuery struct {
+	Namespace      string
+	ProjectUID     string
+	ComponentUID   string
+	EnvironmentUID string
+	StartMs        int64
+	EndMs          int64
+	// Limit caps a paged fact read (normalized through normalizeLimit) and is what
+	// the drill-down list wants: a page of rows, newest or oldest first.
+	//
+	// It must not be used for a read that feeds a statistic over the whole window.
+	// The reads are ordered, so a cap keeps one end of the distribution and drops
+	// the other -- percentiles, means and rollup counts computed from it are biased,
+	// not merely based on fewer rows, while CountDeployments stays exact. Set AllRows
+	// instead.
+	Limit int
+	// AllRows reads every matching row, paging internally, and ignores Limit. Callers
+	// computing a statistic over the window use it so there is no cap to bias.
+	AllRows   bool
+	SortOrder string
+}
+
+// DeploymentCounts are deployment tallies over an exact window, matching the
+// semantics BuildRollups uses per bucket: in-progress deployments are excluded,
+// and anything finished that did not succeed counts as failed.
+type DeploymentCounts struct {
+	Total   int
+	Success int
+	Failed  int
+}
+
+// AttributionResult reports the deployment an incident was matched against.
+type AttributionResult struct {
+	// ReleaseUID of the deployment live when the incident triggered; empty when no
+	// deployment matched within the attribution window.
+	ReleaseUID string
+	// OccurredMs is that deployment's moment — the rollup bucket it lives in.
+	OccurredMs int64
+	// Attributed is true when this call marked the fact failed-by-incident. False
+	// when there was no match or the fact already carried a failure attribution.
+	Attributed bool
+}
+
+// ErrLeaseNotHeld reports a write refused because this replica no longer holds the
+// aggregation lease. It is not a failure of the write itself: another replica has
+// taken over and is responsible for the work, so the caller should abandon its tick
+// rather than retry.
+var ErrLeaseNotHeld = errors.New("delivery insights aggregation lease not held")
+
+// Store persists delivery facts and metric rollups behind a pluggable SQL backend.
+type Store interface {
+	Initialize(ctx context.Context) error
+	UpsertDeploymentFacts(ctx context.Context, facts []DeploymentFact) error
+	UpsertRecoveryFacts(ctx context.Context, facts []RecoveryFact) error
+	UpsertRollups(ctx context.Context, rollups []MetricRollup) error
+	// AttributeIncident marks the deployment live in (componentUID, environmentUID)
+	// at triggeredMs as failed-by-incident, if one deployed within windowMs before
+	// the trigger and no failure is attributed to it yet (rollout failures win).
+	AttributeIncident(
+		ctx context.Context, componentUID, environmentUID, incidentID string,
+		triggeredMs, windowMs int64) (AttributionResult, error)
+	QueryRollups(ctx context.Context, q RollupQuery) ([]MetricRollup, error)
+	// CountDeployments tallies deployments in exactly [StartMs, EndMs). Summary
+	// metrics use this rather than summing rollup buckets, which would include
+	// whichever part of the edge buckets falls outside the window.
+	CountDeployments(ctx context.Context, q FactQuery) (DeploymentCounts, error)
+	QueryDeploymentFacts(ctx context.Context, q FactQuery) ([]DeploymentFact, int, error)
+	QueryRecoveryFacts(ctx context.Context, q FactQuery) ([]RecoveryFact, error)
+	QueryLeadTimes(ctx context.Context, q FactQuery) ([]int64, error)
+	QueryRecoveryDurations(ctx context.Context, q FactQuery) ([]int64, error)
+	Watermark(ctx context.Context, source string) (int64, error)
+	// SetWatermark advances a watermark, but only while leaseHolder still holds
+	// leaseName, returning ErrLeaseNotHeld if it does not. Writing a watermark is
+	// the one thing a replica that has lost the lease must not still be doing, and
+	// lease renewal alone cannot guarantee that. An empty leaseName writes
+	// unconditionally and is for tests and maintenance, not the aggregation loop.
+	SetWatermark(ctx context.Context, source string, watermarkMs int64, leaseName, leaseHolder string) error
+	// AcquireLease takes or renews the named lease for holder for a further ttlMs,
+	// reporting whether it is held. Renewal by the current holder always succeeds;
+	// a lease held by anyone else is only taken once it has expired. Expiry is
+	// measured on the database clock, so no replica's wall clock can shorten or
+	// extend another's lease.
+	AcquireLease(ctx context.Context, name, holder string, ttlMs int64) (bool, error)
+	// ReleaseLease drops the named lease if holder still owns it.
+	ReleaseLease(ctx context.Context, name, holder string) error
+	Close() error
+}
+
+// New creates a delivery insights store for the configured backend.
+func New(backend, dsn string, logger *slog.Logger) (Store, error) {
+	selected := strings.ToLower(strings.TrimSpace(backend))
+	if selected == "" {
+		selected = BackendSQLite
+	}
+
+	switch selected {
+	case BackendSQLite, BackendPostgreSQL:
+		return newSQLStore(selected, dsn, logger)
+	default:
+		return nil, fmt.Errorf("unsupported delivery insights store backend %q: use %q or %q",
+			selected, BackendSQLite, BackendPostgreSQL)
+	}
+}

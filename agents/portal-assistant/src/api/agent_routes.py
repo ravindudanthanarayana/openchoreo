@@ -11,9 +11,10 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import Field, field_validator, model_validator
 
+from common.auth.authz_models import SubjectContext
+from common.auth.bearer import BearerTokenAuth
 from src.agent import stream_chat
-from src.auth import SubjectContext, require_authn, require_invoke_authz
-from src.auth.bearer import BearerTokenAuth
+from src.auth import require_authn, require_invoke_authz
 from src.clients import get_tools_for_user
 from src.models import BaseModel
 
@@ -123,7 +124,8 @@ class ChatScope(BaseModel):
     # confirm the failure premise without an extra tool call.
     run_status: str | None = Field(default=None, alias="runStatus", max_length=64)
     # Bound workflow CRD details — name + kind ("Workflow" | "ClusterWorkflow").
-    # When set, the agent can go straight to get_(cluster_)workflow without
+    # When set, the agent can go straight to get_workflow (with the matching
+    # scope) without
     # first calling list_*.
     workflow_name: str | None = Field(default=None, alias="workflowName", max_length=253)
     workflow_kind: str | None = Field(default=None, alias="workflowKind", max_length=64)

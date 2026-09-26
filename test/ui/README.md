@@ -4,7 +4,7 @@ Playwright tests that drive the Backstage portal end-to-end in Chromium against 
 
 ## Structure
 
-```
+```text
 ui/
 ├── playwright.config.ts   Runner config; maps *.e2e-cp.local hostnames to 127.0.0.1
 │                          via Chromium host-resolver rules (no /etc/hosts edit needed)
@@ -29,7 +29,7 @@ npx playwright install --with-deps chromium
 UI_BASE_URL=http://openchoreo.e2e-cp.local:28080 npm test
 ```
 
-For a fresh install the test identities (PE, Dev, ABAC-restricted) are seeded automatically by Thunder's bootstrap; on an already-installed cluster run `scripts/seed-idp-users.sh` (Thunder is briefly down while it re-runs the setup Job). To watch a run, use `PWSLOWMO=1000 npx playwright test --headed`.
+For a fresh install the test identities (PE, Dev, ABAC-restricted) are seeded automatically by ThunderID's bootstrap; on an already-installed cluster run `scripts/seed-idp-users.sh` (ThunderID is briefly down while it re-runs the setup Job). To watch a run, use `PWSLOWMO=1000 npx playwright test --headed`.
 
 ## Test suites
 

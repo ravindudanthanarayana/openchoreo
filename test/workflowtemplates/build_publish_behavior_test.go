@@ -16,6 +16,18 @@ import (
 
 const buildPodmanStub = `#!/bin/sh
 echo "podman $*" >> "$CALLS"
+for arg do
+  if [ "$arg" = "MULTILINE_ENV=first
+second
+" ]; then
+    echo "podman-multiline-env-preserved" >> "$CALLS"
+  fi
+  if [ "$arg" = "MULTILINE_ARG=alpha
+beta
+" ]; then
+    echo "podman-multiline-build-arg-preserved" >> "$CALLS"
+  fi
+done
 case "$1" in
   info)
     echo true
@@ -39,6 +51,13 @@ exit 0
 
 const packStub = `#!/bin/sh
 echo "pack $*" >> "$CALLS"
+for arg do
+  if [ "$arg" = "MULTILINE_ENV=first
+second
+" ]; then
+    echo "pack-multiline-env-preserved" >> "$CALLS"
+  fi
+done
 exit 0
 `
 
@@ -46,12 +65,18 @@ const buildJQStub = `#!/bin/sh
 input=$(cat)
 echo "jq $*" >> "$CALLS"
 echo "jq-stdin $input" >> "$CALLS"
-case "$*" in
-  *"--env"*)
-    printf '%s\n' "--env FOO=bar" "--env HELLO=world"
+case "$input" in
+  *MULTILINE_ENV*)
+    printf '%s\n' "TVVMVElMSU5FX0VOVj1maXJzdApzZWNvbmQK"
     ;;
-  *"--build-arg"*)
-    printf '%s\n' "--build-arg HTTP_PROXY=http://proxy"
+  *MULTILINE_ARG*)
+    printf '%s\n' "TVVMVElMSU5FX0FSRz1hbHBoYQpiZXRhCg=="
+    ;;
+  *HTTP_PROXY*)
+    printf '%s\n' "SFRUUF9QUk9YWT1odHRwOi8vcHJveHk="
+    ;;
+  *FOO*)
+    printf '%s\n' "Rk9PPWJhcg==" "SEVMTE89d29ybGQ="
     ;;
 esac
 exit 0
@@ -71,6 +96,11 @@ type scriptRunResult struct {
 
 func runScript(t *testing.T, script string, stubs map[string]string, setup func(root string), replacements func(root string) []string) scriptRunResult {
 	t.Helper()
+	return runScriptWithEnv(t, script, nil, stubs, setup, replacements)
+}
+
+func runScriptWithEnv(t *testing.T, script string, templateEnv []envVar, stubs map[string]string, setup func(root string), replacements func(root string) []string) scriptRunResult {
+	t.Helper()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available; skipping behavioral test")
 	}
@@ -86,14 +116,25 @@ func runScript(t *testing.T, script string, stubs map[string]string, setup func(
 		setup(root)
 	}
 
+	replacementPairs := []string(nil)
 	if replacements != nil {
-		script = strings.NewReplacer(replacements(root)...).Replace(script)
+		replacementPairs = replacements(root)
+		script = strings.NewReplacer(replacementPairs...).Replace(script)
 	}
-	cmd := exec.Command("sh", "-c", script)
-	cmd.Env = append(os.Environ(),
+
+	env := append(os.Environ(),
 		"PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"CALLS="+callsFile,
 	)
+	if len(templateEnv) > 0 {
+		replacer := strings.NewReplacer(replacementPairs...)
+		for _, item := range templateEnv {
+			env = append(env, item.Name+"="+replacer.Replace(item.Value))
+		}
+	}
+
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 
 	res := scriptRunResult{output: string(out), root: root}
@@ -127,6 +168,8 @@ func buildReplacements(root string) []string {
 		"{{inputs.parameters.build-env}}", `[{"name":"FOO","value":"bar"},{"name":"HELLO","value":"world"}]`,
 		"{{workflow.parameters.build-env}}", `[{"name":"FOO","value":"bar"},{"name":"HELLO","value":"world"}]`,
 		"{{inputs.parameters.build-args}}", `[{"name":"HTTP_PROXY","value":"http://proxy"}]`,
+		"{{inputs.parameters.build-cache}}", "none",
+		"{{inputs.parameters.cache-layers-mode}}", "disabled",
 		"/mnt/vol", vol,
 		"/storage/run", filepath.Join(root, "storage", "run"),
 		"/storage/graph", filepath.Join(root, "storage", "graph"),
@@ -135,9 +178,23 @@ func buildReplacements(root string) []string {
 	}
 }
 
+func multilineBuildReplacements(root string) []string {
+	replacements := buildReplacements(root)
+	for i := 0; i < len(replacements); i += 2 {
+		switch replacements[i] {
+		case "{{inputs.parameters.build-env}}", "{{workflow.parameters.build-env}}":
+			replacements[i+1] = `[{"name":"MULTILINE_ENV","value":"first\nsecond\n"}]`
+		case "{{inputs.parameters.build-args}}":
+			replacements[i+1] = `[{"name":"MULTILINE_ARG","value":"alpha\nbeta\n"}]`
+		}
+	}
+	return replacements
+}
+
 func TestContainerfileBuild_Behavior(t *testing.T) {
 	script := scriptForTemplate(t, "containerfile-build.yaml", "build-image")
-	res := runScript(t, script, map[string]string{
+	env := envForTemplate(t, "containerfile-build.yaml", "build-image")
+	res := runScriptWithEnv(t, script, env, map[string]string{
 		"podman": buildPodmanStub,
 		"jq":     buildJQStub,
 	}, func(root string) {
@@ -162,7 +219,8 @@ func TestContainerfileBuild_Behavior(t *testing.T) {
 
 func TestContainerfileBuild_MissingDockerfileFailsBeforeBuild(t *testing.T) {
 	script := scriptForTemplate(t, "containerfile-build.yaml", "build-image")
-	res := runScript(t, script, map[string]string{
+	env := envForTemplate(t, "containerfile-build.yaml", "build-image")
+	res := runScriptWithEnv(t, script, env, map[string]string{
 		"podman": buildPodmanStub,
 		"jq":     buildJQStub,
 	}, func(root string) {
@@ -188,7 +246,8 @@ func TestBuildpackBuilds_Behavior(t *testing.T) {
 	} {
 		t.Run(tc.file, func(t *testing.T) {
 			script := scriptForTemplate(t, tc.file, "build-image")
-			res := runScript(t, script, map[string]string{
+			env := envForTemplate(t, tc.file, "build-image")
+			res := runScriptWithEnv(t, script, env, map[string]string{
 				"podman": buildPodmanStub,
 				"pack":   packStub,
 				"jq":     buildJQStub,
@@ -221,9 +280,62 @@ func TestBuildpackBuilds_Behavior(t *testing.T) {
 	}
 }
 
+func TestBuilds_PreserveNewlinesInJSONArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		dir       string
+		file      string
+		buildpack bool
+	}{
+		{name: "sample/containerfile", dir: templatesDir, file: "containerfile-build.yaml"},
+		{name: "sample/ballerina", dir: templatesDir, file: "ballerina-buildpack-build.yaml", buildpack: true},
+		{name: "sample/gcp", dir: templatesDir, file: "gcp-buildpacks-build.yaml", buildpack: true},
+		{name: "sample/paketo", dir: templatesDir, file: "paketo-buildpacks-build.yaml", buildpack: true},
+		{name: "build-cache/containerfile", dir: buildCacheTemplatesDir, file: "containerfile-build.yaml"},
+		{name: "build-cache/ballerina", dir: buildCacheTemplatesDir, file: "ballerina-buildpack-build.yaml", buildpack: true},
+		{name: "build-cache/gcp", dir: buildCacheTemplatesDir, file: "gcp-buildpacks-build.yaml", buildpack: true},
+		{name: "build-cache/paketo", dir: buildCacheTemplatesDir, file: "paketo-buildpacks-build.yaml", buildpack: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := scriptForTemplateFromDir(t, tc.dir, tc.file, "build-image")
+			env := envForTemplateFromDir(t, tc.dir, tc.file, "build-image")
+			stubs := map[string]string{
+				"podman": buildPodmanStub,
+				"jq":     buildJQStub,
+			}
+			if tc.buildpack {
+				stubs["pack"] = packStub
+			}
+
+			res := runScriptWithEnv(t, script, env, stubs, func(root string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "mnt-vol", "source", "service"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "storage"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "containers"), 0o755))
+				require.NoError(t, os.WriteFile(
+					filepath.Join(root, "mnt-vol", "source", "Dockerfile"),
+					[]byte("FROM scratch\n"),
+					0o644,
+				))
+			}, multilineBuildReplacements)
+
+			requireScriptSuccess(t, res, tc.file+" must accept JSON values containing newlines")
+			if tc.buildpack {
+				requireHasCall(t, res, "pack-multiline-env-preserved",
+					"buildpack build must preserve an embedded and trailing newline in one --env argument")
+			} else {
+				requireHasCall(t, res, "podman-multiline-env-preserved",
+					"containerfile build must preserve an embedded and trailing newline in one --env argument")
+				requireHasCall(t, res, "podman-multiline-build-arg-preserved",
+					"containerfile build must preserve an embedded and trailing newline in one --build-arg argument")
+			}
+		})
+	}
+}
+
 func TestBuildpackBuild_MissingAppPathFailsBeforePack(t *testing.T) {
 	script := scriptForTemplate(t, "gcp-buildpacks-build.yaml", "build-image")
-	res := runScript(t, script, map[string]string{
+	env := envForTemplate(t, "gcp-buildpacks-build.yaml", "build-image")
+	res := runScriptWithEnv(t, script, env, map[string]string{
 		"podman": buildPodmanStub,
 		"pack":   packStub,
 		"jq":     buildJQStub,
@@ -270,7 +382,8 @@ func TestPublishImage_BehaviorWithAndWithoutAuth(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			script := echoShim + scriptForTemplate(t, tc.file, "publish-image")
-			res := runScript(t, script, map[string]string{"podman": publishPodmanStub}, func(root string) {
+			env := envForTemplate(t, tc.file, "publish-image")
+			res := runScriptWithEnv(t, script, env, map[string]string{"podman": publishPodmanStub}, func(root string) {
 				require.NoError(t, os.MkdirAll(filepath.Join(root, "mnt-vol"), 0o755))
 				require.NoError(t, os.MkdirAll(filepath.Join(root, "storage"), 0o755))
 				require.NoError(t, os.MkdirAll(filepath.Join(root, "containers"), 0o755))
@@ -329,7 +442,8 @@ func TestPublishImage_LoadsAndTagsBuildOutput(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			script := echoShim + scriptForTemplate(t, tc.file, "publish-image")
-			res := runScript(t, script, map[string]string{"podman": publishPodmanStub}, func(root string) {
+			env := envForTemplate(t, tc.file, "publish-image")
+			res := runScriptWithEnv(t, script, env, map[string]string{"podman": publishPodmanStub}, func(root string) {
 				require.NoError(t, os.MkdirAll(filepath.Join(root, "mnt-vol"), 0o755))
 				require.NoError(t, os.MkdirAll(filepath.Join(root, "storage"), 0o755))
 				require.NoError(t, os.MkdirAll(filepath.Join(root, "containers"), 0o755))
@@ -347,7 +461,8 @@ func TestPublishImage_LoadsAndTagsBuildOutput(t *testing.T) {
 
 func TestPublishImage_MissingTarFailsBeforePush(t *testing.T) {
 	script := scriptForTemplate(t, "publish-image.yaml", "publish-image")
-	res := runScript(t, script, map[string]string{"podman": publishPodmanStub}, func(root string) {
+	env := envForTemplate(t, "publish-image.yaml", "publish-image")
+	res := runScriptWithEnv(t, script, env, map[string]string{"podman": publishPodmanStub}, func(root string) {
 		require.NoError(t, os.MkdirAll(filepath.Join(root, "mnt-vol"), 0o755))
 		require.NoError(t, os.MkdirAll(filepath.Join(root, "storage"), 0o755))
 		require.NoError(t, os.MkdirAll(filepath.Join(root, "containers"), 0o755))

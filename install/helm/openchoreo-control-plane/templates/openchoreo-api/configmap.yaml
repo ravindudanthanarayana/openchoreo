@@ -54,23 +54,105 @@ data:
           scopes:
             {{- toYaml .scopes | nindent 12 }}
         {{- end }}
+      mcp_oauth_scopes:
+        {{- toYaml .Values.security.oidc.mcpOAuthScopes | nindent 8 }}
 
     mcp:
       enabled: {{ .Values.openchoreoApi.config.mcp.enabled }}
       toolsets:
         {{- toYaml .Values.openchoreoApi.config.mcp.toolsets | nindent 8 }}
 
+    audit:
+      enabled: {{ .Values.openchoreoApi.config.audit.enabled }}
+      observability_plane_ref:
+        kind: {{ .Values.openchoreoApi.config.audit.observabilityPlaneRef.kind | quote }}
+        name: {{ .Values.openchoreoApi.config.audit.observabilityPlaneRef.name | quote }}
+        namespace: {{ .Values.openchoreoApi.config.audit.observabilityPlaneRef.namespace | quote }}
+      defaults:
+        {{- toYaml .Values.openchoreoApi.config.audit.defaults | nindent 8 }}
+      policies:
+        {{- toYaml .Values.openchoreoApi.config.audit.policies | nindent 8 }}
+      actor:
+        id_claim: {{ .Values.openchoreoApi.config.audit.actor.idClaim | quote }}
+
+{{- /*
+Built-in traversal rules come from the chart file
+files/resource-tree-builtin-rules.yaml rather than from values, so no --set or
+-f can edit them. Operator rules from openchoreoApi.config.resourceTree.rules
+are appended after them. The API server replaces its compiled-in rules whenever
+config supplies any, so this rendered list is the complete rule set.
+
+The trailing `default list` is load-bearing: concat returns a nil slice when
+both inputs are empty, which would render as null rather than [].
+
+All three guards are required. fromYamlArray never fails a render: it returns an
+empty list for missing, empty, `null` and `[]` input, and a one-element list
+holding the parse error as a string for a map or scalar. A raw-emptiness check
+alone therefore lets a `null` or `[]` file through as zero rules.
+*/}}
+{{- $resourceTree := .Values.openchoreoApi.config.resourceTree }}
+{{- $builtInRules := list }}
+{{- if not $resourceTree.disableBuiltInRules }}
+{{- $rawBuiltInRules := .Files.Get "files/resource-tree-builtin-rules.yaml" }}
+{{- if not $rawBuiltInRules }}
+{{- fail "files/resource-tree-builtin-rules.yaml is missing or empty; the built-in resource tree rules cannot be rendered" }}
+{{- end }}
+{{- $builtInRules = fromYamlArray $rawBuiltInRules }}
+{{- if not $builtInRules }}
+{{- fail "files/resource-tree-builtin-rules.yaml parsed to an empty rule list; rendering it would switch child discovery off for the whole install" }}
+{{- end }}
+{{- range $rule := $builtInRules }}
+{{- if ne (kindOf $rule) "map" }}
+{{- fail (printf "files/resource-tree-builtin-rules.yaml is not a list of rules: %v" $rule) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+    resource_tree:
+      # Built-in rules from files/resource-tree-builtin-rules.yaml, then openchoreoApi.config.resourceTree.rules.
+      rules:
+        {{- toYaml (concat $builtInRules ($resourceTree.rules | default list) | default list) | nindent 8 }}
+
     secret_management:
       enabled: {{ .Values.features.secretManagement.enabled }}
+      remote_key_prefix: {{ .Values.features.secretManagement.remoteKeyPrefix | quote }}
 
     cluster_gateway:
       enabled: {{ if hasKey .Values.openchoreoApi.clusterGateway "enabled" }}{{ .Values.openchoreoApi.clusterGateway.enabled }}{{ else }}true{{ end }}
       url: {{ .Values.openchoreoApi.clusterGateway.url | quote }}
       tls:
-        {{- if .Values.clusterGateway.tls.enabled }}
         ca_cert_path: {{ .Values.openchoreoApi.clusterGateway.tls.caPath | quote }}
+        {{- if .Values.clusterGateway.internalMtls.enabled }}
+        client_cert_path: {{ .Values.openchoreoApi.clusterGateway.tls.clientCertPath | quote }}
+        client_key_path: {{ .Values.openchoreoApi.clusterGateway.tls.clientKeyPath | quote }}
         {{- end }}
         insecure: {{ .Values.openchoreoApi.clusterGateway.tls.insecure }}
+
+    {{- with .Values.openchoreoApi.config.remoteConnect }}
+    {{- if .enabled }}
+    remote_connect:
+      enabled: true
+      signing_key_path: {{ .signingKeyPath | quote }}
+      key_id: {{ .keyId | quote }}
+      issuer: {{ .issuer | quote }}
+      ttl_seconds: {{ .ttlSeconds }}
+      secret_ttl_seconds: {{ .secretTtlSeconds }}
+      max_session_seconds: {{ .maxSessionSeconds }}
+      secrets_enabled: {{ .secretsEnabled }}
+      agent_image: "{{ include "openchoreo-control-plane.image" (dict "context" $ "image" .agentImage) }}"
+      agent_image_pull_policy: {{ .agentImage.pullPolicy | quote }}
+      agent_listen_port: {{ .agentListenPort }}
+      agent_max_sessions: {{ .agentMaxSessions }}
+      agent_authorize_rate: {{ .agentAuthorizeRate }}
+      agent_authorize_burst: {{ .agentAuthorizeBurst }}
+      entrypoint_address: {{ .entrypointAddress | quote }}
+      sni_suffix: {{ .sniSuffix | quote }}
+      authorize_url: {{ .authorizeUrl | quote }}
+      authorize_insecure: {{ .authorizeInsecure }}
+      reaper_interval_seconds: {{ .reaperIntervalSeconds }}
+      reaper_ttl_seconds: {{ .reaperTtlSeconds }}
+    {{- end }}
+    {{- end }}
 
     logging:
       {{- toYaml .Values.openchoreoApi.config.logging | nindent 6 }}

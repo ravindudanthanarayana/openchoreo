@@ -13,6 +13,7 @@ import (
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/api/gen"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services"
 	environmentsvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/environment"
+	"github.com/openchoreo/openchoreo/internal/server/middleware/audit"
 )
 
 // ListEnvironments returns a paginated list of environments within a namespace.
@@ -85,6 +86,8 @@ func (h *Handler) CreateEnvironment(
 		h.logger.Error("Failed to create environment", "error", err)
 		return gen.CreateEnvironment500JSONResponse{InternalErrorJSONResponse: internalError()}, nil
 	}
+
+	audit.SetResource(ctx, &audit.Resource{Namespace: request.NamespaceName, UID: string(created.UID), Name: created.Name})
 
 	genEnv, err := convert[openchoreov1alpha1.Environment, gen.Environment](*created)
 	if err != nil {
@@ -161,6 +164,8 @@ func (h *Handler) UpdateEnvironment(
 		return gen.UpdateEnvironment500JSONResponse{InternalErrorJSONResponse: internalError()}, nil
 	}
 
+	audit.SetResource(ctx, &audit.Resource{Namespace: request.NamespaceName, UID: string(updated.UID), Name: updated.Name})
+
 	genEnv, err := convert[openchoreov1alpha1.Environment, gen.Environment](*updated)
 	if err != nil {
 		h.logger.Error("Failed to convert updated environment", "error", err)
@@ -189,6 +194,10 @@ func (h *Handler) DeleteEnvironment(
 		h.logger.Error("Failed to delete environment", "error", err)
 		return gen.DeleteEnvironment500JSONResponse{InternalErrorJSONResponse: internalError()}, nil
 	}
+
+	// No UID here: EnvironmentService.DeleteEnvironment returns only an error, not
+	// the deleted object, so the identifier that survives the deletion is the name.
+	audit.SetResource(ctx, &audit.Resource{Namespace: request.NamespaceName, Name: request.EnvName})
 
 	h.logger.Info("Environment deleted successfully", "namespaceName", request.NamespaceName, "environment", request.EnvName)
 	return gen.DeleteEnvironment204Response{}, nil

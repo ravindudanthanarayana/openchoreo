@@ -97,7 +97,7 @@ func (c *Config) ListContexts() error {
 	}
 
 	// First empty column for current context marker
-	headers := []string{"", "NAME", "CONTROLPLANE", "CREDENTIALS", "NAMESPACE", "PROJECT", "COMPONENT"}
+	headers := []string{"", "NAME", "CONTROLPLANE", "CREDENTIALS", "NAMESPACE", "PROJECT", "COMPONENT", "RESOURCE"}
 	rows := make([][]string, 0, len(cfg.Contexts))
 
 	for _, ctx := range cfg.Contexts {
@@ -114,6 +114,7 @@ func (c *Config) ListContexts() error {
 			formatValueOrPlaceholder(ctx.Namespace),
 			formatValueOrPlaceholder(ctx.Project),
 			formatValueOrPlaceholder(ctx.Component),
+			formatValueOrPlaceholder(ctx.Resource),
 		})
 	}
 
@@ -200,6 +201,9 @@ func (c *Config) UpdateContext(params UpdateContextParams) error {
 			if params.Component != "" {
 				cfg.Contexts[i].Component = params.Component
 			}
+			if params.Resource != "" {
+				cfg.Contexts[i].Resource = params.Resource
+			}
 			if params.ControlPlane != "" {
 				cfg.Contexts[i].ControlPlane = params.ControlPlane
 			}
@@ -247,11 +251,20 @@ func (c *Config) UseContext(params UseContextParams) error {
 	return nil
 }
 
+// SkipContextDefaultsAnnotation marks a command whose namespace, project, component
+// and resource flags are query filters rather than resource locators. Filling them
+// from the current context would silently narrow the query, so ApplyContextDefaults
+// leaves such a command's flags untouched.
+const SkipContextDefaultsAnnotation = "occ.openchoreo.dev/skip-context-defaults"
+
 // ApplyContextDefaults loads the stored config and sets default flag values
 // from the current context, if not already provided.
 func ApplyContextDefaults(cmd *cobra.Command) error {
 	// Skip for config commands to avoid circular dependencies
 	if cmd.Parent() != nil && (cmd.Parent().Name() == "config" || cmd.Parent().Name() == "context" || cmd.Parent().Name() == "controlplane" || cmd.Parent().Name() == "credentials") {
+		return nil
+	}
+	if _, skip := cmd.Annotations[SkipContextDefaultsAnnotation]; skip {
 		return nil
 	}
 
@@ -284,6 +297,7 @@ func ApplyContextDefaults(cmd *cobra.Command) error {
 	applyIfNotSet(cmd, "namespace", curCtx.Namespace)
 	applyIfNotSet(cmd, "project", curCtx.Project)
 	applyIfNotSet(cmd, "component", curCtx.Component)
+	applyIfNotSet(cmd, "resource", curCtx.Resource)
 
 	return nil
 }
@@ -533,24 +547,38 @@ func GetCurrentContext() (*Context, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
+	return cfg.ActiveContext()
+}
 
-	if cfg.CurrentContext == "" {
+// ActiveContext returns the current context within this loaded config.
+func (c *StoredConfig) ActiveContext() (*Context, error) {
+	if c.CurrentContext == "" {
 		return nil, fmt.Errorf("no current context set")
 	}
 
-	// Find current context
-	for idx := range cfg.Contexts {
-		if cfg.Contexts[idx].Name == cfg.CurrentContext {
-			return &cfg.Contexts[idx], nil
+	for idx := range c.Contexts {
+		if c.Contexts[idx].Name == c.CurrentContext {
+			return &c.Contexts[idx], nil
 		}
 	}
 
-	return nil, fmt.Errorf("current context '%s' not found", cfg.CurrentContext)
+	return nil, fmt.Errorf("current context '%s' not found", c.CurrentContext)
 }
 
 // GetCurrentCredential returns the credential for the current context
 func GetCurrentCredential() (*Credential, error) {
-	currentContext, err := GetCurrentContext()
+	cfg, err := LoadStoredConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+	return cfg.ActiveCredential()
+}
+
+// ActiveCredential returns the current context's credential within this loaded config.
+// The returned pointer aliases c, so a caller that updates it persists the change by
+// saving c.
+func (c *StoredConfig) ActiveCredential() (*Credential, error) {
+	currentContext, err := c.ActiveContext()
 	if err != nil {
 		return nil, err
 	}
@@ -559,37 +587,41 @@ func GetCurrentCredential() (*Credential, error) {
 		return nil, fmt.Errorf("no credentials associated with current context")
 	}
 
-	cfg, err := LoadStoredConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
-	}
+	return c.CredentialByName(currentContext.Credentials)
+}
 
-	// Find credential
-	for idx := range cfg.Credentials {
-		if cfg.Credentials[idx].Name == currentContext.Credentials {
-			return &cfg.Credentials[idx], nil
+// CredentialByName returns the named credential within this loaded config. The pointer
+// aliases c, so a caller that updates it persists the change by saving c.
+func (c *StoredConfig) CredentialByName(name string) (*Credential, error) {
+	for idx := range c.Credentials {
+		if c.Credentials[idx].Name == name {
+			return &c.Credentials[idx], nil
 		}
 	}
 
-	return nil, fmt.Errorf("credential '%s' not found", currentContext.Credentials)
+	return nil, fmt.Errorf("credential '%s' not found", name)
 }
 
 // GetCurrentControlPlane returns the control plane for the current context
 func GetCurrentControlPlane() (*ControlPlane, error) {
-	currentContext, err := GetCurrentContext()
-	if err != nil {
-		return nil, err
-	}
-
 	cfg, err := LoadStoredConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
+	return cfg.ActiveControlPlane()
+}
 
-	// Find control plane
-	for idx := range cfg.ControlPlanes {
-		if cfg.ControlPlanes[idx].Name == currentContext.ControlPlane {
-			return &cfg.ControlPlanes[idx], nil
+// ActiveControlPlane returns the current context's control plane within this loaded
+// config, so a caller can pair it with ActiveCredential from the same snapshot.
+func (c *StoredConfig) ActiveControlPlane() (*ControlPlane, error) {
+	currentContext, err := c.ActiveContext()
+	if err != nil {
+		return nil, err
+	}
+
+	for idx := range c.ControlPlanes {
+		if c.ControlPlanes[idx].Name == currentContext.ControlPlane {
+			return &c.ControlPlanes[idx], nil
 		}
 	}
 

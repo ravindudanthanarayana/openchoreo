@@ -93,6 +93,7 @@ func (h *MCPHandler) CreateDeploymentPipeline(ctx context.Context, namespaceName
 	if err != nil {
 		return nil, err
 	}
+	setAuditResource(ctx, created)
 	return mutationResult(created, "created"), nil
 }
 
@@ -130,6 +131,7 @@ func (h *MCPHandler) UpdateDeploymentPipeline(ctx context.Context, namespaceName
 	if err != nil {
 		return nil, err
 	}
+	setAuditResource(ctx, updated)
 	return mutationResult(updated, "updated"), nil
 }
 
@@ -176,8 +178,8 @@ func (h *MCPHandler) GetResourceEvents(ctx context.Context, namespaceName, relea
 	return result, nil
 }
 
-func (h *MCPHandler) GetResourceLogs(ctx context.Context, namespaceName, releaseBindingName, podName string, sinceSeconds *int64) (any, error) {
-	result, err := h.services.K8sResourcesService.GetResourceLogs(ctx, namespaceName, releaseBindingName, podName, sinceSeconds)
+func (h *MCPHandler) GetResourceLogs(ctx context.Context, namespaceName, releaseBindingName, podName, container string, sinceSeconds *int64) (any, error) {
+	result, err := h.services.K8sResourcesService.GetResourceLogs(ctx, namespaceName, releaseBindingName, podName, container, sinceSeconds)
 	if err != nil {
 		return nil, err
 	}

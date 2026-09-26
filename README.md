@@ -27,7 +27,6 @@
 [![Build and Test](https://github.com/openchoreo/openchoreo/actions/workflows/build-and-test.yml/badge.svg?branch=main)](https://github.com/openchoreo/openchoreo/actions/workflows/build-and-test.yml)
 [![E2E Tests](https://img.shields.io/github/actions/workflow/status/openchoreo/openchoreo/e2e-gate.yml?branch=main&label=E2E%20Tests)](https://github.com/openchoreo/openchoreo/actions/workflows/e2e-gate.yml)
 [![Codecov](https://codecov.io/gh/openchoreo/openchoreo/branch/main/graph/badge.svg)](https://codecov.io/gh/openchoreo/openchoreo)
-[![Go Report Card](https://goreportcard.com/badge/github.com/openchoreo/openchoreo)](https://goreportcard.com/report/github.com/openchoreo/openchoreo)
 [![GitHub Release](https://img.shields.io/github/v/release/openchoreo/openchoreo)](https://github.com/openchoreo/openchoreo/releases/latest)
 [![GitHub last commit](https://img.shields.io/github/last-commit/openchoreo/openchoreo.svg)](https://github.com/openchoreo/openchoreo/commits/main)
 [![GitHub issues](https://img.shields.io/github/issues/openchoreo/openchoreo.svg)](https://github.com/openchoreo/openchoreo/issues)
@@ -80,7 +79,7 @@ The diagram below illustrates some of the core concepts of the Platform API and 
 
 ## Getting Started
 
-The easiest way to try OpenChoreo is by following the **[Quick Start Guide](https://openchoreo.dev/docs/getting-started/quick-start-guide/)**. It walks you through setting up Choreo using a Dev Container, so you can start experimenting without affecting your local environment.
+The easiest way to try OpenChoreo is by following the **[Quick Start Guide](https://openchoreo.dev/docs/getting-started/quick-start-guide/)**. It walks you through setting up OpenChoreo using a Dev Container, so you can start experimenting without affecting your local environment.
 
 For a deeper understanding of OpenChoreo's architecture, see **[OpenChoreo Concepts](https://openchoreo.dev/docs/category/concepts/)**.
 
@@ -102,7 +101,7 @@ We’d love for you to be part of OpenChoreo’s journey!
 Whether you’re fixing a bug, improving documentation, or suggesting new features, every contribution counts.
 
 - **[Contributor Guide](./docs/contributors/README.md)** – Learn how to get started.
-- **[Report an Issue](https://github.com/openchoreo/openchoreo/issues)** – Help us improve Choreo.
+- **[Report an Issue](https://github.com/openchoreo/openchoreo/issues)** – Help us improve OpenChoreo.
 - **[Join our Slack](https://cloud-native.slack.com/archives/C0ABYRG1MND)** – Be part of the community.
 
 We’re excited to have you onboard!

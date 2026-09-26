@@ -28,7 +28,9 @@ func TestBuildRootCmd_Subcommands(t *testing.T) {
 		"version",
 		"componentrelease",
 		"resourcerelease",
+		"projectrelease",
 		"resourcereleasebinding",
+		"projectreleasebinding",
 		"releasebinding",
 		"namespace",
 		"project",
@@ -40,8 +42,10 @@ func TestBuildRootCmd_Subcommands(t *testing.T) {
 		"observabilityplane",
 		"componenttype",
 		"resourcetype",
+		"projecttype",
 		"clustercomponenttype",
 		"clusterresourcetype",
+		"clusterprojecttype",
 		"clusterdataplane",
 		"clusterobservabilityplane",
 		"clusterworkflowplane",
@@ -59,6 +63,8 @@ func TestBuildRootCmd_Subcommands(t *testing.T) {
 		"workload",
 		"deploymentpipeline",
 		"observabilityalertsnotificationchannel",
+		"auditlogs",
+		"remote",
 	}
 
 	commands := cmd.Commands()

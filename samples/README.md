@@ -40,9 +40,7 @@ Low-level examples demonstrating how to define and use custom component types wi
 - **[HTTP Service Component](./component-types/component-http-service/)** - Define a reusable HTTP service component type
 - **[Web App Component](./component-types/component-web-app/)** - Define a reusable web application component type
 - **[Component with Configs](./component-types/component-with-configs/)** - Demonstrate configuration management
-- **[Component with Traits](./component-types/component-with-traits/)** - Demonstrate trait composition
 - **[Component with Embedded Traits](./component-types/component-with-embedded-traits/)** - Demonstrate PE-defined embedded traits
-- **[Component with API Management](./component-types/component-with-api-management/)** - Demonstrate API management via traits
 
 ### [Workflows](./workflows)
 Reusable Workflow definitions for standalone automation tasks independent of any Component.
@@ -76,3 +74,9 @@ Configuration samples targeted at Platform Engineers. Learn how to set up deploy
 **Available Configurations:**
 - **[Deployment Pipeline](./platform-config/new-deployment-pipeline/)** - Define promotion pipelines across environments
 - **[Environments](./platform-config/new-environments/)** - Configure development, QA, pre-production, and production environments
+
+### [Local Development](./local-development)
+Run your code on your machine against an environment's real upstreams with `occ remote`. This self-contained sample seeds both an endpoint dependency and a resource dependency, then tunnels them to localhost.
+
+**Available Samples:**
+- **[Local Development with `occ remote`](./local-development/)** - Tunnel endpoint and resource dependencies to your machine for a fast inner loop

@@ -389,17 +389,31 @@ type ResourceRef struct {
 
 // ResourceNode represents a single resource in the resource tree
 type ResourceNode struct {
-	Group           string         `json:"group,omitempty"`
-	Version         string         `json:"version"`
-	Kind            string         `json:"kind"`
-	Namespace       string         `json:"namespace,omitempty"`
-	Name            string         `json:"name"`
-	UID             string         `json:"uid"`
-	ResourceVersion string         `json:"resourceVersion,omitempty"`
-	CreatedAt       *time.Time     `json:"createdAt,omitempty"`
-	ParentRefs      []ResourceRef  `json:"parentRefs,omitempty"`
-	Object          map[string]any `json:"object"`
-	Health          *HealthInfo    `json:"health,omitempty"`
+	Group           string                 `json:"group,omitempty"`
+	Version         string                 `json:"version"`
+	Kind            string                 `json:"kind"`
+	Namespace       string                 `json:"namespace,omitempty"`
+	Name            string                 `json:"name"`
+	UID             string                 `json:"uid"`
+	ResourceVersion string                 `json:"resourceVersion,omitempty"`
+	CreatedAt       *time.Time             `json:"createdAt,omitempty"`
+	ParentRefs      []ResourceRef          `json:"parentRefs,omitempty"`
+	Object          map[string]any         `json:"object"`
+	Health          *HealthInfo            `json:"health,omitempty"`
+	MetadataOnly    bool                   `json:"metadataOnly,omitempty"`
+	MatchedBy       string                 `json:"matchedBy,omitempty"` // "labelSelector" on heuristic matches; empty for exact (ownerRef) matches
+	ChildrenStatus  []ChildDiscoveryStatus `json:"childrenStatus,omitempty"`
+}
+
+// ChildDiscoveryStatus reports that a node's children of one kind could not be
+// discovered. It is attached to the nearest node the user can see, so a failure
+// while expanding a hidden intermediate resource still surfaces somewhere.
+type ChildDiscoveryStatus struct {
+	Group   string `json:"group,omitempty"`
+	Version string `json:"version"`
+	Kind    string `json:"kind"`
+	State   string `json:"state"` // "forbidden" or "error"
+	Message string `json:"message,omitempty"`
 }
 
 // HealthInfo carries health status for a resource node
@@ -433,11 +447,19 @@ type ResourceEventsResponse struct {
 type PodLogEntry struct {
 	Timestamp string `json:"timestamp"`
 	Log       string `json:"log"`
+	Container string `json:"container"`
 }
 
 // ResourcePodLogsResponse is the response for the resource pod logs endpoint
 type ResourcePodLogsResponse struct {
 	LogEntries []PodLogEntry `json:"logEntries"`
+}
+
+// CronJobTriggerResponse describes the Job created from a manual cronjob trigger.
+type CronJobTriggerResponse struct {
+	JobName     string `json:"jobName"`
+	Namespace   string `json:"namespace"`
+	CronJobName string `json:"cronJobName"`
 }
 
 // SecretReferenceResponse represents a SecretReference in API responses

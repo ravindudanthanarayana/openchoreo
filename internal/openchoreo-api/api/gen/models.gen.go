@@ -240,6 +240,12 @@ const (
 	ObservabilityPlaneRefKindObservabilityPlane        ObservabilityPlaneRefKind = "ObservabilityPlane"
 )
 
+// Defines values for PostRenderValidationTargetPlane.
+const (
+	PostRenderValidationTargetPlaneDataplane          PostRenderValidationTargetPlane = "dataplane"
+	PostRenderValidationTargetPlaneObservabilityplane PostRenderValidationTargetPlane = "observabilityplane"
+)
+
 // Defines values for ProjectReleaseSpecProjectTypeKind.
 const (
 	ProjectReleaseSpecProjectTypeKindClusterProjectType ProjectReleaseSpecProjectTypeKind = "ClusterProjectType"
@@ -366,6 +372,12 @@ const (
 	TargetPlaneRefKindWorkflowPlane        TargetPlaneRefKind = "WorkflowPlane"
 )
 
+// Defines values for TraitRemoveTargetPlane.
+const (
+	TraitRemoveTargetPlaneDataplane          TraitRemoveTargetPlane = "dataplane"
+	TraitRemoveTargetPlaneObservabilityplane TraitRemoveTargetPlane = "observabilityplane"
+)
+
 // Defines values for TraitSpecCreatesTargetPlane.
 const (
 	TraitSpecCreatesTargetPlaneDataplane          TraitSpecCreatesTargetPlane = "dataplane"
@@ -483,6 +495,15 @@ type AgentConnectionStatus struct {
 
 	// Message Additional information about agent connection status
 	Message *string `json:"message,omitempty"`
+}
+
+// AuditLogsFeature Audit trail read path
+type AuditLogsFeature struct {
+	// Enabled Whether audit logging is enabled
+	Enabled bool `json:"enabled"`
+
+	// ObserverURL Base URL of the observer that serves audit logs. Omitted when audit logging is disabled or the referenced observability plane is not found.
+	ObserverURL *string `json:"observerURL,omitempty"`
 }
 
 // AuthMechanismConfig Configuration for an authentication mechanism
@@ -666,6 +687,24 @@ type CapabilityResource struct {
 	Path *string `json:"path,omitempty"`
 }
 
+// ChildDiscoveryStatus Reports that children of one kind could not be discovered under a node. It is attached to the nearest node the client can see, so a failure while expanding a hidden intermediate resource still surfaces somewhere. Its presence means the node's children of that kind are incomplete, not that there are none.
+type ChildDiscoveryStatus struct {
+	// Group API group of the child kind that could not be discovered (empty for core)
+	Group *string `json:"group,omitempty"`
+
+	// Kind Kind of the child resources that could not be discovered
+	Kind string `json:"kind"`
+
+	// Message Optional human-readable detail about the failure
+	Message *string `json:"message,omitempty"`
+
+	// State Why discovery of this child kind did not complete. Currently `forbidden`, meaning the platform is not permitted to list that kind, or `error`, which covers every other failure including a truncated result. Left open rather than enumerated so a new state does not break existing clients; treat an unrecognized value as `error`.
+	State string `json:"state"`
+
+	// Version API version of the child kind that could not be discovered
+	Version string `json:"version"`
+}
+
 // ClusterAgentConfig Configuration for cluster agent-based communication
 type ClusterAgentConfig struct {
 	// ClientCA Reference to a secret or inline value
@@ -819,6 +858,12 @@ type ClusterComponentTypeSpec struct {
 	// Parameters Schema section using openAPIV3Schema format
 	Parameters *SchemaSection `json:"parameters,omitempty"`
 
+	// PostRenderValidations CEL-based validation rules evaluated after all traits are applied, against the final rendered Kubernetes resources
+	PostRenderValidations *[]PostRenderValidation `json:"postRenderValidations,omitempty"`
+
+	// PreRenderValidations CEL-based validation rules evaluated before rendering; replaces the deprecated validations field
+	PreRenderValidations *[]ValidationRule `json:"preRenderValidations,omitempty"`
+
 	// Resources Templates that generate Kubernetes resources dynamically
 	Resources []struct {
 		// ForEach CEL expression for generating multiple resources from a list
@@ -858,7 +903,7 @@ type ClusterComponentTypeSpec struct {
 		Parameters *map[string]interface{} `json:"parameters,omitempty"`
 	} `json:"traits,omitempty"`
 
-	// Validations CEL-based validation rules evaluated during rendering
+	// Validations CEL-based validation rules evaluated before rendering. Deprecated: use preRenderValidations (mutually exclusive).
 	Validations *[]ValidationRule `json:"validations,omitempty"`
 
 	// WorkloadType Primary workload resource type for this component type
@@ -1161,7 +1206,16 @@ type ClusterTraitSpec struct {
 		Var *string `json:"var,omitempty"`
 	} `json:"patches,omitempty"`
 
-	// Validations CEL-based validation rules evaluated during rendering
+	// PostRenderValidations CEL-based validation rules evaluated after all traits are applied, against the final rendered Kubernetes resources
+	PostRenderValidations *[]PostRenderValidation `json:"postRenderValidations,omitempty"`
+
+	// PreRenderValidations CEL-based validation rules evaluated before rendering; replaces the deprecated validations field
+	PreRenderValidations *[]ValidationRule `json:"preRenderValidations,omitempty"`
+
+	// Removes Whole resources to delete that were previously produced by the ComponentType or earlier traits. Workload resource kinds (e.g. Deployment, StatefulSet, CronJob) cannot be removed.
+	Removes *[]TraitRemove `json:"removes,omitempty"`
+
+	// Validations CEL-based validation rules evaluated before rendering. Deprecated: use preRenderValidations (mutually exclusive).
 	Validations *[]ValidationRule `json:"validations,omitempty"`
 }
 
@@ -1527,6 +1581,12 @@ type ComponentTypeSpec struct {
 	// Parameters Schema section using openAPIV3Schema format
 	Parameters *SchemaSection `json:"parameters,omitempty"`
 
+	// PostRenderValidations CEL-based validation rules evaluated after all traits are applied, against the final rendered Kubernetes resources
+	PostRenderValidations *[]PostRenderValidation `json:"postRenderValidations,omitempty"`
+
+	// PreRenderValidations CEL-based validation rules evaluated before rendering; replaces the deprecated validations field
+	PreRenderValidations *[]ValidationRule `json:"preRenderValidations,omitempty"`
+
 	// Resources Templates that generate Kubernetes resources dynamically
 	Resources []struct {
 		// ForEach CEL expression for generating multiple resources from a list
@@ -1566,7 +1626,7 @@ type ComponentTypeSpec struct {
 		Parameters *map[string]interface{} `json:"parameters,omitempty"`
 	} `json:"traits,omitempty"`
 
-	// Validations CEL-based validation rules evaluated during rendering
+	// Validations CEL-based validation rules evaluated before rendering. Deprecated: use preRenderValidations (mutually exclusive).
 	Validations *[]ValidationRule `json:"validations,omitempty"`
 
 	// WorkloadType Primary workload resource type for this component type
@@ -1768,6 +1828,24 @@ type CreateWorkflowRunRequest struct {
 
 	// WorkflowName Name of the workflow to execute
 	WorkflowName string `json:"workflowName"`
+}
+
+// CronJobTriggerRequest Optional per-run overrides applied to the Job created from a manual cronjob trigger
+type CronJobTriggerRequest struct {
+	// Args Replaces the container args for this run only. An empty array clears the args inherited from the CronJob's jobTemplate; omitting the field or sending null keeps them. Applies to the container named `main`, or to the only container if the pod has exactly one.
+	Args *[]string `json:"args"`
+}
+
+// CronJobTriggerResponse Response describing the Job created from a manual cronjob trigger
+type CronJobTriggerResponse struct {
+	// CronJobName Name of the CronJob the Job was created from
+	CronJobName string `json:"cronJobName"`
+
+	// JobName Name of the Job that was created from the CronJob's jobTemplate
+	JobName string `json:"jobName"`
+
+	// Namespace Data plane namespace where the Job was created
+	Namespace string `json:"namespace"`
 }
 
 // DataPlane DataPlane resource.
@@ -2215,6 +2293,18 @@ type MessageResponse struct {
 	Message string `json:"message"`
 }
 
+// MetadataFeatures Optional platform features and how clients reach them
+type MetadataFeatures struct {
+	// AuditLogs Audit trail read path
+	AuditLogs AuditLogsFeature `json:"auditLogs"`
+}
+
+// MetadataResponse How this OpenChoreo installation is configured
+type MetadataResponse struct {
+	// Features Optional platform features and how clients reach them
+	Features MetadataFeatures `json:"features"`
+}
+
 // Namespace Namespace resource.
 // Control plane namespaces hold resources like Projects, Components, and Environments.
 // These namespaces are identified by the label `openchoreo.dev/control-plane=true`.
@@ -2607,12 +2697,57 @@ type PendingConnection struct {
 
 // PodLogEntry A single log entry from a pod
 type PodLogEntry struct {
+	// Container Name of the container that produced this log entry
+	Container string `json:"container"`
+
 	// Log Log message content
 	Log string `json:"log"`
 
 	// Timestamp Timestamp of the log entry in RFC3339 format
 	Timestamp time.Time `json:"timestamp"`
 }
+
+// PostRenderValidation CEL-based validation rule evaluated after all traits are applied, against the final rendered Kubernetes resources
+type PostRenderValidation struct {
+	// ForEach Optional CEL expression yielding a list; the validation is repeated per item with the loop variable bound. Requires var.
+	ForEach *string `json:"forEach,omitempty"`
+
+	// Message Error message shown when the rule evaluates to false
+	Message string `json:"message"`
+
+	// Rule CEL expression wrapped in ${...}, evaluated with resource bound to each match; must evaluate to true
+	Rule string `json:"rule"`
+
+	// Target Rendered resources this validation applies to
+	Target struct {
+		// Group API group of the resource
+		Group string `json:"group"`
+
+		// Kind Resource type to select
+		Kind string `json:"kind"`
+
+		// MustMatch Require at least one rendered resource to match this target; when true and none match, the validation fails
+		MustMatch *bool `json:"mustMatch,omitempty"`
+
+		// Version API version of the resource
+		Version string `json:"version"`
+
+		// Where CEL expression to filter which resources to select
+		Where *string `json:"where,omitempty"`
+	} `json:"target"`
+
+	// TargetPlane Plane to scope selection to; without it a rule matches resources of the same GVK across every plane
+	TargetPlane *PostRenderValidationTargetPlane `json:"targetPlane,omitempty"`
+
+	// Var Loop variable name for forEach iterations; available in target.where and rule. Required when forEach is set.
+	Var *string `json:"var,omitempty"`
+
+	// When Optional CEL guard evaluated against the source's context; if it evaluates to false the validation is skipped
+	When *string `json:"when,omitempty"`
+}
+
+// PostRenderValidationTargetPlane Plane to scope selection to; without it a rule matches resources of the same GVK across every plane
+type PostRenderValidationTargetPlane string
 
 // Project Project resource.
 // Projects group components within a namespace and reference a deployment pipeline.
@@ -2679,8 +2814,10 @@ type ProjectReleaseBinding struct {
 	Metadata ObjectMeta `json:"metadata"`
 
 	// Spec Desired state of a ProjectReleaseBinding. spec.owner and spec.environment
-	// are immutable after creation. spec.projectRelease is the promote pin and is
-	// advanced manually via `occ project promote` or kubectl edit.
+	// are immutable after creation. spec.projectRelease is the promote pin:
+	// left unset, the Project controller seeds it once with the project's
+	// latest release; advancing it afterwards is manual (API update, GitOps,
+	// kubectl edit).
 	Spec   *ProjectReleaseBindingSpec   `json:"spec,omitempty"`
 	Status *ProjectReleaseBindingStatus `json:"status,omitempty"`
 }
@@ -2695,8 +2832,10 @@ type ProjectReleaseBindingList struct {
 }
 
 // ProjectReleaseBindingSpec Desired state of a ProjectReleaseBinding. spec.owner and spec.environment
-// are immutable after creation. spec.projectRelease is the promote pin and is
-// advanced manually via `occ project promote` or kubectl edit.
+// are immutable after creation. spec.projectRelease is the promote pin:
+// left unset, the Project controller seeds it once with the project's
+// latest release; advancing it afterwards is manual (API update, GitOps,
+// kubectl edit).
 type ProjectReleaseBindingSpec struct {
 	// Environment Target environment name. Immutable after creation.
 	Environment string `json:"environment"`
@@ -2710,7 +2849,7 @@ type ProjectReleaseBindingSpec struct {
 		ProjectName string `json:"projectName"`
 	} `json:"owner"`
 
-	// ProjectRelease Pinned ProjectRelease name. Advanced manually (e.g. via `occ project promote`).
+	// ProjectRelease Pinned ProjectRelease name. Left unset, it is seeded once by the Project controller with the latest release; advanced manually afterwards (e.g. via `occ project promote`).
 	ProjectRelease *string `json:"projectRelease,omitempty"`
 }
 
@@ -3289,6 +3428,9 @@ type ResourceInstanceStatus struct {
 
 // ResourceNode A single resource in the resource tree
 type ResourceNode struct {
+	// ChildrenStatus Per-kind child-discovery failures under this node. Present only when at least one kind of child could not be discovered; absent means discovery completed for every kind configured under this node.
+	ChildrenStatus *[]ChildDiscoveryStatus `json:"childrenStatus,omitempty"`
+
 	// CreatedAt Creation timestamp of the resource
 	CreatedAt *time.Time `json:"createdAt,omitempty"`
 
@@ -3301,13 +3443,19 @@ type ResourceNode struct {
 	// Kind Kind of the resource
 	Kind string `json:"kind"`
 
+	// MatchedBy How this node was attributed to its parent, when the attribution was not exact. Set to `labelSelector` when the node was matched heuristically by labels, which can over-match; absent for exact ownerRef matches. Consoles should badge nodes that carry it.
+	MatchedBy *string `json:"matchedBy,omitempty"`
+
+	// MetadataOnly True when `object` has been projected down to `apiVersion`, `kind` and `metadata` and therefore carries no spec, status or data. Absent means the metadata-only projection was not applied; resource-specific sanitization can still remove fields. A Secret's `data` and `stringData` are removed that way, unconditionally, whether or not the projection applied.
+	MetadataOnly *bool `json:"metadataOnly,omitempty"`
+
 	// Name Name of the resource
 	Name string `json:"name"`
 
 	// Namespace Namespace of the resource
 	Namespace *string `json:"namespace,omitempty"`
 
-	// Object Full Kubernetes resource object
+	// Object The Kubernetes resource object. Reduced to `apiVersion`, `kind` and `metadata` when `metadataOnly` is true.
 	Object map[string]interface{} `json:"object"`
 
 	// ParentRefs References to parent resources
@@ -3821,6 +3969,36 @@ type TraitList struct {
 	Pagination Pagination `json:"pagination"`
 }
 
+// TraitRemove Whole resource to delete that was previously produced by the ComponentType or earlier traits. Shared by TraitSpec and ClusterTraitSpec.
+type TraitRemove struct {
+	// ForEach CEL expression for repeating this remove
+	ForEach *string `json:"forEach,omitempty"`
+
+	// Target Target resource to remove; matching resources are deleted entirely
+	Target struct {
+		// Group API group of the resource
+		Group string `json:"group"`
+
+		// Kind Resource type to remove
+		Kind string `json:"kind"`
+
+		// Version API version of the resource
+		Version string `json:"version"`
+
+		// Where CEL expression to filter which resources to remove
+		Where *string `json:"where,omitempty"`
+	} `json:"target"`
+
+	// TargetPlane Target plane for this remove
+	TargetPlane *TraitRemoveTargetPlane `json:"targetPlane,omitempty"`
+
+	// Var Loop variable name when using forEach
+	Var *string `json:"var,omitempty"`
+}
+
+// TraitRemoveTargetPlane Target plane for this remove
+type TraitRemoveTargetPlane string
+
 // TraitSpec Desired state of a Trait
 type TraitSpec struct {
 	// Creates New Kubernetes resources to create when this trait is applied
@@ -3886,7 +4064,16 @@ type TraitSpec struct {
 		Var *string `json:"var,omitempty"`
 	} `json:"patches,omitempty"`
 
-	// Validations CEL-based validation rules evaluated during rendering
+	// PostRenderValidations CEL-based validation rules evaluated after all traits are applied, against the final rendered Kubernetes resources
+	PostRenderValidations *[]PostRenderValidation `json:"postRenderValidations,omitempty"`
+
+	// PreRenderValidations CEL-based validation rules evaluated before rendering; replaces the deprecated validations field
+	PreRenderValidations *[]ValidationRule `json:"preRenderValidations,omitempty"`
+
+	// Removes Whole resources to delete that were previously produced by the ComponentType or earlier traits. Workload resource kinds (e.g. Deployment, StatefulSet, CronJob) cannot be removed.
+	Removes *[]TraitRemove `json:"removes,omitempty"`
+
+	// Validations CEL-based validation rules evaluated before rendering. Deprecated: use preRenderValidations (mutually exclusive).
 	Validations *[]ValidationRule `json:"validations,omitempty"`
 }
 
@@ -4371,6 +4558,26 @@ type WorkloadResourceDependency struct {
 	Ref string `json:"ref"`
 }
 
+// WorkloadSource Commit provenance of the image in container. Populated by the producer
+// (native CI's push-workload step, or an external CI calling this API or occ
+// directly) alongside the image, enabling Delivery Insights to compute Lead
+// Time for Changes from real deployments. Optional: DF/CFR/MTTR compute
+// without it; Lead Time reports unavailable when absent.
+type WorkloadSource struct {
+	// AuthoredAt When the commit was authored, not when it was committed or built.
+	// This is the timestamp Lead Time for Changes measures from.
+	AuthoredAt *time.Time `json:"authoredAt,omitempty"`
+
+	// Branch VCS branch the commit was built from
+	Branch *string `json:"branch,omitempty"`
+
+	// Commit VCS commit SHA the running image was built from
+	Commit *string `json:"commit,omitempty"`
+
+	// Repository VCS repository URL the commit belongs to
+	Repository *string `json:"repository,omitempty"`
+}
+
 // WorkloadSpec Desired state of a Workload
 type WorkloadSpec struct {
 	// Container Container specification
@@ -4398,6 +4605,13 @@ type WorkloadSpec struct {
 		// ProjectName Name of the owning project
 		ProjectName string `json:"projectName"`
 	} `json:"owner,omitempty"`
+
+	// Source Commit provenance of the image in container. Populated by the producer
+	// (native CI's push-workload step, or an external CI calling this API or occ
+	// directly) alongside the image, enabling Delivery Insights to compute Lead
+	// Time for Changes from real deployments. Optional: DF/CFR/MTTR compute
+	// without it; Lead Time reports unavailable when absent.
+	Source *WorkloadSource `json:"source,omitempty"`
 }
 
 // WorkloadStatus Observed state of a Workload
@@ -5051,6 +5265,9 @@ type GetReleaseBindingK8sResourceLogsParams struct {
 	// PodName Name of the pod
 	PodName string `form:"podName" json:"podName"`
 
+	// Container Name of the container to fetch logs from. If omitted, logs from all containers in the pod are returned, with each entry tagged by container.
+	Container *string `form:"container,omitempty" json:"container,omitempty"`
+
 	// SinceSeconds Number of seconds since which to show logs
 	SinceSeconds *int64 `form:"sinceSeconds,omitempty" json:"sinceSeconds,omitempty"`
 }
@@ -5268,6 +5485,9 @@ type HandleAutoBuildParams struct {
 
 	// XEventKey Bitbucket webhook event-key header used to detect Bitbucket events.
 	XEventKey *string `json:"X-Event-Key,omitempty"`
+
+	// XHubSignature Bitbucket webhook HMAC-SHA256 signature (`sha256=<hex>`) used to validate Bitbucket events.
+	XHubSignature *string `json:"X-Hub-Signature,omitempty"`
 }
 
 // ListSecretsParams defines parameters for ListSecrets.
@@ -5498,6 +5718,9 @@ type HandleAutoBuildJSONRequestBody HandleAutoBuildJSONBody
 
 // CreateGitSecretJSONRequestBody defines body for CreateGitSecret for application/json ContentType.
 type CreateGitSecretJSONRequestBody = CreateGitSecretRequest
+
+// TriggerReleaseBindingCronJobJSONRequestBody defines body for TriggerReleaseBindingCronJob for application/json ContentType.
+type TriggerReleaseBindingCronJobJSONRequestBody = CronJobTriggerRequest
 
 // CreateSecretJSONRequestBody defines body for CreateSecret for application/json ContentType.
 type CreateSecretJSONRequestBody = CreateSecretRequest

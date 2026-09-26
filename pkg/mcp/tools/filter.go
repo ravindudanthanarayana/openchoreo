@@ -6,7 +6,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -21,11 +23,26 @@ const (
 	methodListTools = "tools/list"
 )
 
+// Sentinel errors wrapped into filterCallTool's denial errors so a caller
+// (the audit middleware) can classify why a call was rejected via errors.Is,
+// rather than string-matching an error message. ErrPDPFailure is deliberately
+// distinct from the other two: it means the PDP could not be reached or
+// evaluated — an infrastructure failure, not a policy decision — and must not
+// be recorded as if the user had been denied by policy.
+var (
+	// ErrNoSubject means the request carried no authenticated subject.
+	ErrNoSubject = errors.New("no authenticated user")
+	// ErrForbidden means the PDP evaluated the request and denied it.
+	ErrForbidden = errors.New("missing required permission")
+	// ErrPDPFailure means the PDP could not be reached or evaluated.
+	ErrPDPFailure = errors.New("could not evaluate permissions")
+)
+
 // NewToolFilterMiddleware returns an MCP receiving middleware that filters
 // tools/list and tools/call results along two independent axes:
 //
 //  1. Toolset narrowing — when the client requested a specific subset of
-//     toolsets via ?toolsets= on the initialize request, tools/list returns
+//     toolsets via ?toolsets= on the current request, tools/list returns
 //     only tools whose registered toolsets intersect the requested set. This
 //     filter is purely a tools/list visibility helper; tools/call is not
 //     gated by it (clients that bypass tools/list can still call any
@@ -41,27 +58,36 @@ const (
 // (carrying the required authz action). The toolToToolsets map is also
 // produced by Register(); it maps each tool name to the set of toolsets it
 // belongs to.
+//
+// logger is used only for server-side detail on a PDP failure that must not
+// reach the MCP client (see filterCallTool). Required — a nil logger fails
+// construction rather than silently falling back to slog.Default(), which
+// could route this detail somewhere nobody is watching.
 func NewToolFilterMiddleware(
+	logger *slog.Logger,
 	pdp authzcore.PDP,
 	perms map[string]ToolPermission,
 	toolToToolsets map[string]map[ToolsetType]bool,
-) mcp.Middleware {
+) (mcp.Middleware, error) {
+	if logger == nil {
+		return nil, errors.New("audit: NewToolFilterMiddleware requires a non-nil logger")
+	}
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 			switch method {
 			case methodListTools:
 				return filterListTools(ctx, next, req, pdp, perms, toolToToolsets)
 			case methodCallTool:
-				return filterCallTool(ctx, next, method, req, pdp, perms)
+				return filterCallTool(ctx, next, method, req, pdp, perms, logger)
 			default:
 				return next(ctx, method, req)
 			}
 		}
-	}
+	}, nil
 }
 
 // filterListTools calls the next handler, then narrows the returned tool list
-// by the per-session toolset request and (when enabled) the user's authz
+// by the per-request toolset request and (when enabled) the user's authz
 // capabilities.
 func filterListTools(
 	ctx context.Context,
@@ -84,9 +110,8 @@ func filterListTools(
 
 	requested, hasRequested := RequestedToolsetsFromContext(ctx)
 	authzActive := authzFilteringActive(ctx, pdp)
-	includeDeprecated := IncludeDeprecatedToolsFromContext(ctx)
 
-	if !hasRequested && !authzActive && includeDeprecated {
+	if !hasRequested && !authzActive {
 		// Nothing to filter on — return the result as-is.
 		return listResult, nil
 	}
@@ -112,9 +137,6 @@ func filterListTools(
 
 	filtered := listResult.Tools[:0:0]
 	for _, tool := range listResult.Tools {
-		if !includeDeprecated && IsDeprecatedTool(tool.Name) {
-			continue
-		}
 		if hasRequested && !toolInRequestedToolsets(tool.Name, toolToToolsets, requested) {
 			continue
 		}
@@ -129,7 +151,7 @@ func filterListTools(
 
 // filterCallTool checks whether the user is permitted to call the requested tool
 // before forwarding to the next handler. Authz checks are skipped when the
-// per-session filterByAuthz flag is false or no PDP is configured; the service
+// per-request filterByAuthz flag is false or no PDP is configured; the service
 // layer enforces authz independently in those cases.
 func filterCallTool(
 	ctx context.Context,
@@ -138,9 +160,13 @@ func filterCallTool(
 	req mcp.Request,
 	pdp authzcore.PDP,
 	perms map[string]ToolPermission,
+	logger *slog.Logger,
 ) (mcp.Result, error) {
 	if !authzFilteringActive(ctx, pdp) {
 		return next(ctx, method, req)
+	}
+	if logger == nil {
+		return nil, errors.New("audit: filterCallTool requires a non-nil logger")
 	}
 
 	toolName := callToolName(req)
@@ -152,7 +178,7 @@ func filterCallTool(
 
 	subjectCtx, _ := auth.GetSubjectContextFromContext(ctx)
 	if subjectCtx == nil {
-		return nil, fmt.Errorf("not authorized to call tool %q: no authenticated user", toolName)
+		return nil, fmt.Errorf("not authorized to call tool %q: %w", toolName, ErrNoSubject)
 	}
 
 	requiredAction := perm.ActionForScope(callToolScopeArg(req))
@@ -167,11 +193,20 @@ func filterCallTool(
 		Scope:          callToolScope(req),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("not authorized to call tool %q: could not evaluate permissions", toolName)
+		// The raw PDP error (network/connection detail, internal endpoint,
+		// etc.) must not reach the MCP client — go-sdk relays a returned
+		// error's text back as tool-call result content. Log it server-side
+		// and return only the sentinel-wrapped, sanitized message.
+		//
+		// Worded as a server-side evaluation failure, not "not authorized":
+		// the PDP never reached a decision here, so this isn't a denial.
+		logger.Error("audit: PDP failure while authorizing MCP tool call", "tool", toolName, "error", err)
+		return nil, fmt.Errorf("error evaluating authorization for tool %q: %w", toolName, ErrPDPFailure)
 	}
 
 	if !hasActionCapability(requiredAction, profile) {
-		return nil, fmt.Errorf("not authorized to call tool %q: missing permission %q", toolName, requiredAction)
+		return nil, fmt.Errorf("not authorized to call tool %q: missing permission %q: %w",
+			toolName, requiredAction, ErrForbidden)
 	}
 
 	return next(ctx, method, req)
@@ -179,7 +214,7 @@ func filterCallTool(
 
 // authzFilteringActive reports whether MCP-layer authz filtering should be
 // applied for this request. It is active only when a PDP is configured and the
-// per-session filterByAuthz flag has not been explicitly set to false.
+// per-request filterByAuthz flag has not been explicitly set to false.
 func authzFilteringActive(ctx context.Context, pdp authzcore.PDP) bool {
 	if pdp == nil {
 		return false

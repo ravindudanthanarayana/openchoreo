@@ -51,8 +51,19 @@ openchoreoApi:
                     name: backstage-catalog-reader
                     kind: ClusterAuthzRole
               entitlement:
-                claim: sub
+                claim: client_id
                 value: openchoreo-backstage-client
+              effect: allow
+            - name: finops-agent-binding
+              kind: ClusterAuthzRoleBinding
+              system: true
+              roleMappings:
+                - roleRef:
+                    name: finops-agent
+                    kind: ClusterAuthzRole
+              entitlement:
+                claim: client_id
+                value: openchoreo-finops-agent
               effect: allow
             - name: rca-agent-binding
               kind: ClusterAuthzRoleBinding
@@ -62,7 +73,7 @@ openchoreoApi:
                     name: rca-agent
                     kind: ClusterAuthzRole
               entitlement:
-                claim: sub
+                claim: client_id
                 value: openchoreo-rca-agent
               effect: allow
             - name: workload-publisher-binding
@@ -73,7 +84,7 @@ openchoreoApi:
                     name: workload-publisher
                     kind: ClusterAuthzRole
               entitlement:
-                claim: sub
+                claim: client_id
                 value: openchoreo-workload-publisher-client
               effect: allow
             - name: observer-resource-reader-binding
@@ -84,7 +95,7 @@ openchoreoApi:
                     name: observer-resource-reader
                     kind: ClusterAuthzRole
               entitlement:
-                claim: sub
+                claim: client_id
                 value: openchoreo-observer-resource-reader-client
               effect: allow
             - name: mcp-tryout-client-binding
@@ -94,7 +105,7 @@ openchoreoApi:
                     name: admin
                     kind: ClusterAuthzRole
               entitlement:
-                claim: sub
+                claim: client_id
                 value: service_mcp_client
               effect: allow
             - name: quickstart-cli-admin-binding
@@ -104,7 +115,7 @@ openchoreoApi:
                     name: admin
                     kind: ClusterAuthzRole
               entitlement:
-                claim: sub
+                claim: client_id
                 value: openchoreo-cli-quickstart
               effect: allow
 
@@ -114,6 +125,10 @@ backstage:
   http:
     hostnames:
     - openchoreo.localhost
+
+portalAssistant:
+  config:
+    observerApiUrl: "http://observer.openchoreo.localhost:11080"
 
 features:
   secretManagement:

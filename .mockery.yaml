@@ -139,11 +139,15 @@ packages:
     interfaces:
       HealthChecker:
       LogsQuerier:
+      PlatformLogsQuerier:
+      AuditLogsQuerier:
       EventsQuerier:
       MetricsQuerier:
       TracesQuerier:
+      FinOpsQuerier:
       AlertsQuerier:
       IncidentsQuerier:
       IncidentsUpdater:
       AlertIncidentService:
       AlertRuleService:
+      DeliveryInsightsService:

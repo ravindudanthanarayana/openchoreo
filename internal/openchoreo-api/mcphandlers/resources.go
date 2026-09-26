@@ -93,6 +93,7 @@ func (h *MCPHandler) CreateResource(
 	if err != nil {
 		return nil, err
 	}
+	setAuditResource(ctx, created)
 	return mutationResult(created, "created", map[string]any{
 		"type": map[string]any{
 			"kind": string(created.Spec.Type.Kind),
@@ -128,6 +129,7 @@ func (h *MCPHandler) UpdateResource(
 	if err != nil {
 		return nil, err
 	}
+	setAuditResource(ctx, updated)
 	return mutationResult(updated, "updated"), nil
 }
 
@@ -184,6 +186,7 @@ func (h *MCPHandler) CreateResourceRelease(
 	if err != nil {
 		return nil, err
 	}
+	setAuditResource(ctx, created)
 	return mutationResult(created, "created"), nil
 }
 
@@ -244,6 +247,7 @@ func (h *MCPHandler) CreateResourceReleaseBinding(
 	if err != nil {
 		return nil, err
 	}
+	setAuditResource(ctx, created)
 	return mutationResult(created, "created"), nil
 }
 
@@ -254,16 +258,40 @@ func (h *MCPHandler) UpdateResourceReleaseBinding(
 	if req == nil {
 		return nil, errors.New("request body is required")
 	}
-	rb, err := convertSpec[gen.ResourceReleaseBinding, openchoreov1alpha1.ResourceReleaseBinding](*req)
-	if err != nil {
-		return nil, err
-	}
-	rb.Namespace = namespaceName
 
-	updated, err := h.services.ResourceReleaseBindingService.UpdateResourceReleaseBinding(ctx, namespaceName, &rb)
+	// The service replaces spec, labels and annotations wholesale, but this tool
+	// exposes only the mutable spec fields as inputs. Fetch the existing binding
+	// and apply the provided fields onto it so the immutable spec.owner and
+	// spec.environment (and the binding's metadata) are preserved — otherwise they
+	// would be submitted empty and rejected by the CRD's immutability and
+	// min-length validations.
+	existing, err := h.services.ResourceReleaseBindingService.GetResourceReleaseBinding(
+		ctx, namespaceName, req.Metadata.Name)
 	if err != nil {
 		return nil, err
 	}
+
+	if req.Spec != nil {
+		if req.Spec.ResourceRelease != nil {
+			existing.Spec.ResourceRelease = *req.Spec.ResourceRelease
+		}
+		if req.Spec.RetainPolicy != nil {
+			existing.Spec.RetainPolicy = openchoreov1alpha1.ResourceRetainPolicy(*req.Spec.RetainPolicy)
+		}
+		if req.Spec.ResourceTypeEnvironmentConfigs != nil {
+			raw, mErr := json.Marshal(*req.Spec.ResourceTypeEnvironmentConfigs)
+			if mErr != nil {
+				return nil, fmt.Errorf("marshal resourceTypeEnvironmentConfigs: %w", mErr)
+			}
+			existing.Spec.ResourceTypeEnvironmentConfigs = &runtime.RawExtension{Raw: raw}
+		}
+	}
+
+	updated, err := h.services.ResourceReleaseBindingService.UpdateResourceReleaseBinding(ctx, namespaceName, existing)
+	if err != nil {
+		return nil, err
+	}
+	setAuditResource(ctx, updated)
 	return mutationResult(updated, "updated"), nil
 }
 

@@ -27,7 +27,13 @@ server:
     read: 15s
 
     # Maximum duration before timing out writes of the response.
-    write: 15s
+    #
+    # Must outlast the resource tree walk budget, the top of the timeout ladder
+    # (agent 25s < gateway 28s < client 30s < walk 60s), or a legitimate tree
+    # response is cut off while the walk is still within its budget. Keep this
+    # at or above the derived Go default in
+    # internal/openchoreo-api/config.TimeoutsDefaults.
+    write: 65s
 
     # Maximum amount of time to wait for the next request when keep-alives are enabled.
     idle: 60s
@@ -87,6 +93,7 @@ security:
       # Authentication mechanisms and how to extract entitlements from each.
       mechanisms:
         jwt:
+          readable_id_claim: "username"
           entitlement:
             # JWT claim containing the user's entitlements/roles.
             claim: "groups"
@@ -99,8 +106,9 @@ security:
       priority: 2
       mechanisms:
         jwt:
+          readable_id_claim: "client_id"
           entitlement:
-            claim: "sub"
+            claim: "client_id"
             display_name: "Client ID"
 
   authorization:
@@ -144,6 +152,16 @@ identity:
         - "profile"
         - "email"
 
+  # OAuth scopes advertised by the MCP endpoint via
+  # `.well-known/oauth-protected-resource` and the WWW-Authenticate header on
+  # 401 responses. MCP clients prefer this list over the authorization server's
+  # scopes_supported, which can be over-broad (e.g. Cognito pool-level scopes
+  # that a specific app client doesn't allow). See issue #3217.
+  mcp_oauth_scopes:
+    - "openid"
+    - "profile"
+    - "email"
+
 secret_management:
   # Enable the Secret management API under
   # /api/v1alpha1/namespaces/{namespaceName}/secrets
@@ -165,6 +183,7 @@ mcp:
     - deployment
     - build
     - pe
+    - resource
 
 logging:
   # Minimum log level: debug, info, warn, error
@@ -175,3 +194,19 @@ logging:
 
   # Include source file and line number in log entries.
   add_source: false
+
+audit:
+  # Enable audit event emission for state-modifying API requests. Requires
+  # observability_plane_ref.
+  enabled: false
+
+  # Settings applied when no policy below matches.
+  defaults:
+    publish: true
+
+  # Ordered, first-match-wins policy overrides. Empty by default.
+  policies: []
+
+  actor:
+    # Token claim recorded as actor.id and matched by policies[].match.actors.
+    id_claim: "sub"

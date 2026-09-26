@@ -21,6 +21,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
+	"github.com/openchoreo/openchoreo/internal/auditconfig"
 	"github.com/openchoreo/openchoreo/internal/authz"
 	authzcore "github.com/openchoreo/openchoreo/internal/authz/core"
 	gatewayClient "github.com/openchoreo/openchoreo/internal/clients/gateway"
@@ -29,6 +30,7 @@ import (
 	"github.com/openchoreo/openchoreo/internal/logging"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/api/gen"
 	openapihandlers "github.com/openchoreo/openchoreo/internal/openchoreo-api/api/handlers"
+	apiaudit "github.com/openchoreo/openchoreo/internal/openchoreo-api/audit"
 	k8s "github.com/openchoreo/openchoreo/internal/openchoreo-api/clients"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/config"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/mcphandlers"
@@ -36,13 +38,16 @@ import (
 	autobuildsvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/autobuild"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services/handlerservices"
 	workflowrunsvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/workflowrun"
+	"github.com/openchoreo/openchoreo/internal/remoteconnect"
 	"github.com/openchoreo/openchoreo/internal/server"
 	"github.com/openchoreo/openchoreo/internal/server/middleware"
+	"github.com/openchoreo/openchoreo/internal/server/middleware/audit"
 	"github.com/openchoreo/openchoreo/internal/server/middleware/auth"
 	apilogger "github.com/openchoreo/openchoreo/internal/server/middleware/logger"
 	mcpmiddleware "github.com/openchoreo/openchoreo/internal/server/middleware/mcp"
 	"github.com/openchoreo/openchoreo/internal/version"
 	"github.com/openchoreo/openchoreo/pkg/mcp"
+	"github.com/openchoreo/openchoreo/pkg/mcp/mcpaudit"
 	"github.com/openchoreo/openchoreo/pkg/mcp/tools"
 )
 
@@ -75,7 +80,7 @@ func main() {
 		bootLogger.Error("Failed to unmarshal configuration", "error", err)
 		os.Exit(1)
 	}
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.ValidateWithRaw(loader); err != nil {
 		var validationErrs coreconfig.ValidationErrors
 		if errors.As(err, &validationErrs) {
 			for _, e := range validationErrs {
@@ -182,7 +187,8 @@ func main() {
 
 	// Initialize all handler services
 	services := handlerservices.NewServices(
-		k8sClient, runtime.pap, runtime.pdp, planeClientProvider, logger, gwClient, webhookProcessor,
+		k8sClient, runtime.pap, runtime.pdp, planeClientProvider, cfg.SecretManagement, logger, gwClient,
+		webhookProcessor, cfg.ResourceTree, cfg.Audit,
 	)
 
 	// Initialize OpenAPI handlers
@@ -193,8 +199,24 @@ func main() {
 	jwtMiddleware := openapihandlers.InitJWTMiddleware(&cfg, logger)
 
 	// Initialize middlewares for OpenAPI handler
-	loggerMiddleware := apilogger.LoggerMiddleware(logger.With("component", "openapi"))
 	authMiddleware := auth.OpenAPIAuth(jwtMiddleware, gen.BearerAuthScopes)
+
+	// Build the one audit Emitter shared by both the REST and MCP surfaces, so
+	// a policy applies identically regardless of which one produced the event.
+	// cfg.Validate() (above) already ran the same conversion and would have
+	// failed startup on an invalid policy; a non-nil error here is defensive.
+	auditVocab := auditconfig.NewVocabulary(apiaudit.GetOperations())
+	auditPolicies, err := cfg.Audit.BuildPolicySet(auditVocab, cfg.Security.KnownActorTypes())
+	if err != nil {
+		logger.Error("Failed to build audit policy set", slog.Any("error", err))
+		os.Exit(1)
+	}
+	auditEmitter, err := audit.NewEmitter("openchoreo-api", auditPolicies, audit.NewLogger(os.Stdout))
+	if err != nil {
+		logger.Error("Failed to build audit emitter", slog.Any("error", err))
+		os.Exit(1)
+	}
+	auditMiddlewareConfig := cfg.Audit.MiddlewareConfig()
 
 	// Create base mux for the OpenAPI router.
 	// Non-OpenAPI routes (e.g. /mcp) are registered here before the generated
@@ -208,34 +230,111 @@ func main() {
 		// Build MCP toolsets from config
 		toolsets := buildMCPToolsets(&cfg, services, mcpLogger)
 
-		// MCP middleware chain: logger → auth401 interceptor → JWT auth → handler
+		// MCP middleware chain:
+		//   logger → auth401 interceptor → JWT auth → handler
 		mcpLoggerMw := apilogger.LoggerMiddleware(mcpLogger)
 		resourceMetadataURL := cfg.Server.PublicURL + "/.well-known/oauth-protected-resource"
-		mcpAuth401Mw := mcpmiddleware.Auth401Interceptor(resourceMetadataURL)
-		mcpHandler := middleware.Chain(mcpLoggerMw, mcpAuth401Mw, jwtMiddleware)(mcp.NewHTTPServer(toolsets, runtime.pdp))
+		mcpAuth401Mw := mcpmiddleware.Auth401Interceptor(resourceMetadataURL, cfg.Identity.MCPOAuthScopes)
+		mcpBindings, err := apiaudit.MCPBindings()
+		if err != nil {
+			logger.Error("Failed to build MCP audit bindings", slog.Any("error", err))
+			os.Exit(1)
+		}
+		mcpServer, err := mcp.NewHTTPServer(mcpLogger, toolsets, runtime.pdp, mcpaudit.MiddlewareOptions{
+			Emitter:  auditEmitter,
+			Bindings: mcpBindings,
+			Config:   auditMiddlewareConfig,
+		})
+		if err != nil {
+			logger.Error("Failed to build MCP HTTP server", slog.Any("error", err))
+			os.Exit(1)
+		}
+		mcpHandler := middleware.Chain(mcpLoggerMw, mcpAuth401Mw, jwtMiddleware)(mcpServer)
 
 		baseMux.Handle("/mcp", mcpHandler)
 	}
 
-	// Create OpenAPI handler with middleware chain (order: logger → auth → webhookBody → handler)
-	// Middlewares are applied last-to-first (last entry becomes the outermost wrapper).
-	// Execution order: loggerMiddleware → authMiddleware → webhookRawBodyMiddleware → handler.
-	// loggerMiddleware must be outermost so it captures all responses, including 401s from auth.
-	// webhookRawBodyMiddleware must be innermost (before the strict handler decodes the body)
-	// so that HMAC signature validation can access the original raw bytes.
-	// The generated routes are registered on the baseMux alongside /mcp.
+	// Remote-connect resolve endpoint (only if enabled). Plain JSON handler registered on
+	// the baseMux like /mcp — authenticated by the JWT middleware, with authorization
+	// (component:connect) enforced inside the handler. Not part of the strict OpenAPI
+	// chain. The stream endpoint that consumes its capability is registered further
+	// down, alongside exec/wirelogs, once the cluster gateway is known to be available.
+	var remoteConnectHandler *openapihandlers.RemoteConnectHandler
+	if cfg.RemoteConnect.Enabled {
+		remoteConnectAuthzChecker := svcpkg.NewAuthzChecker(runtime.pdp, logger.With("component", "remote-connect-authz"))
+		remoteConnectHandler, err = openapihandlers.NewRemoteConnectHandler(
+			k8sClient, planeClientProvider, remoteConnectAuthzChecker, cfg.RemoteConnect, logger)
+		if err != nil {
+			logger.Error("Failed to initialize remote-connect handler", slog.Any("error", err))
+			os.Exit(1)
+		}
+		// Resolve: authenticated by the JWT middleware; authorization (component:connect)
+		// enforced inside the handler.
+		baseMux.Handle("POST /api/v1/remote-connect:resolve", jwtMiddleware(remoteConnectHandler))
+		// Authorize: the remote-agent's per-stream callback. Registered WITHOUT the JWT
+		// middleware — the remote-agent has no user JWT; the CP-signed capability in the
+		// request body is the credential, verified inside the handler.
+		authorizeHandler := openapihandlers.NewRemoteConnectAuthorizeHandler(
+			remoteConnectHandler.VerifyKey(), remoteConnectHandler.TouchAgent, logger)
+		baseMux.Handle("POST "+remoteconnect.AuthorizePath, authorizeHandler)
+		// Heartbeat: the remote-agent's periodic liveness callback while it has live
+		// sessions. Also unauthenticated at the middleware layer — the presented
+		// capability is the credential (verified, expiry tolerated, inside the handler).
+		// A heartbeat keeps the agent alive but is not a read.
+		heartbeatHandler := openapihandlers.NewRemoteConnectHeartbeatHandler(
+			remoteConnectHandler.VerifyKey(),
+			func(ctx context.Context, namespace, env, dpNamespace string) error {
+				return remoteConnectHandler.TouchAgent(ctx, namespace, env, dpNamespace, false)
+			}, logger)
+		baseMux.Handle("POST "+remoteconnect.HeartbeatPath, heartbeatHandler)
+		logger.Info("Remote-connect resolve + authorize + heartbeat endpoints registered",
+			"resolve", "/api/v1/remote-connect:resolve",
+			"authorize", remoteconnect.AuthorizePath, "heartbeat", remoteconnect.HeartbeatPath)
+
+		// Reaper: GC remote-agents idle past the configured TTL, across every data plane.
+		reaper := openapihandlers.NewRemoteAgentReaper(k8sClient, planeClientProvider, cfg.RemoteConnect, logger)
+		go reaper.Start(ctx)
+		logger.Info("Remote-connect remote-agent reaper started",
+			"interval", cfg.RemoteConnect.ReaperInterval(), "ttl", cfg.RemoteConnect.ReaperTTL())
+	}
+
+	// Create OpenAPI handler with middleware chain. The chain's ordering rationale
+	// lives in openapihandlers.OpenAPIMiddlewares, the single place route middleware
+	// is composed. The generated routes are registered on the baseMux alongside /mcp.
+	openapiMiddlewares, err := openapihandlers.OpenAPIMiddlewares(openapihandlers.OpenAPIMiddlewareOptions{
+		Logger:         logger,
+		AuthMiddleware: authMiddleware,
+		AuditEmitter:   auditEmitter,
+		AuditConfig:    auditMiddlewareConfig,
+	})
+	if err != nil {
+		logger.Error("Failed to build OpenAPI middlewares", slog.Any("error", err))
+		os.Exit(1)
+	}
 	handler := gen.HandlerWithOptions(strictHandler, gen.StdHTTPServerOptions{
 		BaseRouter:  baseMux,
-		Middlewares: []gen.MiddlewareFunc{openapihandlers.WebhookRawBodyMiddleware, authMiddleware, loggerMiddleware},
+		Middlewares: openapiMiddlewares,
 	})
 
-	// Exec WebSocket endpoint is registered on a top-level mux that wraps the
-	// OpenAPI handler. This keeps exec outside the OpenAPI middleware chain whose
-	// ResponseWriter wrappers break http.Hijacker (required for WebSocket upgrade).
+	// Exec WebSocket and wirelogs endpoints are registered on a top-level mux
+	// that wraps the OpenAPI handler: neither is in openapi.yaml, so neither
+	// has an operationId to cross-reference against a spec — they get their
+	// own hand-declared audit middleware instead (NewExecWirelogsAuditMiddleware).
 	// The JWT middleware is applied directly to the exec handler for authentication.
 	// Authorization is enforced inside the handler via AuthzChecker (component:exec).
 	var topHandler http.Handler = handler
 	if cfg.ClusterGateway.Enabled && gatewayURL != "" {
+		execWirelogsAuditMw, err := openapihandlers.NewExecWirelogsAuditMiddleware(
+			logger, auditEmitter, auditMiddlewareConfig)
+		if err != nil {
+			logger.Error("Failed to build exec/wirelogs audit middleware", slog.Any("error", err))
+			os.Exit(1)
+		}
+		// Outermost, as in OpenAPIMiddlewares: auth short-circuits a rejected
+		// request before the audit middleware runs, so the access log is the
+		// only record of a rejected attempt on these data-plane routes.
+		execWirelogsLoggerMw := apilogger.LoggerMiddleware(logger.With("component", "exec-wirelogs"))
+
 		execAuthzChecker := svcpkg.NewAuthzChecker(runtime.pdp, logger.With("component", "exec-authz"))
 		gwTLSConf, err := gatewayClient.BuildTLSConfig(&gatewayClient.TLSConfig{
 			CAFile:             cfg.ClusterGateway.TLS.CACertPath,
@@ -248,7 +347,7 @@ func main() {
 			os.Exit(1)
 		}
 		execHandler := openapihandlers.NewExecHandler(k8sClient, gwClient, gatewayURL, gwTLSConf, execAuthzChecker, logger)
-		authedExecHandler := jwtMiddleware(execHandler)
+		authedExecHandler := execWirelogsLoggerMw(jwtMiddleware(execWirelogsAuditMw.Handler(execHandler)))
 
 		// Wirelogs handler shares the same gateway TLS config and authz checker
 		// (authz reuses logs:view at the component scope).
@@ -256,11 +355,17 @@ func main() {
 		wirelogsHandler := openapihandlers.NewWirelogsHandler(
 			k8sClient, gwClient, gatewayURL, gwTLSConf, wirelogsAuthzChecker, logger,
 		)
-		authedWirelogsHandler := jwtMiddleware(wirelogsHandler)
+		authedWirelogsHandler := execWirelogsLoggerMw(jwtMiddleware(execWirelogsAuditMw.Handler(wirelogsHandler)))
 
 		topMux := http.NewServeMux()
-		topMux.Handle("/exec/", authedExecHandler)
-		topMux.Handle("GET /api/v1/namespaces/{namespace}/environments/{environment}/wirelogs", authedWirelogsHandler)
+		topMux.Handle(openapihandlers.ExecRoutePattern, authedExecHandler)
+		topMux.Handle(openapihandlers.WirelogsRoutePattern, authedWirelogsHandler)
+
+		// remote-connect is not served through this gateway mux: occ dials the
+		// per-project+env remote-agent's dedicated L4 Service directly. The control plane
+		// only resolves + provisions and authorizes streams via the remote-agent callback
+		// (both on baseMux).
+
 		topMux.Handle("/", handler)
 		topHandler = topMux
 		logger.Info("Exec endpoint registered", "path", "/exec/namespaces/{ns}/components/{name}")
@@ -312,43 +417,17 @@ type runtime struct {
 }
 
 // buildMCPToolsets creates the MCP toolsets from the configuration.
-// Each enabled toolset is backed by the handler services layer.
+// Each enabled toolset is backed by the handler services layer. An unknown
+// toolset name in cfg.MCP.Toolsets never reaches here — config.Validate
+// (config.MCPConfig.ValidateMCPConfig) already rejects it against the same
+// validToolsets set at startup.
 func buildMCPToolsets(cfg *config.Config, svc *handlerservices.Services, logger *slog.Logger) *tools.Toolsets {
 	toolsetsMap := cfg.MCP.ParseToolsets()
 
 	logger.Info("Initializing MCP server", slog.Any("enabled_toolsets", cfg.MCP.Toolsets))
 
 	handler := mcphandlers.NewMCPHandler(svc)
-
-	toolsets := &tools.Toolsets{}
-	for toolsetType := range toolsetsMap {
-		switch toolsetType {
-		case tools.ToolsetNamespace:
-			toolsets.NamespaceToolset = handler
-			logger.Debug("Enabled MCP toolset", slog.String("toolset", "namespace"))
-		case tools.ToolsetProject:
-			toolsets.ProjectToolset = handler
-			logger.Debug("Enabled MCP toolset", slog.String("toolset", "project"))
-		case tools.ToolsetComponent:
-			toolsets.ComponentToolset = handler
-			logger.Debug("Enabled MCP toolset", slog.String("toolset", "component"))
-		case tools.ToolsetDeployment:
-			toolsets.DeploymentToolset = handler
-			logger.Debug("Enabled MCP toolset", slog.String("toolset", "deployment"))
-		case tools.ToolsetBuild:
-			toolsets.BuildToolset = handler
-			logger.Debug("Enabled MCP toolset", slog.String("toolset", "build"))
-		case tools.ToolsetPE:
-			toolsets.PEToolset = handler
-			logger.Debug("Enabled MCP toolset", slog.String("toolset", "pe"))
-		case tools.ToolsetResource:
-			toolsets.ResourceToolset = handler
-			logger.Debug("Enabled MCP toolset", slog.String("toolset", "resource"))
-		default:
-			logger.Warn("Unknown toolset type", slog.String("toolset", string(toolsetType)))
-		}
-	}
-	return toolsets
+	return tools.NewToolsets(handler, toolsetsMap)
 }
 
 // setupRuntime bootstraps the authorization runtime. When authorization is

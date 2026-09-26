@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
@@ -24,7 +25,32 @@ import (
 	gatewayClient "github.com/openchoreo/openchoreo/internal/clients/gateway"
 	"github.com/openchoreo/openchoreo/internal/controller"
 	svcpkg "github.com/openchoreo/openchoreo/internal/openchoreo-api/services"
+	"github.com/openchoreo/openchoreo/internal/server/middleware/audit"
 )
+
+// responseWriterUnwrapper is implemented by a ResponseWriter wrapper that
+// exposes the writer it wraps — the same interface http.ResponseController
+// looks for (net/http.rwUnwrapper), duplicated here since it's unexported.
+type responseWriterUnwrapper interface {
+	Unwrap() http.ResponseWriter
+}
+
+// findFlusher walks w's Unwrap() chain looking for an http.Flusher, without
+// invoking it — the same lookup http.ResponseController performs internally
+// for Flush(), exposed here as a pure capability check so callers can fail
+// fast before writing any response header.
+func findFlusher(w http.ResponseWriter) (http.Flusher, bool) {
+	for {
+		if f, ok := w.(http.Flusher); ok {
+			return f, true
+		}
+		u, ok := w.(responseWriterUnwrapper)
+		if !ok {
+			return nil, false
+		}
+		w = u.Unwrap()
+	}
+}
 
 // RFC1123 DNS label (the k8s name form accepted by the gateway).
 var wirelogsNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
@@ -107,6 +133,22 @@ func (h *WirelogsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	checkReq := wirelogsCheckRequest(namespace, environment, project, component)
+
+	// The middleware's pre-handler seed can't fill resource.namespace for
+	// this route (its path parameter isn't "namespaceName"), so set it here
+	// — after validation, so a malformed value never reaches the record.
+	//
+	// The environment is this route's scope rather than the target object's
+	// name, so it goes in the hierarchy. Taken from the check request so both
+	// carry one value, and written before the ownership 403 below, which is a
+	// denial that never reaches the check that would otherwise record it.
+	audit.SetResource(r.Context(), &audit.Resource{Namespace: namespace})
+	audit.SetHierarchy(r.Context(), audit.Hierarchy{
+		Namespace:   namespace,
+		Environment: checkReq.Context.Resource.Environment,
+	})
+
 	ctx := r.Context()
 	logger := h.logger.With(
 		"namespace", namespace,
@@ -120,7 +162,25 @@ func (h *WirelogsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "authorization not configured", http.StatusInternalServerError)
 		return
 	}
-	if err := h.authzChecker.Check(ctx, wirelogsCheckRequest(namespace, environment, project, component)); err != nil {
+
+	// When a component filter is supplied, require it to be owned by the requested
+	// project and authorize against the component's real owning project.
+	if component != "" {
+		ownerProject, err := h.resolveComponentProject(ctx, namespace, component)
+		if err != nil {
+			logger.Warn("Failed to resolve component for wirelogs", "error", err)
+			http.Error(w, fmt.Sprintf("failed to resolve component: %v", err), http.StatusBadRequest)
+			return
+		}
+		if ownerProject != project {
+			logger.Warn("requested project does not own the target component; denying",
+				"requestedProject", project, "ownerProject", ownerProject)
+			http.Error(w, "you do not have permission to view wirelogs for this scope", http.StatusForbidden)
+			return
+		}
+	}
+
+	if err := h.authzChecker.Check(ctx, checkReq); err != nil {
 		if errors.Is(err, svcpkg.ErrForbidden) {
 			http.Error(w, "you do not have permission to view wirelogs for this scope", http.StatusForbidden)
 			return
@@ -130,6 +190,12 @@ func (h *WirelogsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.proxyWirelogsStream(ctx, w, logger, namespace, environment, project, component)
+}
+
+// proxyWirelogsStream resolves the target data plane and proxies the gateway's
+// SSE stream to the client.
+func (h *WirelogsHandler) proxyWirelogsStream(ctx context.Context, w http.ResponseWriter, logger *slog.Logger, namespace, environment, project, component string) {
 	plane, err := h.resolvePlane(ctx, namespace, environment)
 	if err != nil {
 		logger.Error("Failed to resolve data plane for wirelogs", "error", err)
@@ -139,17 +205,18 @@ func (h *WirelogsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	logger = logger.With("planeType", plane.planeType, "planeID", plane.planeID)
 
-	flusher, ok := w.(http.Flusher)
+	flusher, ok := findFlusher(w)
 	if !ok {
 		logger.Error("ResponseWriter does not support flushing; cannot stream SSE")
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+	rc := http.NewResponseController(w)
 	// The http.Server's WriteTimeout is an absolute deadline from when request
 	// headers are read; for a long-lived SSE stream it would kill the connection
 	// after that deadline regardless of activity. Hence, clear the deadline on this connection only
 	// Other endpoints keep the server's default protection.
-	if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil {
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
 		logger.Warn("Failed to disable write deadline for SSE stream", "error", err)
 	}
 
@@ -259,6 +326,21 @@ func wirelogsCheckRequest(namespace, environment, project, component string) svc
 			Context:      authzCtx,
 		}
 	}
+}
+
+// resolveComponentProject returns the owning project of the named component.
+func (h *WirelogsHandler) resolveComponentProject(ctx context.Context, namespace, component string) (string, error) {
+	comp := &openchoreov1alpha1.Component{}
+	if err := h.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: component}, comp); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("component %q not found in namespace %q", component, namespace)
+		}
+		return "", fmt.Errorf("failed to look up component %q: %w", component, err)
+	}
+	if comp.Spec.Owner.ProjectName == "" {
+		return "", fmt.Errorf("component %q has no owning project", component)
+	}
+	return comp.Spec.Owner.ProjectName, nil
 }
 
 // resolvePlane resolves the data plane for an environment.

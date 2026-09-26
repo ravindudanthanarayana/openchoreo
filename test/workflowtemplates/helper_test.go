@@ -6,6 +6,7 @@ package workflowtemplates
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -15,6 +16,8 @@ import (
 // templatesDir is the location of the workflow templates relative to this
 // test package.
 const templatesDir = "../../samples/getting-started/workflow-templates"
+
+const buildCacheTemplatesDir = "../../install/k3d/build-cache/workflow-templates"
 
 const ciWorkflowsDir = "../../samples/getting-started/ci-workflows"
 
@@ -27,32 +30,43 @@ type workflowTemplate struct {
 		Name string `yaml:"name"`
 	} `yaml:"metadata"`
 	Spec struct {
-		Templates []struct {
-			Name   string `yaml:"name"`
-			Inputs struct {
-				Parameters []struct {
-					Name    string `yaml:"name"`
-					Default string `yaml:"default"`
-				} `yaml:"parameters"`
-			} `yaml:"inputs"`
-			Container struct {
-				Image        string   `yaml:"image"`
-				Args         []string `yaml:"args"`
-				VolumeMounts []struct {
-					Name      string `yaml:"name"`
-					MountPath string `yaml:"mountPath"`
-					ReadOnly  bool   `yaml:"readOnly"`
-				} `yaml:"volumeMounts"`
-			} `yaml:"container"`
-			Volumes []struct {
-				Name   string `yaml:"name"`
-				Secret *struct {
-					SecretName string `yaml:"secretName"`
-					Optional   *bool  `yaml:"optional"`
-				} `yaml:"secret"`
-			} `yaml:"volumes"`
-		} `yaml:"templates"`
+		Templates []workflowTemplateStep `yaml:"templates"`
 	} `yaml:"spec"`
+}
+
+// inputParameter is one entry of an Argo template's inputs.parameters.
+type inputParameter struct {
+	Name    string `yaml:"name"`
+	Default string `yaml:"default"`
+}
+
+type workflowTemplateStep struct {
+	Name   string `yaml:"name"`
+	Inputs struct {
+		Parameters []inputParameter `yaml:"parameters"`
+	} `yaml:"inputs"`
+	Container struct {
+		Image        string   `yaml:"image"`
+		Args         []string `yaml:"args"`
+		Env          []envVar `yaml:"env"`
+		VolumeMounts []struct {
+			Name      string `yaml:"name"`
+			MountPath string `yaml:"mountPath"`
+			ReadOnly  bool   `yaml:"readOnly"`
+		} `yaml:"volumeMounts"`
+	} `yaml:"container"`
+	Volumes []struct {
+		Name   string `yaml:"name"`
+		Secret *struct {
+			SecretName string `yaml:"secretName"`
+			Optional   *bool  `yaml:"optional"`
+		} `yaml:"secret"`
+	} `yaml:"volumes"`
+}
+
+type envVar struct {
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
 }
 
 type clusterWorkflow struct {
@@ -142,7 +156,12 @@ type argoStep struct {
 // loadTemplate parses a template YAML by file name (e.g. "checkout-source.yaml").
 func loadTemplate(t *testing.T, filename string) workflowTemplate {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(templatesDir, filename))
+	return loadTemplateFromDir(t, templatesDir, filename)
+}
+
+func loadTemplateFromDir(t *testing.T, dir, filename string) workflowTemplate {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, filename))
 	require.NoError(t, err, "reading template %s", filename)
 
 	var wt workflowTemplate
@@ -163,17 +182,44 @@ func loadCIWorkflow(t *testing.T, filename string) clusterWorkflow {
 // scriptForTemplate returns container.args[0] for the named Argo template.
 func scriptForTemplate(t *testing.T, filename, templateName string) string {
 	t.Helper()
-	wt := loadTemplate(t, filename)
+	return scriptForTemplateFromDir(t, templatesDir, filename, templateName)
+}
+
+func scriptForTemplateFromDir(t *testing.T, dir, filename, templateName string) string {
+	t.Helper()
+	tmpl := workflowTemplateByNameFromDir(t, dir, filename, templateName)
+	args := tmpl.Container.Args
+	require.NotEmpty(t, args, "template %s/%s has no container.args", filename, templateName)
+	return args[0]
+}
+
+func envForTemplate(t *testing.T, filename, templateName string) []envVar {
+	t.Helper()
+	return envForTemplateFromDir(t, templatesDir, filename, templateName)
+}
+
+func envForTemplateFromDir(t *testing.T, dir, filename, templateName string) []envVar {
+	t.Helper()
+	tmpl := workflowTemplateByNameFromDir(t, dir, filename, templateName)
+	return tmpl.Container.Env
+}
+
+func workflowTemplateByName(t *testing.T, filename, templateName string) workflowTemplateStep {
+	t.Helper()
+	return workflowTemplateByNameFromDir(t, templatesDir, filename, templateName)
+}
+
+func workflowTemplateByNameFromDir(t *testing.T, dir, filename, templateName string) workflowTemplateStep {
+	t.Helper()
+	wt := loadTemplateFromDir(t, dir, filename)
 	for _, tmpl := range wt.Spec.Templates {
 		if tmpl.Name != templateName {
 			continue
 		}
-		args := tmpl.Container.Args
-		require.NotEmpty(t, args, "template %s/%s has no container.args", filename, templateName)
-		return args[0]
+		return tmpl
 	}
 	require.Failf(t, "template not found", "template %s not found in %s", templateName, filename)
-	return ""
+	return workflowTemplateStep{}
 }
 
 func writeExec(t *testing.T, path, content string) {
@@ -196,17 +242,17 @@ func mountPath(t *testing.T, filename, volumeName string) string {
 }
 
 // inputParamDefault returns the `default` of the named input parameter on the
-// first template, or "" if not found.
+// first template. A missing parameter fails the test rather than returning "",
+// so that asserting on an empty default cannot be satisfied by the parameter
+// not existing at all -- which is the very thing such an assertion guards.
 func inputParamDefault(t *testing.T, filename, paramName string) string {
 	t.Helper()
 	wt := loadTemplate(t, filename)
 	require.NotEmpty(t, wt.Spec.Templates, "template %s has no spec.templates", filename)
-	for _, p := range wt.Spec.Templates[0].Inputs.Parameters {
-		if p.Name == paramName {
-			return p.Default
-		}
-	}
-	return ""
+	params := wt.Spec.Templates[0].Inputs.Parameters
+	i := slices.IndexFunc(params, func(p inputParameter) bool { return p.Name == paramName })
+	require.NotEqualf(t, -1, i, "template %s has no input parameter %q", filename, paramName)
+	return params[i].Default
 }
 
 // secretVolumeOptional reports whether the named secret volume exists and is

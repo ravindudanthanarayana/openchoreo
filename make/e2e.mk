@@ -22,7 +22,6 @@ E2E_WITH_UI            ?= false
 E2E_BACKSTAGE_IMAGE_TAG ?=
 # Set to "true" to replace Thunder with Dex as the OIDC provider and run the
 # external-IdP Playwright suite (test/ui/specs/external-idp/).
-# Implies Backstage — no need to also set E2E_WITH_UI=true.
 E2E_WITH_EXT_IDP       ?= false
 # Go duration for the test suite (go test -timeout)
 E2E_TEST_TIMEOUT       ?= 20m
@@ -35,6 +34,13 @@ E2E_SETTLE_ATTEMPTS      ?= 60
 E2E_SETTLE_INTERVAL      ?= 4
 E2E_SETTLE_PROBE_TIMEOUT ?= 5s
 E2E_SETTLE_STABLE_HITS   ?= 3
+# Retries for prerequisite helm installs, see e2e_helm_retry.
+E2E_HELM_RETRY_ATTEMPTS  ?= 3
+# Probes for the API-server gate after cluster create, see e2e_wait_nodes_ready.
+E2E_NODE_READY_ATTEMPTS  ?= 30
+# Lines of pod log kept per container by the diagnostics targets. A UI leg runs
+# for ~an hour, so a small tail captures only the last few seconds of it.
+E2E_DIAGNOSTICS_LOG_TAIL ?= 20000
 # Ginkgo label-filter expression to select which specs run. Empty = run everything.
 # Suites are labeled `tier1`, `tier2`, … on their top-level Describe; see proposal #3509.
 # Examples: `tier1`, `tier1 || tier2`, `tier1 && !tier2`.
@@ -60,11 +66,18 @@ UI_DIR                 := $(PROJECT_DIR)/test/ui
 UI_K3D_DIR             := $(UI_DIR)/k3d
 
 # When the UI suite is enabled, layer the cp-ui overlay on top of the default
-# control-plane values so Backstage gets switched on. When a Backstage image tag
-# is supplied, pin it so the install does not fall back to the chart AppVersion
-# (the openchoreo SHA), which has no matching openchoreo-ui image.
+# control-plane values so Backstage gets switched on. External-IdP mode layers
+# a second overlay on top that swaps Thunder for Dex as the OIDC provider (the
+# ext-idp overlay overrides security.oidc.* and adds the groups scope) — it
+# requires E2E_WITH_UI=true too, since Backstage is what the ext-idp suite
+# drives. When a Backstage image tag is supplied, pin it so the install does
+# not fall back to the chart AppVersion (the openchoreo SHA), which has no
+# matching openchoreo-ui image.
 ifeq ($(E2E_WITH_UI),true)
   E2E_CP_EXTRA_VALUES := --values $(UI_K3D_DIR)/values-cp-ui.yaml
+  ifeq ($(E2E_WITH_EXT_IDP),true)
+    E2E_CP_EXTRA_VALUES += --values $(UI_K3D_DIR)/values-cp-ext-idp.yaml
+  endif
   ifneq ($(strip $(E2E_BACKSTAGE_IMAGE_TAG)),)
     E2E_CP_EXTRA_VALUES += --set-string backstage.image.tag=$(E2E_BACKSTAGE_IMAGE_TAG)
   endif
@@ -72,13 +85,12 @@ else
   E2E_CP_EXTRA_VALUES :=
 endif
 
-# External-IdP mode: enable Backstage AND swap Thunder for Dex as the OIDC provider.
-# The ext-idp overlay overrides security.oidc.* and adds the groups scope.
-ifeq ($(E2E_WITH_EXT_IDP),true)
-  E2E_CP_EXTRA_VALUES := --values $(UI_K3D_DIR)/values-cp-ui.yaml --values $(UI_K3D_DIR)/values-cp-ext-idp.yaml
-  ifneq ($(strip $(E2E_BACKSTAGE_IMAGE_TAG)),)
-    E2E_CP_EXTRA_VALUES += --set-string backstage.image.tag=$(E2E_BACKSTAGE_IMAGE_TAG)
-  endif
+# Audit records are routed and stored by the observability plane, so the control
+# plane only emits them when that plane is part of the setup.
+ifeq ($(E2E_WITH_OBSERVABILITY),true)
+  E2E_CP_EXTRA_VALUES += --set openchoreoApi.config.audit.enabled=true \
+    --set openchoreoApi.config.audit.observabilityPlaneRef.kind=ClusterObservabilityPlane \
+    --set openchoreoApi.config.audit.observabilityPlaneRef.name=default
 endif
 
 # Namespaces
@@ -93,11 +105,17 @@ CERT_MANAGER_VERSION   ?= v1.19.4
 ESO_VERSION            ?= 2.0.1
 KGATEWAY_VERSION       ?= v2.3.1
 OPENBAO_CHART_VERSION  ?= 0.25.6
-THUNDER_VERSION        ?= 0.28.0
+THUNDER_VERSION        ?= 1.0.1
 DEX_VERSION            ?= 0.24.1
-OBSERVABILITY_LOGS_OPENSEARCH_VERSION     ?= 0.5.3
-OBSERVABILITY_TRACES_OPENSEARCH_VERSION   ?= 0.4.2
-OBSERVABILITY_METRICS_PROMETHEUS_VERSION  ?= 0.6.1
+
+# Observability community modules: 0.0.0-latest-dev on main, pinned on release
+# branches by hack/pin-observability-modules.sh
+OBSERVABILITY_LOGS_OPENSEARCH_VERSION     ?= 0.0.0-latest-dev
+OBSERVABILITY_TRACES_OPENSEARCH_VERSION   ?= 0.0.0-latest-dev
+OBSERVABILITY_METRICS_PROMETHEUS_VERSION  ?= 0.0.0-latest-dev
+# Tier3 multi-cluster e2e only (see _e2e.mc.install-op / _e2e.mc.install-fluent-bit):
+# logs use the OpenObserve community module there instead of OpenSearch.
+OBSERVABILITY_LOGS_OPENOBSERVE_VERSION    ?= 0.0.0-latest-dev
 
 # Helm chart references: local chart dirs or OCI registry
 ifeq ($(E2E_HELM_SOURCE),oci)
@@ -276,6 +294,57 @@ define e2e_mc_op_settle
 	done
 endef
 
+# ---------------------------------------------------------------------------
+# The Prometheus and Alertmanager StatefulSets, their pods and their PVCs are
+# created by the prometheus-operator from the Prometheus/Alertmanager
+# custom resources, not by Helm, so helm returns as soon as the CRs are applied.
+# Since the module persists both on PVCs, a volume that never binds
+# (no default StorageClass, or an exhausted one) would pass through installation
+# and only surface much later as "no metrics". This helper waits for the operator
+# to create each StatefulSet before asking for rollout status,
+# since `rollout status` errors out on a not-yet-created object.
+# Usage: $(call e2e_wait_metrics_prometheus,<kubectl-cmd>,<namespace>,<statefulsets>)
+# ---------------------------------------------------------------------------
+define e2e_wait_metrics_prometheus
+	@$(call log_info, Waiting for metrics module StatefulSets to roll out: $(3))
+	@for sts in $(3); do \
+		for i in $$(seq 1 30); do \
+			$(1) -n $(2) get statefulset $$sts >/dev/null 2>&1 && break; \
+			if [ $$i -eq 30 ]; then echo "prometheus-operator did not create StatefulSet $$sts within 60s"; exit 1; fi; \
+			sleep 2; \
+		done; \
+		$(1) -n $(2) rollout status statefulset/$$sts --timeout=$(E2E_SETUP_TIMEOUT) || exit 1; \
+	done
+endef
+
+# Gates on the API server answering, then on node readiness. The probe loop is
+# needed because a just-created k3s API server returns ServiceUnavailable and
+# kubectl won't retry that itself. Probing /readyz rather than re-running the
+# node wait keeps the worst case bounded to ATTEMPTS x (PROBE_TIMEOUT +
+# INTERVAL) plus one node wait, instead of ATTEMPTS full node waits.
+# Usage: $(call e2e_wait_nodes_ready,<kubectl-context-flags>,<cluster-label>)
+define e2e_wait_nodes_ready
+	@for i in $$(seq 1 $(E2E_NODE_READY_ATTEMPTS)); do \
+		if kubectl $(1) get --raw='/readyz' --request-timeout=$(E2E_SETTLE_PROBE_TIMEOUT) >/dev/null 2>&1; then break; fi; \
+		if [ $$i -eq $(E2E_NODE_READY_ATTEMPTS) ]; then echo "$(2) API server did not become ready in time"; exit 1; fi; \
+		$(call log_info, $(2) API server not ready yet); \
+		sleep $(E2E_SETTLE_INTERVAL); \
+	done
+	kubectl $(1) wait --for=condition=Ready nodes --all --timeout=120s
+endef
+
+# Retries a full helm command up to E2E_HELM_RETRY_ATTEMPTS times, since a
+# just-created k3s API server can transiently drop connections.
+# Usage: $(call e2e_helm_retry,<full helm command>)
+define e2e_helm_retry
+	@for i in $$(seq 1 $(E2E_HELM_RETRY_ATTEMPTS)); do \
+		if $(1); then exit 0; fi; \
+		if [ $$i -eq $(E2E_HELM_RETRY_ATTEMPTS) ]; then echo "helm command failed after $(E2E_HELM_RETRY_ATTEMPTS) attempts"; exit 1; fi; \
+		$(call log_info, helm command failed (attempt $$i/$(E2E_HELM_RETRY_ATTEMPTS)) - retrying); \
+		sleep $(E2E_SETTLE_INTERVAL); \
+	done
+endef
+
 ##@ E2E Testing
 
 # ---------------------------------------------------------------------------
@@ -358,6 +427,12 @@ _e2e.prepare-backstage-secret:
 e2e.setup-cluster: ## Create k3d cluster
 	@$(call log_info, Creating k3d cluster '$(E2E_CLUSTER_NAME)')
 	k3d cluster create --config $(E2E_K3D_DIR)/config.yaml
+	@# Gate on node readiness before the first apply: k3d returns once the
+	@# cluster is "created", but the API server may still be bringing up its
+	@# OpenAPI/aggregation layer, which a client-side `apply` needs ("failed
+	@# to download openapi: the server is currently unable to handle the
+	@# request"). Mirrors the multi-cluster setup.
+	$(call e2e_wait_nodes_ready,--context $(E2E_KUBECONTEXT),cluster)
 	@$(call log_info, Applying CoreDNS rewrite for e2e domains)
 	$(E2E_KUBECTL) apply -f $(E2E_K3D_DIR)/coredns-custom.yaml
 	@$(call log_success, k3d cluster '$(E2E_CLUSTER_NAME)' created)
@@ -368,22 +443,22 @@ e2e.setup-prerequisites: ## Install Gateway API, cert-manager, ESO, kgateway
 	$(E2E_KUBECTL) apply --server-side \
 		-f https://github.com/kubernetes-sigs/gateway-api/releases/download/$(GATEWAY_API_VERSION)/standard-install.yaml
 	@$(call log_info, Installing cert-manager $(CERT_MANAGER_VERSION))
-	$(E2E_HELM) upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
+	$(call e2e_helm_retry,$(E2E_HELM) upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
 		--namespace cert-manager --create-namespace \
 		--version $(CERT_MANAGER_VERSION) --set crds.enabled=true \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
 	@$(call log_info, Installing External Secrets Operator $(ESO_VERSION))
-	$(E2E_HELM) upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets \
+	$(call e2e_helm_retry,$(E2E_HELM) upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets \
 		--namespace external-secrets --create-namespace \
 		--version $(ESO_VERSION) --set installCRDs=true \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
 	@$(call log_info, Installing kgateway $(KGATEWAY_VERSION))
-	$(E2E_HELM) upgrade --install kgateway-crds oci://cr.kgateway.dev/kgateway-dev/charts/kgateway-crds \
-		--version $(KGATEWAY_VERSION)
-	$(E2E_HELM) upgrade --install kgateway oci://cr.kgateway.dev/kgateway-dev/charts/kgateway \
+	$(call e2e_helm_retry,$(E2E_HELM) upgrade --install kgateway-crds oci://cr.kgateway.dev/kgateway-dev/charts/kgateway-crds \
+		--version $(KGATEWAY_VERSION))
+	$(call e2e_helm_retry,$(E2E_HELM) upgrade --install kgateway oci://cr.kgateway.dev/kgateway-dev/charts/kgateway \
 		--namespace $(E2E_CP_NS) --create-namespace \
 		--version $(KGATEWAY_VERSION) \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
 	@$(call log_info, Creating ClusterSecretStore)
 	$(E2E_KUBECTL) apply -f $(E2E_K3D_DIR)/secretstore.yaml
 	@$(call log_success, Prerequisites installed)
@@ -419,11 +494,11 @@ e2e.setup-configure: ## Apply default resources, register planes, and link obser
 
 .PHONY: _e2e.install-thunder
 _e2e.install-thunder:
-	@# Thunder requires a valid /etc/machine-id on the node
+	@# ThunderID requires a valid /etc/machine-id on the node
 	docker exec k3d-$(E2E_CLUSTER_NAME)-server-0 sh -c \
 		"cat /proc/sys/kernel/random/uuid | tr -d '-' > /etc/machine-id"
-	@$(call log_info, Installing Thunder $(THUNDER_VERSION))
-	$(E2E_HELM) upgrade --install thunder oci://ghcr.io/asgardeo/helm-charts/thunder \
+	@$(call log_info, Installing ThunderID $(THUNDER_VERSION))
+	$(E2E_HELM) upgrade --install thunder oci://ghcr.io/thunder-id/helm-charts/thunderid \
 		--namespace thunder --create-namespace \
 		--version $(THUNDER_VERSION) \
 		--values $(PROJECT_DIR)/install/k3d/common/values-thunder.yaml \
@@ -544,6 +619,7 @@ _e2e.install-op:
 		$(E2E_HELM_DEP_UPDATE) \
 		--namespace $(E2E_OP_NS) --create-namespace \
 		--values $(E2E_K3D_DIR)/values-op.yaml \
+		--set observer.audit.enabled=true \
 		--timeout $(E2E_SETUP_TIMEOUT)
 	$(call e2e_patch_gateway,$(E2E_OP_NS))
 	@$(call log_info, Installing observability modules)
@@ -560,6 +636,7 @@ _e2e.install-op:
 		--set openSearchSetup.openSearchSecretName="opensearch-admin-credentials" \
 		--set adapter.openSearchSecretName="opensearch-admin-credentials" \
 		--set fluent-bit.enabled=false \
+		--set auditLogs.enabled=true \
 		--wait --wait-for-jobs --timeout $(E2E_SETUP_TIMEOUT)
 	@$(call log_info, Enabling Fluent Bit after logs module setup)
 	$(E2E_HELM) upgrade --install observability-logs-opensearch \
@@ -569,6 +646,8 @@ _e2e.install-op:
 		--set openSearchSetup.openSearchSecretName="opensearch-admin-credentials" \
 		--set adapter.openSearchSecretName="opensearch-admin-credentials" \
 		--set fluent-bit.enabled=true \
+		--set fluentBitCustomizations.clusterInstance=$(E2E_CLUSTER_NAME) \
+		--set auditLogs.enabled=true \
 		--wait --wait-for-jobs --timeout $(E2E_SETUP_TIMEOUT)
 	$(E2E_HELM) upgrade --install observability-traces-opensearch \
 		oci://ghcr.io/openchoreo/helm-charts/observability-tracing-opensearch \
@@ -582,6 +661,7 @@ _e2e.install-op:
 		--version $(OBSERVABILITY_METRICS_PROMETHEUS_VERSION) \
 		--namespace $(E2E_OP_NS) \
 		--wait --timeout $(E2E_SETUP_TIMEOUT)
+	$(call e2e_wait_metrics_prometheus,$(E2E_KUBECTL),$(E2E_OP_NS),prometheus-openchoreo-observability alertmanager-openchoreo-observability)
 	$(E2E_KUBECTL) wait -n $(E2E_OP_NS) \
 		--for=condition=available --timeout=$(E2E_SETUP_TIMEOUT) deployment --all
 
@@ -678,7 +758,7 @@ e2e.diagnostics: ## Collect logs, events, and resource dumps from all namespaces
 		$(E2E_KUBECTL) get pods -n $$ns -o wide > $(E2E_DIAGNOSTICS_DIR)/pods-$$ns.txt 2>&1 || true; \
 		$(E2E_KUBECTL) get events -n $$ns --sort-by=.lastTimestamp > $(E2E_DIAGNOSTICS_DIR)/events-$$ns.txt 2>&1 || true; \
 		for pod in $$($(E2E_KUBECTL) get pods -n $$ns -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do \
-			$(E2E_KUBECTL) logs $$pod -n $$ns --all-containers --tail=200 > $(E2E_DIAGNOSTICS_DIR)/logs-$$ns-$$pod.txt 2>&1 || true; \
+			$(E2E_KUBECTL) logs $$pod -n $$ns --all-containers --tail=$(E2E_DIAGNOSTICS_LOG_TAIL) > $(E2E_DIAGNOSTICS_DIR)/logs-$$ns-$$pod.txt 2>&1 || true; \
 		done; \
 	done
 	@$(E2E_KUBECTL) get clusterdataplane,workflowplane,observabilityplane -n default -o yaml > $(E2E_DIAGNOSTICS_DIR)/plane-resources.yaml 2>&1 || true
@@ -728,16 +808,16 @@ e2e.multi.setup: ## All setup: clusters + prerequisites + install + configure
 e2e.multi.setup-clusters: ## Create all four k3d clusters (CP, DP, WP, OP)
 	@$(call log_info, Creating CP cluster '$(E2E_MC_CP_CLUSTER_NAME)')
 	k3d cluster create --config $(E2E_MC_K3D_DIR)/config-cp.yaml
-	$(E2E_MC_CP_KUBECTL) wait --for=condition=Ready nodes --all --timeout=120s
+	$(call e2e_wait_nodes_ready,--context $(E2E_MC_CP_KUBECONTEXT),CP)
 	@$(call log_info, Creating DP cluster '$(E2E_MC_DP_CLUSTER_NAME)')
 	k3d cluster create --config $(E2E_MC_K3D_DIR)/config-dp.yaml
-	$(E2E_MC_DP_KUBECTL) wait --for=condition=Ready nodes --all --timeout=120s
+	$(call e2e_wait_nodes_ready,--context $(E2E_MC_DP_KUBECONTEXT),DP)
 	@$(call log_info, Creating WP cluster '$(E2E_MC_WP_CLUSTER_NAME)')
 	k3d cluster create --config $(E2E_MC_K3D_DIR)/config-wp.yaml
-	$(E2E_MC_WP_KUBECTL) wait --for=condition=Ready nodes --all --timeout=120s
+	$(call e2e_wait_nodes_ready,--context $(E2E_MC_WP_KUBECONTEXT),WP)
 	@$(call log_info, Creating OP cluster '$(E2E_MC_OP_CLUSTER_NAME)')
 	k3d cluster create --config $(E2E_MC_K3D_DIR)/config-op.yaml
-	$(E2E_MC_OP_KUBECTL) wait --for=condition=Ready nodes --all --timeout=120s
+	$(call e2e_wait_nodes_ready,--context $(E2E_MC_OP_KUBECONTEXT),OP)
 	@$(call log_info, Applying CoreDNS rewrites)
 	$(E2E_MC_CP_KUBECTL) apply -f $(E2E_MC_K3D_DIR)/coredns-custom-cp.yaml
 	$(E2E_MC_DP_KUBECTL) apply -f $(E2E_MC_K3D_DIR)/coredns-custom-dp.yaml
@@ -758,68 +838,68 @@ e2e.multi.setup-prerequisites: ## Install prerequisites into each cluster
 	@$(call log_info, === CP cluster prerequisites ===)
 	$(E2E_MC_CP_KUBECTL) apply --server-side \
 		-f https://github.com/kubernetes-sigs/gateway-api/releases/download/$(GATEWAY_API_VERSION)/standard-install.yaml
-	$(E2E_MC_CP_HELM) upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
+	$(call e2e_helm_retry,$(E2E_MC_CP_HELM) upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
 		--namespace cert-manager --create-namespace \
 		--version $(CERT_MANAGER_VERSION) --set crds.enabled=true \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
-	$(E2E_MC_CP_HELM) upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets \
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
+	$(call e2e_helm_retry,$(E2E_MC_CP_HELM) upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets \
 		--namespace external-secrets --create-namespace \
 		--version $(ESO_VERSION) --set installCRDs=true \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
-	$(E2E_MC_CP_HELM) upgrade --install kgateway-crds oci://cr.kgateway.dev/kgateway-dev/charts/kgateway-crds \
-		--version $(KGATEWAY_VERSION)
-	$(E2E_MC_CP_HELM) upgrade --install kgateway oci://cr.kgateway.dev/kgateway-dev/charts/kgateway \
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
+	$(call e2e_helm_retry,$(E2E_MC_CP_HELM) upgrade --install kgateway-crds oci://cr.kgateway.dev/kgateway-dev/charts/kgateway-crds \
+		--version $(KGATEWAY_VERSION))
+	$(call e2e_helm_retry,$(E2E_MC_CP_HELM) upgrade --install kgateway oci://cr.kgateway.dev/kgateway-dev/charts/kgateway \
 		--namespace $(E2E_CP_NS) --create-namespace \
 		--version $(KGATEWAY_VERSION) \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
 	$(E2E_MC_CP_KUBECTL) apply -f $(E2E_MC_K3D_DIR)/secretstore.yaml
 	@$(call log_info, === DP cluster prerequisites ===)
 	$(E2E_MC_DP_KUBECTL) apply --server-side \
 		-f https://github.com/kubernetes-sigs/gateway-api/releases/download/$(GATEWAY_API_VERSION)/standard-install.yaml
-	$(E2E_MC_DP_HELM) upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
+	$(call e2e_helm_retry,$(E2E_MC_DP_HELM) upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
 		--namespace cert-manager --create-namespace \
 		--version $(CERT_MANAGER_VERSION) --set crds.enabled=true \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
-	$(E2E_MC_DP_HELM) upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets \
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
+	$(call e2e_helm_retry,$(E2E_MC_DP_HELM) upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets \
 		--namespace external-secrets --create-namespace \
 		--version $(ESO_VERSION) --set installCRDs=true \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
-	$(E2E_MC_DP_HELM) upgrade --install kgateway-crds oci://cr.kgateway.dev/kgateway-dev/charts/kgateway-crds \
-		--version $(KGATEWAY_VERSION)
-	$(E2E_MC_DP_HELM) upgrade --install kgateway oci://cr.kgateway.dev/kgateway-dev/charts/kgateway \
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
+	$(call e2e_helm_retry,$(E2E_MC_DP_HELM) upgrade --install kgateway-crds oci://cr.kgateway.dev/kgateway-dev/charts/kgateway-crds \
+		--version $(KGATEWAY_VERSION))
+	$(call e2e_helm_retry,$(E2E_MC_DP_HELM) upgrade --install kgateway oci://cr.kgateway.dev/kgateway-dev/charts/kgateway \
 		--namespace $(E2E_DP_NS) --create-namespace \
 		--version $(KGATEWAY_VERSION) \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
 	$(E2E_MC_DP_KUBECTL) apply -f $(E2E_MC_K3D_DIR)/secretstore.yaml
 	@$(call log_info, === WP cluster prerequisites ===)
-	$(E2E_MC_WP_HELM) upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
+	$(call e2e_helm_retry,$(E2E_MC_WP_HELM) upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
 		--namespace cert-manager --create-namespace \
 		--version $(CERT_MANAGER_VERSION) --set crds.enabled=true \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
 	@# ESO CRDs are required in WP cluster so the WorkflowRun controller can create
 	@# ExternalSecret resources in the workflows-<cpNs> namespace before build jobs run.
-	$(E2E_MC_WP_HELM) upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets \
+	$(call e2e_helm_retry,$(E2E_MC_WP_HELM) upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets \
 		--namespace external-secrets --create-namespace \
 		--version $(ESO_VERSION) --set installCRDs=true \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
 	$(E2E_MC_WP_KUBECTL) apply -f $(E2E_MC_K3D_DIR)/secretstore.yaml
 	@$(call log_info, === OP cluster prerequisites ===)
 	$(E2E_MC_OP_KUBECTL) apply --server-side \
 		-f https://github.com/kubernetes-sigs/gateway-api/releases/download/$(GATEWAY_API_VERSION)/standard-install.yaml
-	$(E2E_MC_OP_HELM) upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
+	$(call e2e_helm_retry,$(E2E_MC_OP_HELM) upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
 		--namespace cert-manager --create-namespace \
 		--version $(CERT_MANAGER_VERSION) --set crds.enabled=true \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
-	$(E2E_MC_OP_HELM) upgrade --install kgateway-crds oci://cr.kgateway.dev/kgateway-dev/charts/kgateway-crds \
-		--version $(KGATEWAY_VERSION)
-	$(E2E_MC_OP_HELM) upgrade --install kgateway oci://cr.kgateway.dev/kgateway-dev/charts/kgateway \
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
+	$(call e2e_helm_retry,$(E2E_MC_OP_HELM) upgrade --install kgateway-crds oci://cr.kgateway.dev/kgateway-dev/charts/kgateway-crds \
+		--version $(KGATEWAY_VERSION))
+	$(call e2e_helm_retry,$(E2E_MC_OP_HELM) upgrade --install kgateway oci://cr.kgateway.dev/kgateway-dev/charts/kgateway \
 		--namespace $(E2E_OP_NS) --create-namespace \
 		--version $(KGATEWAY_VERSION) \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
-	$(E2E_MC_OP_HELM) upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets \
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
+	$(call e2e_helm_retry,$(E2E_MC_OP_HELM) upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets \
 		--namespace external-secrets --create-namespace \
 		--version $(ESO_VERSION) --set installCRDs=true \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
+		--wait --timeout $(E2E_SETUP_TIMEOUT))
 	@$(call log_success, Prerequisites installed in all clusters)
 
 .PHONY: e2e.multi.setup-install
@@ -854,11 +934,11 @@ e2e.multi.setup-configure: ## Apply default resources, register planes, link obs
 
 .PHONY: _e2e.mc.install-thunder
 _e2e.mc.install-thunder:
-	@# Thunder requires a valid /etc/machine-id on the node
+	@# ThunderID requires a valid /etc/machine-id on the node
 	docker exec k3d-$(E2E_MC_CP_CLUSTER_NAME)-server-0 sh -c \
 		"cat /proc/sys/kernel/random/uuid | tr -d '-' > /etc/machine-id"
-	@$(call log_info, Installing Thunder $(THUNDER_VERSION))
-	$(E2E_MC_CP_HELM) upgrade --install thunder oci://ghcr.io/asgardeo/helm-charts/thunder \
+	@$(call log_info, Installing ThunderID $(THUNDER_VERSION))
+	$(E2E_MC_CP_HELM) upgrade --install thunder oci://ghcr.io/thunder-id/helm-charts/thunderid \
 		--namespace thunder --create-namespace \
 		--version $(THUNDER_VERSION) \
 		--values $(PROJECT_DIR)/install/k3d/common/values-thunder.yaml \
@@ -968,29 +1048,25 @@ _e2e.mc.install-op:
 		"[ -f /etc/machine-id ] || cat /proc/sys/kernel/random/uuid | tr -d '-' > /etc/machine-id"
 	@$(call log_info, Creating OP cluster namespace and base secrets)
 	@$(E2E_MC_OP_KUBECTL) create namespace $(E2E_OP_NS) --dry-run=client -o yaml | $(E2E_MC_OP_KUBECTL) apply -f -
-	@$(E2E_MC_OP_KUBECTL) create secret generic observer-opensearch-credentials \
-		-n $(E2E_OP_NS) \
-		--from-literal=username="admin" \
-		--from-literal=password="ThisIsTheOpenSearchPassword1" \
-		--dry-run=client -o yaml | $(E2E_MC_OP_KUBECTL) apply -f -
 	@$(E2E_MC_OP_KUBECTL) create secret generic observer-secret \
 		-n $(E2E_OP_NS) \
-		--from-literal=OPENSEARCH_USERNAME="admin" \
-		--from-literal=OPENSEARCH_PASSWORD="ThisIsTheOpenSearchPassword1" \
 		--from-literal=UID_RESOLVER_OAUTH_CLIENT_SECRET="openchoreo-observer-resource-reader-client-secret" \
 		--dry-run=client -o yaml | $(E2E_MC_OP_KUBECTL) apply -f -
-	@$(call log_info, Installing OpenBao in OP cluster \(required for ExternalSecret → opensearch-admin-credentials\))
+	@$(call log_info, Installing OpenBao in OP cluster \(required for ExternalSecret → opensearch/openobserve-admin-credentials\))
 	$(E2E_MC_OP_HELM) upgrade --install openbao oci://ghcr.io/openbao/charts/openbao \
 		--namespace openbao --create-namespace \
 		--version $(OPENBAO_CHART_VERSION) \
 		--values $(PROJECT_DIR)/install/k3d/common/values-openbao.yaml \
 		--wait --timeout $(E2E_SETUP_TIMEOUT)
-	@$(call log_info, Creating ClusterSecretStore and ExternalSecret for opensearch-admin-credentials)
+	@$(call log_info, Creating ClusterSecretStore and ExternalSecrets for opensearch/openobserve-admin-credentials)
 	$(E2E_MC_OP_KUBECTL) apply -f $(E2E_MC_K3D_DIR)/openbao-secretstore.yaml
 	$(E2E_MC_OP_KUBECTL) apply -f $(E2E_MC_K3D_DIR)/opensearch-admin-externalsecret.yaml
-	@$(call log_info, Waiting for opensearch-admin-credentials secret to be ready)
+	$(E2E_MC_OP_KUBECTL) apply -f $(E2E_MC_K3D_DIR)/openobserve-admin-externalsecret.yaml
+	@$(call log_info, Waiting for opensearch/openobserve-admin-credentials secrets to be ready)
 	$(E2E_MC_OP_KUBECTL) wait -n $(E2E_OP_NS) \
 		--for=condition=Ready externalsecret/opensearch-admin-credentials --timeout=60s
+	$(E2E_MC_OP_KUBECTL) wait -n $(E2E_OP_NS) \
+		--for=condition=Ready externalsecret/openobserve-admin-credentials --timeout=60s
 	@$(call log_info, Installing Observability Plane)
 	$(E2E_MC_OP_HELM) upgrade --install openchoreo-observability-plane $(E2E_OP_CHART) \
 		$(E2E_HELM_DEP_UPDATE) \
@@ -998,51 +1074,44 @@ _e2e.mc.install-op:
 		--values $(E2E_MC_K3D_DIR)/values-op.yaml \
 		--timeout $(E2E_SETUP_TIMEOUT)
 	$(call e2e_mc_patch_gateway,$(E2E_MC_OP_KUBECONTEXT),$(E2E_OP_NS))
-	@$(call log_info, Installing OpenSearch operator \(v2.8.0 per module README\))
-	helm repo add opensearch-operator https://opensearch-project.github.io/opensearch-k8s-operator/ 2>/dev/null || true
-	helm repo update opensearch-operator 2>/dev/null || true
-	$(E2E_MC_OP_HELM) upgrade --install opensearch-operator opensearch-operator/opensearch-operator \
-		--namespace $(E2E_OP_NS) --create-namespace \
-		--version 2.8.0 \
-		--set kubeRbacProxy.image.repository=quay.io/brancz/kube-rbac-proxy \
-		--set kubeRbacProxy.image.tag=v0.15.0 \
-		--wait --timeout $(E2E_SETUP_TIMEOUT)
-	@# Install per module README — operator mode with ExternalSecret-backed credentials.
-	@# https://github.com/openchoreo/community-modules/blob/main/observability-logs-opensearch/README.md
-	@$(call log_info, Installing logs module without Fluent Bit \(operator mode per README\))
-	$(E2E_MC_OP_HELM) upgrade --install observability-logs-opensearch \
-		oci://ghcr.io/openchoreo/helm-charts/observability-logs-opensearch \
-		--version $(OBSERVABILITY_LOGS_OPENSEARCH_VERSION) \
+	@# Logs module — https://github.com/openchoreo/community-modules/blob/main/observability-logs-openobserve/README.md
+	@# common.openObserveStream must match the chart's HTTPRoute
+	@# (/api/default/container-logs/_json), which is what lets the DP/WP Fluent Bit
+	@# legs (_e2e.mc.install-fluent-bit) reach OpenObserve through the shared
+	@# kgateway HTTP listener (host.k3d.internal:31080) instead of a dedicated
+	@# TLS-passthrough port like the OpenSearch module needed.
+	@$(call log_info, Installing logs module \(OpenObserve\))
+	$(E2E_MC_OP_HELM) upgrade --install observability-logs-openobserve \
+		oci://ghcr.io/openchoreo/helm-charts/observability-logs-openobserve \
+		--version $(OBSERVABILITY_LOGS_OPENOBSERVE_VERSION) \
 		--namespace $(E2E_OP_NS) \
 		--values $(E2E_MC_K3D_DIR)/values-op-modules.yaml \
-		--set openSearch.enabled=false \
-		--set openSearchCluster.enabled=true \
-		--set openSearchCluster.credentialsSecretName="opensearch-admin-credentials" \
-		--set openSearchSetup.openSearchSecretName="opensearch-admin-credentials" \
-		--set adapter.openSearchSecretName="opensearch-admin-credentials" \
-		--set fluent-bit.enabled=false \
-		--wait --wait-for-jobs --timeout $(E2E_SETUP_TIMEOUT)
-	@$(call log_info, Enabling Fluent Bit after logs module setup)
-	$(E2E_MC_OP_HELM) upgrade --install observability-logs-opensearch \
-		oci://ghcr.io/openchoreo/helm-charts/observability-logs-opensearch \
-		--version $(OBSERVABILITY_LOGS_OPENSEARCH_VERSION) \
-		--namespace $(E2E_OP_NS) \
-		--values $(E2E_MC_K3D_DIR)/values-op-modules.yaml \
-		--set openSearch.enabled=false \
-		--set openSearchCluster.enabled=true \
-		--set openSearchCluster.credentialsSecretName="opensearch-admin-credentials" \
-		--set openSearchSetup.openSearchSecretName="opensearch-admin-credentials" \
-		--set adapter.openSearchSecretName="opensearch-admin-credentials" \
+		--set common.openObserveStream=container-logs \
+		--set-json 'common.httpRouteHostnames=["host.k3d.internal"]' \
 		--set fluent-bit.enabled=true \
+		--set fluentBitCustomizations.clusterInstance=$(E2E_MC_OP_CLUSTER_NAME) \
 		--wait --wait-for-jobs --timeout $(E2E_SETUP_TIMEOUT)
+	@# OpenObserve stores the stream as "container_logs" (hyphen -> underscore),
+	@# so the adapter must query that name even though ingest/HTTPRoute use the
+	@# hyphenated one above. This env override takes precedence over envFrom.
+	$(E2E_MC_OP_KUBECTL) set env deployment/logs-adapter-openobserve -n $(E2E_OP_NS) \
+		OPENOBSERVE_STREAM=container_logs
+	$(E2E_MC_OP_KUBECTL) rollout status deployment/logs-adapter-openobserve -n $(E2E_OP_NS) --timeout=60s
 	$(call e2e_mc_op_settle,tracing module install)
+	@# Tracing module stays on OpenSearch (the OpenObserve tracing module has no
+	@# multi-cluster receiver/exporter mode yet — its OTel Collector always exports
+	@# to a same-cluster OpenObserve with no endpoint override). Use the chart's
+	@# bundled standalone (non-HA, single-node) OpenSearch — the defaults
+	@# (openSearch.enabled=true / openSearchCluster.enabled=false) — now that the
+	@# logs module no longer stands up a shared operator-managed cluster for it to
+	@# attach to; this also drops the opensearch-operator install entirely.
 	@# Multi-cluster receiver mode — per observability-tracing-opensearch README
 	$(E2E_MC_OP_HELM) upgrade --install observability-traces-opensearch \
 		oci://ghcr.io/openchoreo/helm-charts/observability-tracing-opensearch \
 		--version $(OBSERVABILITY_TRACES_OPENSEARCH_VERSION) \
 		--namespace $(E2E_OP_NS) \
+		--values $(E2E_MC_K3D_DIR)/values-op-modules.yaml \
 		--set global.installationMode="multiClusterReceiver" \
-		--set openSearch.enabled=false \
 		--set openSearchSetup.openSearchSecretName="opensearch-admin-credentials" \
 		--set-json 'opentelemetryCollectorCustomizations.http.hostnames=["host.k3d.internal"]' \
 		--wait --wait-for-jobs --timeout $(E2E_SETUP_TIMEOUT)
@@ -1056,58 +1125,61 @@ _e2e.mc.install-op:
 		--set global.installationMode="multiClusterReceiver" \
 		--set-json 'prometheusCustomizations.http.hostnames=["host.k3d.internal"]' \
 		--wait --timeout $(E2E_SETUP_TIMEOUT)
+	$(call e2e_wait_metrics_prometheus,$(E2E_MC_OP_KUBECTL),$(E2E_OP_NS),prometheus-openchoreo-observability alertmanager-openchoreo-observability)
 	$(E2E_MC_OP_KUBECTL) wait -n $(E2E_OP_NS) \
 		--for=condition=available --timeout=$(E2E_SETUP_TIMEOUT) deployment --all
 
 .PHONY: _e2e.mc.install-fluent-bit
 _e2e.mc.install-fluent-bit:
 	@# Install Fluent Bit in the DP and WP clusters so workload and build logs are
-	@# shipped to OpenSearch in the OP cluster. Each cluster only enables Fluent Bit;
-	@# the OpenSearch stack (setup, operator, adapter) runs only in OP.
-	@# Follows install/k3d/multi-cluster/README.md §5 "Enable Fluent Bit in DP/WP".
+	@# shipped to OpenObserve in the OP cluster. Each cluster only enables Fluent Bit;
+	@# the OpenObserve stack (setup, adapter) runs only in OP.
 	@$(call log_info, Preparing observability namespaces and credentials in DP/WP clusters)
 	$(E2E_MC_DP_KUBECTL) create namespace $(E2E_OP_NS) --dry-run=client -o yaml | $(E2E_MC_DP_KUBECTL) apply -f -
 	$(E2E_MC_WP_KUBECTL) create namespace $(E2E_OP_NS) --dry-run=client -o yaml | $(E2E_MC_WP_KUBECTL) apply -f -
-	@# DP cluster has OpenBao — create opensearch-admin-credentials via ExternalSecret (per README §5)
-	$(E2E_MC_DP_KUBECTL) apply -f $(E2E_MC_K3D_DIR)/opensearch-admin-externalsecret.yaml
+	@# DP cluster has OpenBao — create openobserve-admin-credentials via ExternalSecret
+	$(E2E_MC_DP_KUBECTL) apply -f $(E2E_MC_K3D_DIR)/openobserve-admin-externalsecret.yaml
 	$(E2E_MC_DP_KUBECTL) wait -n $(E2E_OP_NS) \
-		--for=condition=Ready externalsecret/opensearch-admin-credentials --timeout=60s
-	@# WP cluster has no ClusterSecretStore — create secret directly (per README §5 note)
-	@$(E2E_MC_WP_KUBECTL) create secret generic opensearch-admin-credentials \
+		--for=condition=Ready externalsecret/openobserve-admin-credentials --timeout=60s
+	@# WP cluster has no ClusterSecretStore — create secret directly
+	@$(E2E_MC_WP_KUBECTL) create secret generic openobserve-admin-credentials \
 		-n $(E2E_OP_NS) \
-		--from-literal=username="admin" \
-		--from-literal=password="ThisIsTheOpenSearchPassword1" \
+		--from-literal=ZO_ROOT_USER_EMAIL="admin@openchoreo.localhost" \
+		--from-literal=ZO_ROOT_USER_PASSWORD="ThisIsTheOpenObservePassword1!" \
 		--dry-run=client -o yaml | $(E2E_MC_WP_KUBECTL) apply -f -
-	@# Fluent Bit routes logs through the OP cluster's kgateway TLS passthrough
-	@# (port 31085 → 11085 → kgateway SNI routing → OpenSearch 9200 with TLS).
-	@# This mirrors install/k3d/multi-cluster/README.md §5 "Enable Fluent Bit in DP/WP".
+	@# Fluent Bit routes logs through the OP cluster's shared kgateway HTTP listener
+	@# (port 31080 → 11080), matched by the logs module's own HTTPRoute for the
+	@# container-logs stream (see the comment in _e2e.mc.install-op). No TLS
+	@# passthrough is needed since OpenObserve talks plain HTTP.
 	@$(call log_info, Installing Fluent Bit in DP cluster)
-	$(E2E_MC_DP_HELM) upgrade --install observability-logs-opensearch \
-		oci://ghcr.io/openchoreo/helm-charts/observability-logs-opensearch \
-		--version $(OBSERVABILITY_LOGS_OPENSEARCH_VERSION) \
+	$(E2E_MC_DP_HELM) upgrade --install observability-logs-openobserve \
+		oci://ghcr.io/openchoreo/helm-charts/observability-logs-openobserve \
+		--version $(OBSERVABILITY_LOGS_OPENOBSERVE_VERSION) \
 		--namespace $(E2E_OP_NS) \
-		--set openSearch.enabled=false \
-		--set openSearchCluster.enabled=false \
-		--set openSearchSetup.enabled=false \
+		--set openobserve-standalone.enabled=false \
+		--set openObserveSetup.enabled=false \
 		--set adapter.enabled=false \
 		--set fluent-bit.enabled=true \
-		--set fluent-bit.openSearchHost=host.k3d.internal \
-		--set fluent-bit.openSearchPort=31085 \
-		--set fluent-bit.openSearchVHost=opensearch.observability.openchoreo.localhost \
+		--set fluentBitCustomizations.clusterInstance=$(E2E_MC_DP_CLUSTER_NAME) \
+		--set common.openObserveStream=container-logs \
+		--set common.openObserveHost=host.k3d.internal \
+		--set common.openObservePort=31080 \
+		--set common.openObserveTlsEnabled=false \
 		--wait --timeout $(E2E_SETUP_TIMEOUT)
 	@$(call log_info, Installing Fluent Bit in WP cluster)
-	$(E2E_MC_WP_HELM) upgrade --install observability-logs-opensearch \
-		oci://ghcr.io/openchoreo/helm-charts/observability-logs-opensearch \
-		--version $(OBSERVABILITY_LOGS_OPENSEARCH_VERSION) \
+	$(E2E_MC_WP_HELM) upgrade --install observability-logs-openobserve \
+		oci://ghcr.io/openchoreo/helm-charts/observability-logs-openobserve \
+		--version $(OBSERVABILITY_LOGS_OPENOBSERVE_VERSION) \
 		--namespace $(E2E_OP_NS) \
-		--set openSearch.enabled=false \
-		--set openSearchCluster.enabled=false \
-		--set openSearchSetup.enabled=false \
+		--set openobserve-standalone.enabled=false \
+		--set openObserveSetup.enabled=false \
 		--set adapter.enabled=false \
 		--set fluent-bit.enabled=true \
-		--set fluent-bit.openSearchHost=host.k3d.internal \
-		--set fluent-bit.openSearchPort=31085 \
-		--set fluent-bit.openSearchVHost=opensearch.observability.openchoreo.localhost \
+		--set fluentBitCustomizations.clusterInstance=$(E2E_MC_WP_CLUSTER_NAME) \
+		--set common.openObserveStream=container-logs \
+		--set common.openObserveHost=host.k3d.internal \
+		--set common.openObservePort=31080 \
+		--set common.openObserveTlsEnabled=false \
 		--wait --timeout $(E2E_SETUP_TIMEOUT)
 	@# Install metrics exporter in DP and WP clusters — per observability-metrics-prometheus README.
 	@# Deploys PrometheusAgent to scrape local metrics and forward to OP cluster's receiver
@@ -1122,6 +1194,7 @@ _e2e.mc.install-fluent-bit:
 		--set kube-prometheus-stack.prometheus.enabled=false \
 		--set kube-prometheus-stack.alertmanager.enabled=false \
 		--wait --timeout $(E2E_SETUP_TIMEOUT)
+	$(call e2e_wait_metrics_prometheus,$(E2E_MC_DP_KUBECTL),$(E2E_OP_NS),prom-agent-openchoreo-prometheus-agent)
 	@$(call log_info, Installing metrics exporter in WP cluster)
 	$(E2E_MC_WP_HELM) upgrade --install observability-metrics-prometheus \
 		oci://ghcr.io/openchoreo/helm-charts/observability-metrics-prometheus \
@@ -1132,6 +1205,7 @@ _e2e.mc.install-fluent-bit:
 		--set kube-prometheus-stack.prometheus.enabled=false \
 		--set kube-prometheus-stack.alertmanager.enabled=false \
 		--wait --timeout $(E2E_SETUP_TIMEOUT)
+	$(call e2e_wait_metrics_prometheus,$(E2E_MC_WP_KUBECTL),$(E2E_OP_NS),prom-agent-openchoreo-prometheus-agent)
 	@# Install tracing exporter in DP and WP clusters — per observability-tracing-opensearch README.
 	@# Deploys OTel collector in exporter mode forwarding traces to OP cluster's receiver
 	@# via host.k3d.internal:31080 (OP kgateway HTTP port in e2e).
@@ -1226,7 +1300,8 @@ E2E_MC_SUITES := \
 .PHONY: e2e.multi.test
 e2e.multi.test: ## Run tier3 multi-cluster e2e suites (set E2E_LABEL_FILTER to scope further)
 	@$(call log_info, Running multi-cluster e2e tests$(if $(E2E_GINKGO_LABEL_FLAG), with label filter '$(E2E_LABEL_FILTER)'))
-	go test $(E2E_MC_SUITES) -v -ginkgo.v -timeout $(E2E_TEST_TIMEOUT) \
+	@# -p 1: serialize suites to avoid overcommitting the 4-vCPU runner.
+	go test -p 1 $(E2E_MC_SUITES) -v -ginkgo.v -timeout $(E2E_TEST_TIMEOUT) \
 		--e2e.kubecontext=$(E2E_MC_CP_KUBECONTEXT) \
 		--e2e.dp-kubecontext=$(E2E_MC_DP_KUBECONTEXT) \
 		--e2e.wp-kubecontext=$(E2E_MC_WP_KUBECONTEXT) \
@@ -1264,7 +1339,7 @@ e2e.multi.diagnostics: ## Collect logs, events, and resource dumps from all four
 		$(E2E_MC_CP_KUBECTL) get pods -n $$ns -o wide > $(E2E_MC_DIAGNOSTICS_DIR)/cp-pods-$$ns.txt 2>&1 || true; \
 		$(E2E_MC_CP_KUBECTL) get events -n $$ns --sort-by=.lastTimestamp > $(E2E_MC_DIAGNOSTICS_DIR)/cp-events-$$ns.txt 2>&1 || true; \
 		for pod in $$($(E2E_MC_CP_KUBECTL) get pods -n $$ns -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do \
-			$(E2E_MC_CP_KUBECTL) logs $$pod -n $$ns --all-containers --tail=200 > $(E2E_MC_DIAGNOSTICS_DIR)/cp-logs-$$ns-$$pod.txt 2>&1 || true; \
+			$(E2E_MC_CP_KUBECTL) logs $$pod -n $$ns --all-containers --tail=$(E2E_DIAGNOSTICS_LOG_TAIL) > $(E2E_MC_DIAGNOSTICS_DIR)/cp-logs-$$ns-$$pod.txt 2>&1 || true; \
 		done; \
 	done
 	@for plane_ctx in $(E2E_MC_DP_KUBECONTEXT):dp:$(E2E_DP_NS) \
@@ -1278,7 +1353,7 @@ e2e.multi.diagnostics: ## Collect logs, events, and resource dumps from all four
 		kubectl --context $$ctx describe nodes > $(E2E_MC_DIAGNOSTICS_DIR)/$$prefix-nodes.txt 2>&1 || true; \
 		kubectl --context $$ctx top nodes > $(E2E_MC_DIAGNOSTICS_DIR)/$$prefix-top-nodes.txt 2>&1 || true; \
 		for pod in $$(kubectl --context $$ctx get pods -n $$ns -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do \
-			kubectl --context $$ctx logs $$pod -n $$ns --all-containers --tail=200 > $(E2E_MC_DIAGNOSTICS_DIR)/$$prefix-logs-$$pod.txt 2>&1 || true; \
+			kubectl --context $$ctx logs $$pod -n $$ns --all-containers --tail=$(E2E_DIAGNOSTICS_LOG_TAIL) > $(E2E_MC_DIAGNOSTICS_DIR)/$$prefix-logs-$$pod.txt 2>&1 || true; \
 		done; \
 	done
 	@$(E2E_MC_CP_KUBECTL) get clusterdataplane,clusterworkflowplane,clusterobservabilityplane -o yaml > $(E2E_MC_DIAGNOSTICS_DIR)/plane-resources.yaml 2>&1 || true
@@ -1293,7 +1368,7 @@ e2e.multi.diagnostics: ## Collect logs, events, and resource dumps from all four
 		kubectl --context $(E2E_MC_WP_KUBECONTEXT) get events -n $$ns --sort-by=.lastTimestamp > $(E2E_MC_DIAGNOSTICS_DIR)/wp-$$ns-events.txt 2>&1 || true; \
 		kubectl --context $(E2E_MC_WP_KUBECONTEXT) describe pods -n $$ns > $(E2E_MC_DIAGNOSTICS_DIR)/wp-$$ns-describe.txt 2>&1 || true; \
 		for pod in $$(kubectl --context $(E2E_MC_WP_KUBECONTEXT) get pods -n $$ns -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do \
-			kubectl --context $(E2E_MC_WP_KUBECONTEXT) logs $$pod -n $$ns --all-containers --tail=200 > $(E2E_MC_DIAGNOSTICS_DIR)/wp-$$ns-logs-$$pod.txt 2>&1 || true; \
+			kubectl --context $(E2E_MC_WP_KUBECONTEXT) logs $$pod -n $$ns --all-containers --tail=$(E2E_DIAGNOSTICS_LOG_TAIL) > $(E2E_MC_DIAGNOSTICS_DIR)/wp-$$ns-logs-$$pod.txt 2>&1 || true; \
 		done; \
 	done
 	@# Host-level resource usage of the k3d node containers. Captured from the

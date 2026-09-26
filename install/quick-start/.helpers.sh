@@ -586,9 +586,9 @@ install_kgateway() {
     log_success "kgateway installed"
 }
 
-# Install Thunder identity provider
+# Install ThunderID identity provider
 install_thunder() {
-    log_info "Installing Thunder ($THUNDER_VERSION)..."
+    log_info "Installing ThunderID ($THUNDER_VERSION)..."
 
     local thunder_values="$SCRIPT_DIR/../k3d/common/values-thunder.yaml"
     if [[ ! -f "$thunder_values" ]]; then
@@ -596,11 +596,11 @@ install_thunder() {
         thunder_values="/home/openchoreo/install/k3d/common/values-thunder.yaml"
     fi
 
-    install_helm_chart "thunder" "oci://ghcr.io/asgardeo/helm-charts/thunder" "$THUNDER_NS" "true" "false" "true" "600" \
+    install_helm_chart "thunder" "oci://ghcr.io/thunder-id/helm-charts/thunderid" "$THUNDER_NS" "true" "false" "true" "600" \
         "--version" "$THUNDER_VERSION" \
         "--values" "$thunder_values"
 
-    log_success "Thunder installed"
+    log_success "ThunderID installed"
 }
 
 # Apply CoreDNS custom config for *.openchoreo.localhost resolution
@@ -677,20 +677,21 @@ setup_workflow_plane_ca() {
 # Install OpenBao and create ClusterSecretStore backed by Vault provider
 install_openbao() {
     local openbao_ns="openbao"
-    local dev_root_token="root"
 
     log_info "Installing OpenBao..."
 
+    # values-openbao.yaml runs OpenBao in dev mode and, via its postStart hook,
+    # configures Kubernetes auth + reader/writer policies and seeds the platform
+    # secrets that the ExternalSecrets sync into each plane. Shared with the k3d
+    # installer (install/k3d/k3d-install.sh).
+    local openbao_values="$SCRIPT_DIR/../k3d/common/values-openbao.yaml"
+    if [[ ! -f "$openbao_values" ]]; then
+        openbao_values="/home/openchoreo/install/k3d/common/values-openbao.yaml"
+    fi
+
     install_helm_chart "openbao" "oci://ghcr.io/openbao/charts/openbao" "$openbao_ns" "true" "true" "true" "600" \
         "--version" "0.25.6" \
-        "--set" "server.image.tag=2.4.4" \
-        "--set" "injector.enabled=false" \
-        "--set" "server.dev.enabled=true" \
-        "--set" "server.dev.devRootToken=${dev_root_token}" \
-        "--set" "server.resources.requests.memory=64Mi" \
-        "--set" "server.resources.requests.cpu=50m" \
-        "--set" "server.resources.limits.memory=128Mi" \
-        "--set" "server.resources.limits.cpu=100m"
+        "--values" "$openbao_values"
 
     log_info "Waiting for OpenBao to be ready..."
     if ! kubectl wait --namespace "$openbao_ns" \
@@ -700,50 +701,6 @@ install_openbao() {
         log_error "OpenBao pod failed to become ready"
         return 1
     fi
-
-    log_info "Configuring OpenBao policies and auth..."
-    kubectl exec -n "$openbao_ns" openbao-0 -- sh -c "
-        export BAO_ADDR=http://127.0.0.1:8200
-        export BAO_TOKEN=${dev_root_token}
-
-        bao auth enable kubernetes 2>/dev/null || true
-
-        bao write auth/kubernetes/config \
-            kubernetes_host=\"https://\${KUBERNETES_PORT_443_TCP_ADDR}:443\"
-
-        bao policy write openchoreo-secret-reader-policy - <<'POLICY'
-path \"secret/data/*\" {
-  capabilities = [\"read\"]
-}
-path \"secret/metadata/*\" {
-  capabilities = [\"list\", \"read\"]
-}
-POLICY
-
-        bao policy write openchoreo-secret-writer-policy - <<'POLICY'
-path \"secret/data/*\" {
-  capabilities = [\"create\", \"read\", \"update\", \"delete\"]
-}
-path \"secret/metadata/*\" {
-  capabilities = [\"create\", \"read\", \"update\", \"delete\", \"list\"]
-}
-POLICY
-
-        bao write auth/kubernetes/role/openchoreo-secret-reader-role \
-            bound_service_account_names=default \
-            bound_service_account_namespaces='dp*' \
-            policies=openchoreo-secret-reader-policy \
-            ttl=20m
-
-        bao write auth/kubernetes/role/openchoreo-secret-writer-role \
-            bound_service_account_names='*' \
-            bound_service_account_namespaces='openbao,openchoreo-workflow-plane' \
-            policies=openchoreo-secret-writer-policy \
-            ttl=20m
-    " >/dev/null 2>&1 || {
-        log_error "Failed to configure OpenBao policies and auth"
-        return 1
-    }
 
     # ServiceAccount for ESO
     kubectl apply --server-side -f - >/dev/null 2>&1 <<SAEOF
@@ -898,39 +855,75 @@ OPEOF
     log_success "ClusterObservabilityPlane resource created"
 }
 
-# Create backstage secret with required credentials
-create_backstage_secret() {
+# Create backstage ExternalSecret pulling credentials from the ClusterSecretStore
+create_backstage_external_secret() {
     local namespace="$1"
-    log_info "Creating backstage secret..."
+    log_info "Creating backstage ExternalSecret..."
 
-    local backend_secret
-    backend_secret=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+    kubectl apply --server-side -f - >/dev/null 2>&1 <<ESEOF
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: backstage-secrets
+  namespace: ${namespace}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: default
+  target:
+    name: backstage-secrets
+  data:
+    - secretKey: backend-secret
+      remoteRef:
+        key: backstage-backend-secret
+        property: value
+    - secretKey: client-secret
+      remoteRef:
+        key: backstage-client-secret
+        property: value
+    - secretKey: jenkins-api-key
+      remoteRef:
+        key: backstage-jenkins-api-key
+        property: value
+    - secretKey: github-actions-token
+      remoteRef:
+        key: backstage-github-actions-token
+        property: value
+    - secretKey: github-oauth-client-secret
+      remoteRef:
+        key: backstage-github-oauth-client-secret
+        property: value
+ESEOF
 
-    kubectl create secret generic backstage-secrets \
-        --namespace "$namespace" \
-        --from-literal=backend-secret="$backend_secret" \
-        --from-literal=client-secret="backstage-portal-secret" \
-        --from-literal=jenkins-api-key="placeholder-not-in-use" \
-        --from-literal=github-actions-token="placeholder-not-in-use" \
-        --from-literal=github-oauth-client-secret="placeholder-not-in-use" \
-        -o yaml --dry-run=client | kubectl apply --server-side -f - >/dev/null 2>&1 || {
-        log_error "Failed to create backstage secret in $namespace"
+    if ! kubectl wait -n "$namespace" \
+        --for=condition=Ready externalsecret/backstage-secrets --timeout=120s >/dev/null 2>&1; then
+        log_error "backstage-secrets ExternalSecret did not sync in $namespace"
         return 1
-    }
+    fi
 
-    log_success "Backstage secret created"
+    log_success "Backstage ExternalSecret created and synced"
 }
 
 # Install OpenChoreo Control Plane
 install_control_plane() {
     log_info "Installing OpenChoreo Control Plane..."
+    local audit_args=()
+    if [[ "$ENABLE_OBSERVABILITY" == "true" ]]; then
+        audit_args=(
+            "--set" "openchoreoApi.config.audit.enabled=true"
+            "--set" "openchoreoApi.config.audit.observabilityPlaneRef.kind=ClusterObservabilityPlane"
+            "--set" "openchoreoApi.config.audit.observabilityPlaneRef.name=default"
+        )
+    fi
     # Disable --wait for control plane to avoid deadlock with webhook cert hooks
     # But keep monitoring enabled to track pod status
     install_helm_chart "openchoreo-control-plane" "openchoreo-control-plane" "$CONTROL_PLANE_NS" "true" "false" "true" "1800" \
         "--values" "$SCRIPT_DIR/.values-cp.yaml" \
         "--set" "controllerManager.image.tag=$OPENCHOREO_VERSION" \
         "--set" "openchoreoApi.image.tag=$OPENCHOREO_VERSION" \
-        "--set" "backstage.image.tag=$BACKSTAGE_VERSION"
+        "--set" "backstage.image.tag=$BACKSTAGE_VERSION" \
+        ${audit_args[@]+"${audit_args[@]}"}
 
     # Wait for cluster-gateway to be ready (required for agent connections)
     log_info "Waiting for cluster-gateway to be ready..."
@@ -1043,31 +1036,61 @@ setup_observability_plane_ca() {
     log_success "Observability Plane CA configured"
 }
 
-# Create OpenSearch credentials and observer secrets for the observability plane
-create_observability_secrets() {
+# Create observability-plane ExternalSecrets pulling credentials from the ClusterSecretStore
+create_observability_external_secrets() {
     local namespace="$1"
-    log_info "Creating observability plane secrets..."
+    log_info "Creating observability plane ExternalSecrets..."
 
-    kubectl create secret generic "opensearch-admin-credentials" \
-        --namespace "$namespace" \
-        --from-literal=username="admin" \
-        --from-literal=password="ThisIsTheOpenSearchPassword1" \
-        -o yaml --dry-run=client | kubectl apply --server-side -f - >/dev/null 2>&1 || {
-        log_error "Failed to create opensearch-admin-credentials secret"
+    kubectl apply --server-side -f - >/dev/null 2>&1 <<ESEOF
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: opensearch-admin-credentials
+  namespace: ${namespace}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: default
+  target:
+    name: opensearch-admin-credentials
+  data:
+    - secretKey: username
+      remoteRef:
+        key: opensearch-username
+        property: value
+    - secretKey: password
+      remoteRef:
+        key: opensearch-password
+        property: value
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: observer-secret
+  namespace: ${namespace}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: default
+  target:
+    name: observer-secret
+  data:
+    - secretKey: UID_RESOLVER_OAUTH_CLIENT_SECRET
+      remoteRef:
+        key: observer-oauth-client-secret
+        property: value
+ESEOF
+
+    if ! kubectl wait -n "$namespace" \
+        --for=condition=Ready externalsecret/opensearch-admin-credentials \
+        externalsecret/observer-secret --timeout=120s >/dev/null 2>&1; then
+        log_error "observability ExternalSecrets did not sync in $namespace"
         return 1
-    }
+    fi
 
-    kubectl create secret generic "observer-secret" \
-        --namespace "$namespace" \
-        --from-literal=OPENSEARCH_USERNAME="admin" \
-        --from-literal=OPENSEARCH_PASSWORD="ThisIsTheOpenSearchPassword1" \
-        --from-literal=UID_RESOLVER_OAUTH_CLIENT_SECRET="openchoreo-observer-resource-reader-client-secret" \
-        -o yaml --dry-run=client | kubectl apply --server-side -f - >/dev/null 2>&1 || {
-        log_error "Failed to create observer-secret secret"
-        return 1
-    }
-
-    log_success "Observability plane secrets created"
+    log_success "Observability plane ExternalSecrets created and synced"
 }
 
 # Install OpenChoreo Observability Plane (optional)
@@ -1080,7 +1103,8 @@ install_observability_plane() {
 
     install_helm_chart "openchoreo-observability-plane" "openchoreo-observability-plane" "$OBSERVABILITY_NS" "true" "true" "true" "1800" \
         "--values" "$SCRIPT_DIR/.values-op.yaml" \
-        "--set" "observer.image.tag=$OPENCHOREO_VERSION"
+        "--set" "observer.image.tag=$OPENCHOREO_VERSION" \
+        "--set" "observer.audit.enabled=true"
 
     # Install logs and metrics observability modules
     # See https://github.com/openchoreo/community-modules for more details
@@ -1091,7 +1115,8 @@ install_observability_plane() {
     install_helm_chart "observability-logs-opensearch" "$modules_repo/observability-logs-opensearch" "$OBSERVABILITY_NS" "true" "true" "true" "600" \
         "--version" "$LOGS_OPENSEARCH_VERSION" \
         "--set" "openSearchSetup.openSearchSecretName=opensearch-admin-credentials" \
-        "--set" "adapter.openSearchSecretName=opensearch-admin-credentials"
+        "--set" "adapter.openSearchSecretName=opensearch-admin-credentials" \
+        "--set" "auditLogs.enabled=true"
 
     install_helm_chart "observability-traces-opensearch" "$modules_repo/observability-tracing-opensearch" "$OBSERVABILITY_NS" "true" "true" "true" "600" \
         "--version" "$TRACES_OPENSEARCH_VERSION" \
@@ -1101,12 +1126,35 @@ install_observability_plane() {
     install_helm_chart "observability-metrics-prometheus" "$modules_repo/observability-metrics-prometheus" "$OBSERVABILITY_NS" "true" "true" "true" "600" \
         "--version" "$METRICS_PROMETHEUS_VERSION"
 
+    # The prometheus-operator, not Helm, creates the metrics module's StatefulSets,
+    # pods and PVCs from the custom resources the chart applies, so install_helm_chart's
+    # --wait returns successfully long before those workloads exist. The module
+    # persists Prometheus and Alertmanager data on PVCs, so a volume that never binds
+    # (no default StorageClass, or an exhausted one) would otherwise pass as a clean
+    # install and only surface later as missing metrics.
+    local sts i
+    for sts in prometheus-openchoreo-observability alertmanager-openchoreo-observability; do
+        for i in $(seq 1 30); do
+            kubectl get statefulset "$sts" -n "$OBSERVABILITY_NS" >/dev/null 2>&1 && break
+            if [ "$i" -eq 30 ]; then
+                log_error "StatefulSet $sts was not created in $OBSERVABILITY_NS within 60s"
+                return 1
+            fi
+            sleep 2
+        done
+        if ! kubectl rollout status "statefulset/$sts" -n "$OBSERVABILITY_NS" --timeout=5m; then
+            log_error "StatefulSet $sts did not become ready. Check for unbound PersistentVolumeClaims: kubectl get pvc -n $OBSERVABILITY_NS"
+            return 1
+        fi
+    done
+
     # Enable fluent-bit after opensearch is installed and ready
     log_info "Enabling fluent-bit for log collection..."
     install_helm_chart "observability-logs-opensearch" "$modules_repo/observability-logs-opensearch" "$OBSERVABILITY_NS" "true" "true" "true" "600" \
         "--version" "$LOGS_OPENSEARCH_VERSION" \
         "--reuse-values" \
-        "--set" "fluent-bit.enabled=true"
+        "--set" "fluent-bit.enabled=true" \
+        "--set" "fluentBitCustomizations.clusterInstance=$CLUSTER_NAME"
 
     # Enable Kubernetes events collection
     log_info "Enabling Kubernetes events collection..."
@@ -1449,6 +1497,17 @@ preload_images() {
 
     log_info "Preloading Docker images for faster deployments..."
 
+    # Resolve values files for prerequisites installed outside the CP/DP/WP/OP charts
+    # (mirrors the fallback paths used by install_thunder/install_openbao)
+    local thunder_values="$SCRIPT_DIR/../k3d/common/values-thunder.yaml"
+    if [[ ! -f "$thunder_values" ]]; then
+        thunder_values="/home/openchoreo/install/k3d/common/values-thunder.yaml"
+    fi
+    local openbao_values="$SCRIPT_DIR/../k3d/common/values-openbao.yaml"
+    if [[ ! -f "$openbao_values" ]]; then
+        openbao_values="/home/openchoreo/install/k3d/common/values-openbao.yaml"
+    fi
+
     # Build arguments for preload script
     local preload_args=(
         "--cluster" "$CLUSTER_NAME"
@@ -1456,6 +1515,17 @@ preload_images() {
         "--cp-values" "${SCRIPT_DIR}/.values-cp.yaml"
         "--data-plane"
         "--dp-values" "${SCRIPT_DIR}/.values-dp.yaml"
+        # Prerequisites (cert-manager, ESO, kgateway, OpenBao, Thunder) are installed
+        # unconditionally in install.sh, so they're preloaded on every run too.
+        "--prerequisites"
+        "--cert-manager-version" "$CERT_MANAGER_VERSION"
+        "--eso-version" "${ESO_VERSION#v}"
+        "--kgateway-version" "$KGATEWAY_VERSION"
+        # OpenBao's version is hardcoded inline in install_openbao (no shared variable yet)
+        "--openbao-version" "0.25.6"
+        "--openbao-values" "$openbao_values"
+        "--thunder-version" "$THUNDER_VERSION"
+        "--thunder-values" "$thunder_values"
     )
 
     # Use local charts when in dev mode
@@ -1475,6 +1545,9 @@ preload_images() {
         preload_args+=(
             "--workflow-plane"
             "--wp-values" "${SCRIPT_DIR}/.values-wp.yaml"
+            # preload-images.sh includes the registry image automatically whenever
+            # --workflow-plane is passed (install_registry only runs alongside it)
+            "--registry-values" "${SCRIPT_DIR}/.values-registry.yaml"
         )
     fi
 
@@ -1483,6 +1556,12 @@ preload_images() {
         preload_args+=(
             "--observability-plane"
             "--op-values" "${SCRIPT_DIR}/.values-op.yaml"
+            # preload-images.sh includes the community-module images automatically
+            # whenever --observability-plane is passed (they only run alongside it)
+            "--logs-opensearch-version" "$LOGS_OPENSEARCH_VERSION"
+            "--traces-opensearch-version" "$TRACES_OPENSEARCH_VERSION"
+            "--metrics-prometheus-version" "$METRICS_PROMETHEUS_VERSION"
+            "--events-otel-version" "$EVENTS_OTEL_COLLECTOR_VERSION"
         )
     fi
 

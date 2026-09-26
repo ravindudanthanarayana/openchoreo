@@ -5,6 +5,8 @@ package workload
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -272,4 +274,73 @@ func TestGetWorkloadSchema(t *testing.T) {
 		require.True(t, ok)
 		assert.Contains(t, container.Required, "image")
 	})
+
+	t.Run("exposes endpoint and resource dependencies", func(t *testing.T) {
+		svc := newService(t)
+
+		schema, err := svc.GetWorkloadSchema(ctx)
+		require.NoError(t, err)
+
+		deps, ok := schema.Properties["dependencies"]
+		require.True(t, ok, "schema must define dependencies")
+		assert.Equal(t, "object", deps.Type)
+
+		// Endpoint dependencies on other components.
+		endpoints, ok := deps.Properties["endpoints"]
+		require.True(t, ok, "dependencies must define endpoints")
+		assert.Equal(t, "array", endpoints.Type)
+
+		// Resource dependencies on project-bound Resources.
+		resources, ok := deps.Properties["resources"]
+		require.True(t, ok, "dependencies must define resources")
+		assert.Equal(t, "array", resources.Type)
+		require.NotNil(t, resources.Items)
+		require.NotNil(t, resources.Items.Schema)
+
+		item := resources.Items.Schema
+		assert.Equal(t, "object", item.Type)
+		assert.Contains(t, item.Required, "ref")
+
+		ref, ok := item.Properties["ref"]
+		require.True(t, ok, "resource dependency must define ref")
+		assert.Equal(t, "string", ref.Type)
+
+		// envBindings and fileBindings are maps of output name -> target, so
+		// they use additionalProperties (string), not fixed properties.
+		for _, name := range []string{"envBindings", "fileBindings"} {
+			binding, ok := item.Properties[name]
+			require.True(t, ok, "resource dependency must define %s", name)
+			assert.Equal(t, "object", binding.Type)
+			require.NotNil(t, binding.AdditionalProperties, "%s must set additionalProperties", name)
+			require.NotNil(t, binding.AdditionalProperties.Schema, "%s additionalProperties must have a schema", name)
+			assert.Equal(t, "string", binding.AdditionalProperties.Schema.Type)
+		}
+	})
+}
+
+// TestWorkloadSpecSchemaCoversEveryField is a drift guard. workloadSpecSchema is
+// hand-written, and it is what GetWorkloadSchema advertises -- so a field added
+// to WorkloadTemplateSpec but not to the schema is invisible to every consumer
+// that discovers the workload shape from it, MCP included, with nothing failing
+// to say so.
+//
+// That has already happened: `source` was added to the spec and this schema was
+// not updated, so commit provenance could not be set through the advertised
+// shape at all. This fails instead of letting the next field go the same way.
+func TestWorkloadSpecSchemaCoversEveryField(t *testing.T) {
+	schema := workloadSpecSchema()
+	specType := reflect.TypeOf(openchoreov1alpha1.WorkloadTemplateSpec{})
+
+	for i := range specType.NumField() {
+		field := specType.Field(i)
+		name := strings.Split(field.Tag.Get("json"), ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		_, ok := schema.Properties[name]
+		assert.Truef(t, ok,
+			"WorkloadTemplateSpec.%s is serialized as %q but workloadSpecSchema does not "+
+				"describe it, so no consumer reading the advertised schema can set it",
+			field.Name, name)
+	}
 }

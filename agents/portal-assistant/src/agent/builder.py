@@ -27,6 +27,7 @@ from langchain.agents.middleware import SummarizationMiddleware
 from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.runnables import Runnable, RunnableConfig
 
+from common.auth.bearer import BearerTokenAuth
 from src.agent.middleware import (
     EmptyResultGuardMiddleware,
     LoggingMiddleware,
@@ -36,11 +37,10 @@ from src.agent.middleware import (
     WriteGuardMiddleware,
 )
 from src.agent.tool_registry import is_mutating
-from src.auth.bearer import BearerTokenAuth
 from src.clients import get_model, get_tools_for_user
 from src.config import settings
 from src.models import ChatResponse
-from src.template_manager import render
+from src.templates import render
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,6 @@ _TOOLS_FOR_CASE: dict[str, set[str]] = {
         # Phase A — config inspection
         "get_workflow_run",
         "get_workflow",
-        "get_cluster_workflow",
         # Phase B — log inspection (try in order: live pod logs → events →
         # OpenSearch fallback). Live logs + events come from the build plane
         # directly and work even when OpenSearch hasn't indexed anything yet.

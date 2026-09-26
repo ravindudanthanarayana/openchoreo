@@ -12,6 +12,7 @@ import (
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/api/gen"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services"
 	projectsvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/project"
+	"github.com/openchoreo/openchoreo/internal/server/middleware/audit"
 )
 
 // ListProjects returns a paginated list of projects within a namespace.
@@ -78,6 +79,8 @@ func (h *Handler) CreateProject(
 		h.logger.Error("Failed to create project", "error", err)
 		return gen.CreateProject500JSONResponse{InternalErrorJSONResponse: internalError()}, nil
 	}
+
+	audit.SetResource(ctx, &audit.Resource{Namespace: request.NamespaceName, UID: string(created.UID), Name: created.Name})
 
 	genProject, err := convert[openchoreov1alpha1.Project, gen.Project](*created)
 	if err != nil {
@@ -155,6 +158,8 @@ func (h *Handler) UpdateProject(
 		return gen.UpdateProject500JSONResponse{InternalErrorJSONResponse: internalError()}, nil
 	}
 
+	audit.SetResource(ctx, &audit.Resource{Namespace: request.NamespaceName, UID: string(updated.UID), Name: updated.Name})
+
 	genProject, err := convert[openchoreov1alpha1.Project, gen.Project](*updated)
 	if err != nil {
 		h.logger.Error("Failed to convert updated project", "error", err)
@@ -183,6 +188,10 @@ func (h *Handler) DeleteProject(
 		h.logger.Error("Failed to delete project", "error", err)
 		return gen.DeleteProject500JSONResponse{InternalErrorJSONResponse: internalError()}, nil
 	}
+
+	// No UID here: ProjectService.DeleteProject returns only an error, not the
+	// deleted object, so the identifier that survives the deletion is the name.
+	audit.SetResource(ctx, &audit.Resource{Namespace: request.NamespaceName, Name: request.ProjectName})
 
 	h.logger.Info("Project deleted successfully", "namespaceName", request.NamespaceName, "project", request.ProjectName)
 	return gen.DeleteProject204Response{}, nil

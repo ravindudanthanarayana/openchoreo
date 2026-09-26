@@ -7,10 +7,12 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+from src.agent.agent import CHAT_AGENT, RCA_AGENT, REMED_AGENT
 from src.api import agent_router, report_router
-from src.auth import check_oauth2_connection, get_oauth2_auth
-from src.auth.dependencies import _load_auth_config
+from src.auth import auth as _auth
+from src.auth import check_oauth2_connection, get_jwt_validator, get_oauth2_auth
 from src.clients import MCPClient, get_model, get_report_backend
+from src.extensions import read_extensions
 from src.config import settings
 from src.logging_config import setup_logging
 from src.mcp_server import drain_background_tasks, make_mcp_app, mcp_server
@@ -26,6 +28,9 @@ if settings.tls_insecure_skip_verify:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    logger.info("Initialising JWT validator...")
+    get_jwt_validator()
+
     logger.info("Starting up: Testing LLM connection...")
     try:
         model = get_model()
@@ -53,7 +58,7 @@ async def lifespan(_app: FastAPI):
 
     logger.info("Loading auth config...")
     try:
-        _load_auth_config()
+        _auth.get_auth_config()
         logger.info("Auth config loaded successfully")
     except Exception as e:
         logger.error("Auth config loading failed: %s", e)
@@ -67,6 +72,11 @@ async def lifespan(_app: FastAPI):
     except Exception as e:
         logger.error("MCP initialization failed: %s", e)
         raise RuntimeError(f"MCP initialization failed: {e}") from e
+
+    # Non-fatal: the agent serves fine without extensions.
+    logger.info("Loading extensions...")
+    for agent in (RCA_AGENT, REMED_AGENT, CHAT_AGENT):
+        read_extensions(agent.name)
 
     # Enter the FastMCP streamable-HTTP session manager so the /mcp sub-app
     # can serve requests. Without this, requests to /mcp 500 with

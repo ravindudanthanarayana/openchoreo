@@ -52,8 +52,26 @@ func GetSubject(r *http.Request) (string, bool) {
 	return sub, ok
 }
 
+// GetClaimsFromContext retrieves the validated JWT claims from a context.Context
+func GetClaimsFromContext(ctx context.Context) (jwt.MapClaims, bool) {
+	claims, ok := ctx.Value(claimsContextKey).(jwt.MapClaims)
+	return claims, ok
+}
+
+// ContextWithClaims returns a copy of ctx carrying claims.
+func ContextWithClaims(ctx context.Context, claims jwt.MapClaims) context.Context {
+	return context.WithValue(ctx, claimsContextKey, claims)
+}
+
 // GetTokenFromContext retrieves the raw JWT token string from a context.Context
 func GetTokenFromContext(ctx context.Context) string {
 	token, _ := ctx.Value(tokenContextKey).(string)
 	return token
+}
+
+// ContextWithToken returns a copy of ctx carrying the raw JWT token string.
+// The middleware sets this automatically; it is exported mainly so downstream
+// code (and tests) can populate the token the same way.
+func ContextWithToken(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, tokenContextKey, token)
 }

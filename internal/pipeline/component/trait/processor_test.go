@@ -136,6 +136,43 @@ spec:
 			wantErr: false,
 		},
 		{
+			name:              "create with conditional omit - empty string is omitted",
+			baseResourcesYAML: `[]`,
+			traitYAML: `
+apiVersion: choreo.dev/v1alpha1
+kind: Trait
+metadata:
+  name: pvc-trait
+spec:
+  creates:
+    - template:
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: pvc
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: |
+            ${has(environmentConfigs.storageClass) && environmentConfigs.storageClass != '' ? environmentConfigs.storageClass : oc_omit()}
+`,
+			context: map[string]any{
+				"environmentConfigs": map[string]any{
+					"storageClass": "",
+				},
+			},
+			wantResourcesYAML: `
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: pvc
+  spec:
+    accessModes:
+    - ReadWriteOnce
+`,
+			wantErr: false,
+		},
+		{
 			name:              "create with includeWhen true - resource created",
 			baseResourcesYAML: `[]`,
 			traitYAML: `
@@ -432,7 +469,7 @@ spec:
 				t.Fatalf("Failed to parse expected resources YAML: %v", err)
 			}
 
-			got, err := processor.ApplyTraitCreates(baseResources, &trait, tt.context)
+			got, err := processor.ApplyTraitCreates(t.Context(), baseResources, &trait, tt.context)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ApplyTraitCreates() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -1070,7 +1107,7 @@ spec:
 				t.Fatalf("Failed to parse expected resources YAML: %v", err)
 			}
 
-			err := processor.ApplyTraitPatches(resources, &trait, tt.context)
+			err := processor.ApplyTraitPatches(t.Context(), resources, &trait, tt.context)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ApplyTraitPatches() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -1169,7 +1206,7 @@ spec:
 				t.Fatalf("Failed to parse expected resources YAML: %v", err)
 			}
 
-			got, err := processor.ProcessTraits(resources, &trait, tt.context)
+			got, err := processor.ProcessTraits(t.Context(), resources, &trait, tt.context)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ProcessTraits() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -1401,7 +1438,7 @@ spec:
 		},
 	}
 
-	got, err := processor.ApplyTraitCreates(nil, &trait, ctx)
+	got, err := processor.ApplyTraitCreates(t.Context(), nil, &trait, ctx)
 	require.NoError(t, err)
 	assert.Len(t, got, 3)
 
@@ -1441,7 +1478,7 @@ spec:
 
 	ctx := map[string]any{}
 
-	_, err := processor.ApplyTraitCreates(nil, &trait, ctx)
+	_, err := processor.ApplyTraitCreates(t.Context(), nil, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "forEach")
 }
@@ -1468,7 +1505,7 @@ spec:
 
 	ctx := map[string]any{}
 
-	_, err := processor.ApplyTraitCreates(nil, &trait, ctx)
+	_, err := processor.ApplyTraitCreates(t.Context(), nil, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "render")
 }
@@ -1502,7 +1539,7 @@ spec:
 
 	ctx := map[string]any{}
 
-	got, err := processor.ApplyTraitCreates(nil, &trait, ctx)
+	got, err := processor.ApplyTraitCreates(t.Context(), nil, &trait, ctx)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 
@@ -1557,7 +1594,7 @@ spec:
 		},
 	}
 
-	err := processor.ApplyTraitPatches(resources, &trait, ctx)
+	err := processor.ApplyTraitPatches(t.Context(), resources, &trait, ctx)
 	require.NoError(t, err)
 
 	labels := resources[0].Resource["metadata"].(map[string]any)["labels"].(map[string]any)
@@ -1597,7 +1634,7 @@ spec:
 
 	ctx := map[string]any{}
 
-	err := processor.ApplyTraitPatches(resources, &trait, ctx)
+	err := processor.ApplyTraitPatches(t.Context(), resources, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "forEach")
 }
@@ -1653,7 +1690,7 @@ spec:
 
 	ctx := map[string]any{}
 
-	err := processor.ApplyTraitPatches(resources, &trait, ctx)
+	err := processor.ApplyTraitPatches(t.Context(), resources, &trait, ctx)
 	require.NoError(t, err)
 
 	// "web" and "admin" should have annotations, "api" should not
@@ -1699,7 +1736,7 @@ spec:
 
 	ctx := map[string]any{}
 
-	err := processor.ApplyTraitPatches(resources, &trait, ctx)
+	err := processor.ApplyTraitPatches(t.Context(), resources, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "where clause")
 }
@@ -1743,7 +1780,7 @@ spec:
 
 	ctx := map[string]any{}
 
-	err := processor.ApplyTraitPatches(resources, &trait, ctx)
+	err := processor.ApplyTraitPatches(t.Context(), resources, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "boolean")
 }
@@ -1791,10 +1828,55 @@ spec:
 
 	ctx := map[string]any{}
 
-	err := processor.ApplyTraitPatches(resources, &trait, ctx)
+	err := processor.ApplyTraitPatches(t.Context(), resources, &trait, ctx)
 	require.NoError(t, err)
 
 	// Resource must be completely unmodified
+	if diff := cmp.Diff(before, resources[0].Resource); diff != "" {
+		t.Errorf("resource was modified despite where filtering all targets (-before +after):\n%s", diff)
+	}
+}
+
+func TestApplyTraitPatches_WhereFiltersAllSkipsOperationRendering(t *testing.T) {
+	engine := template.NewEngine()
+	processor := NewProcessor(engine)
+
+	resourcesYAML := `
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: app
+    labels:
+      tier: backend
+`
+	var resourceMaps []map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(resourcesYAML), &resourceMaps))
+	resources := toRenderedResources(resourceMaps)
+
+	before := deepCopy(resources[0].Resource)
+
+	valueJSON, err := json.Marshal("${nonexistent.deeply.nested}")
+	require.NoError(t, err)
+
+	trait := v1alpha1.Trait{}
+	trait.Name = "gated-bad-value-trait"
+	trait.Spec.Patches = []v1alpha1.TraitPatch{
+		{
+			Target: v1alpha1.PatchTarget{
+				Kind:    "Deployment",
+				Version: "v1",
+				Group:   "apps",
+				Where:   `${resource.metadata.labels.tier == "frontend"}`, // only backend exists
+			},
+			Operations: []v1alpha1.JSONPatchOperation{
+				{Op: "add", Path: "/metadata/labels/key", Value: &runtime.RawExtension{Raw: valueJSON}},
+			},
+		},
+	}
+
+	require.NoError(t, processor.ApplyTraitPatches(t.Context(), resources, &trait, map[string]any{}),
+		"a where clause that filters all targets must skip operation rendering, not error on the unrenderable value")
+
 	if diff := cmp.Diff(before, resources[0].Resource); diff != "" {
 		t.Errorf("resource was modified despite where filtering all targets (-before +after):\n%s", diff)
 	}
@@ -1843,7 +1925,7 @@ spec:
 		"resource": existingResourceValue,
 	}
 
-	err := processor.ApplyTraitPatches(resources, &trait, ctx)
+	err := processor.ApplyTraitPatches(t.Context(), resources, &trait, ctx)
 	require.NoError(t, err)
 
 	// Verify the original "resource" binding is preserved/restored after filtering
@@ -1888,7 +1970,7 @@ spec:
 
 	before := deepCopy(resources[0].Resource)
 
-	err := processor.ApplyTraitPatches(resources, &trait, ctx)
+	err := processor.ApplyTraitPatches(t.Context(), resources, &trait, ctx)
 	require.NoError(t, err, "patching with no matching resources should be a no-op")
 
 	if diff := cmp.Diff(before, resources[0].Resource); diff != "" {
@@ -1932,7 +2014,7 @@ spec:
 
 	ctx := map[string]any{}
 
-	err := processor.ApplyTraitPatches(resources, &trait, ctx)
+	err := processor.ApplyTraitPatches(t.Context(), resources, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Deployment/my-deploy")
 }
@@ -1968,7 +2050,7 @@ spec:
 
 	ctx := map[string]any{}
 
-	err := processor.ApplyTraitPatches(resources, &trait, ctx)
+	err := processor.ApplyTraitPatches(t.Context(), resources, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "path")
 }
@@ -2008,7 +2090,7 @@ spec:
 		},
 	}
 
-	err := processor.ApplyTraitPatches(resources, &trait, ctx)
+	err := processor.ApplyTraitPatches(t.Context(), resources, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "string")
 }
@@ -2044,7 +2126,7 @@ func TestRenderOperations_ValueUnmarshalError(t *testing.T) {
 
 	ctx := map[string]any{}
 
-	err := processor.ApplyTraitPatches(resources, &trait, ctx)
+	err := processor.ApplyTraitPatches(t.Context(), resources, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unmarshal")
 }
@@ -2083,7 +2165,7 @@ func TestRenderOperations_ValueRenderError(t *testing.T) {
 
 	ctx := map[string]any{}
 
-	err = processor.ApplyTraitPatches(resources, &trait, ctx)
+	err = processor.ApplyTraitPatches(t.Context(), resources, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "render value")
 }
@@ -2116,7 +2198,7 @@ spec:
 
 	ctx := map[string]any{}
 
-	_, err := processor.ProcessTraits(resources, &trait, ctx)
+	_, err := processor.ProcessTraits(t.Context(), resources, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "render")
 }
@@ -2152,7 +2234,7 @@ spec:
 
 	ctx := map[string]any{}
 
-	_, err := processor.ProcessTraits(resources, &trait, ctx)
+	_, err := processor.ProcessTraits(t.Context(), resources, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "path")
 }
@@ -2194,7 +2276,7 @@ spec:
 	var trait v1alpha1.Trait
 	require.NoError(t, yaml.Unmarshal([]byte(traitYAML), &trait))
 
-	got, err := processor.ApplyTraitRemoves(resources, &trait, map[string]any{})
+	got, err := processor.ApplyTraitRemoves(t.Context(), resources, &trait, map[string]any{})
 	require.NoError(t, err)
 
 	gotResources := extractResources(got)
@@ -2253,7 +2335,7 @@ spec:
 	var trait v1alpha1.Trait
 	require.NoError(t, yaml.Unmarshal([]byte(traitYAML), &trait))
 
-	got, err := processor.ApplyTraitRemoves(resources, &trait, map[string]any{})
+	got, err := processor.ApplyTraitRemoves(t.Context(), resources, &trait, map[string]any{})
 	require.NoError(t, err)
 
 	require.Len(t, got, 1)
@@ -2293,7 +2375,7 @@ spec:
 	var trait v1alpha1.Trait
 	require.NoError(t, yaml.Unmarshal([]byte(traitYAML), &trait))
 
-	got, err := processor.ApplyTraitRemoves(resources, &trait, map[string]any{})
+	got, err := processor.ApplyTraitRemoves(t.Context(), resources, &trait, map[string]any{})
 	require.NoError(t, err)
 	require.Len(t, got, 1, "no-match must be a silent no-op")
 	if diff := cmp.Diff(before, got[0].Resource); diff != "" {
@@ -2347,7 +2429,7 @@ spec:
 		},
 	}
 
-	got, err := processor.ApplyTraitRemoves(resources, &trait, ctx)
+	got, err := processor.ApplyTraitRemoves(t.Context(), resources, &trait, ctx)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	gotMeta := got[0].Resource["metadata"].(map[string]any)
@@ -2392,7 +2474,7 @@ spec:
 	var trait v1alpha1.Trait
 	require.NoError(t, yaml.Unmarshal([]byte(traitYAML), &trait))
 
-	got, err := processor.ApplyTraitRemoves(resources, &trait, map[string]any{})
+	got, err := processor.ApplyTraitRemoves(t.Context(), resources, &trait, map[string]any{})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	gotMeta := got[0].Resource["metadata"].(map[string]any)
@@ -2429,7 +2511,7 @@ spec:
 	var trait v1alpha1.Trait
 	require.NoError(t, yaml.Unmarshal([]byte(traitYAML), &trait))
 
-	_, err := processor.ApplyTraitRemoves(resources, &trait, map[string]any{})
+	_, err := processor.ApplyTraitRemoves(t.Context(), resources, &trait, map[string]any{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must evaluate to boolean")
 }
@@ -2457,7 +2539,7 @@ spec:
 	var trait v1alpha1.Trait
 	require.NoError(t, yaml.Unmarshal([]byte(traitYAML), &trait))
 
-	_, err := processor.ApplyTraitRemoves(resources, &trait, map[string]any{})
+	_, err := processor.ApplyTraitRemoves(t.Context(), resources, &trait, map[string]any{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "forEach")
 }
@@ -2487,7 +2569,7 @@ spec:
 
 	ctx := map[string]any{"parameters": map[string]any{"scalar": 42}}
 
-	_, err := processor.ApplyTraitRemoves(resources, &trait, ctx)
+	_, err := processor.ApplyTraitRemoves(t.Context(), resources, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "forEach")
 }
@@ -2530,7 +2612,7 @@ spec:
 
 	ctx := map[string]any{"parameters": map[string]any{"names": []any{"a"}}}
 
-	got, err := processor.ApplyTraitRemoves(resources, &trait, ctx)
+	got, err := processor.ApplyTraitRemoves(t.Context(), resources, &trait, ctx)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	gotMeta := got[0].Resource["metadata"].(map[string]any)
@@ -2567,7 +2649,7 @@ spec:
 
 	ctx := map[string]any{"parameters": map[string]any{"names": []any{"a"}}}
 
-	_, err := processor.ApplyTraitRemoves(resources, &trait, ctx)
+	_, err := processor.ApplyTraitRemoves(t.Context(), resources, &trait, ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "forEach iteration")
 }
@@ -2596,7 +2678,7 @@ spec:
 	var trait v1alpha1.Trait
 	require.NoError(t, yaml.Unmarshal([]byte(traitYAML), &trait))
 
-	_, err := processor.ApplyTraitRemoves(resources, &trait, map[string]any{})
+	_, err := processor.ApplyTraitRemoves(t.Context(), resources, &trait, map[string]any{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "where clause")
 }
@@ -2631,7 +2713,7 @@ spec:
 	sentinel := map[string]any{"name": "caller-sentinel"}
 	ctx := map[string]any{"resource": sentinel}
 
-	_, err := processor.ApplyTraitRemoves(resources, &trait, ctx)
+	_, err := processor.ApplyTraitRemoves(t.Context(), resources, &trait, ctx)
 	require.NoError(t, err)
 	got, ok := ctx["resource"].(map[string]any)
 	require.True(t, ok, "caller's resource binding must remain a map")
@@ -2710,7 +2792,7 @@ spec:
 	var trait v1alpha1.Trait
 	require.NoError(t, yaml.Unmarshal([]byte(traitYAML), &trait))
 
-	got, err := processor.ProcessTraits(resources, &trait, map[string]any{})
+	got, err := processor.ProcessTraits(t.Context(), resources, &trait, map[string]any{})
 	require.NoError(t, err)
 
 	gotResources := extractResources(got)

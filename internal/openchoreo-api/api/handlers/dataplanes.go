@@ -13,6 +13,7 @@ import (
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/api/gen"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services"
 	dataplanesvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/dataplane"
+	"github.com/openchoreo/openchoreo/internal/server/middleware/audit"
 )
 
 // ListDataPlanes returns a paginated list of data planes within a namespace.
@@ -85,6 +86,8 @@ func (h *Handler) CreateDataPlane(
 		h.logger.Error("Failed to create data plane", "error", err)
 		return gen.CreateDataPlane500JSONResponse{InternalErrorJSONResponse: internalError()}, nil
 	}
+
+	audit.SetResource(ctx, &audit.Resource{Namespace: request.NamespaceName, UID: string(created.UID), Name: created.Name})
 
 	genDP, err := convert[openchoreov1alpha1.DataPlane, gen.DataPlane](*created)
 	if err != nil {
@@ -161,6 +164,8 @@ func (h *Handler) UpdateDataPlane(
 		return gen.UpdateDataPlane500JSONResponse{InternalErrorJSONResponse: internalError()}, nil
 	}
 
+	audit.SetResource(ctx, &audit.Resource{Namespace: request.NamespaceName, UID: string(updated.UID), Name: updated.Name})
+
 	genDP, err := convert[openchoreov1alpha1.DataPlane, gen.DataPlane](*updated)
 	if err != nil {
 		h.logger.Error("Failed to convert updated data plane", "error", err)
@@ -189,6 +194,10 @@ func (h *Handler) DeleteDataPlane(
 		h.logger.Error("Failed to delete data plane", "error", err)
 		return gen.DeleteDataPlane500JSONResponse{InternalErrorJSONResponse: internalError()}, nil
 	}
+
+	// No UID here: DataPlaneService.DeleteDataPlane returns only an error, not the
+	// deleted object, so the identifier that survives the deletion is the name.
+	audit.SetResource(ctx, &audit.Resource{Namespace: request.NamespaceName, Name: request.DpName})
 
 	h.logger.Info("DataPlane deleted successfully", "namespaceName", request.NamespaceName, "dataPlane", request.DpName)
 	return gen.DeleteDataPlane204Response{}, nil

@@ -42,6 +42,101 @@ func projectSummary(p openchoreov1alpha1.Project) map[string]any {
 }
 
 // ---------------------------------------------------------------------------
+// ProjectType
+// ---------------------------------------------------------------------------
+
+func projectTypeSummary(pt openchoreov1alpha1.ProjectType) map[string]any {
+	m := extractCommonMeta(&pt)
+	m["resources"] = len(pt.Spec.Resources)
+	return m
+}
+
+func projectTypeDetail(pt *openchoreov1alpha1.ProjectType) map[string]any {
+	m := extractCommonMeta(pt)
+	if spec := specToMap(pt.Spec); len(spec) > 0 {
+		m["spec"] = spec
+	}
+	return m
+}
+
+// ---------------------------------------------------------------------------
+// ClusterProjectType
+// ---------------------------------------------------------------------------
+
+func clusterProjectTypeSummary(cpt openchoreov1alpha1.ClusterProjectType) map[string]any {
+	m := extractCommonMeta(&cpt)
+	m["resources"] = len(cpt.Spec.Resources)
+	return m
+}
+
+func clusterProjectTypeDetail(cpt *openchoreov1alpha1.ClusterProjectType) map[string]any {
+	m := extractCommonMeta(cpt)
+	if spec := specToMap(cpt.Spec); len(spec) > 0 {
+		m["spec"] = spec
+	}
+	return m
+}
+
+// ---------------------------------------------------------------------------
+// ProjectRelease
+// ---------------------------------------------------------------------------
+
+func projectReleaseSummary(pr openchoreov1alpha1.ProjectRelease) map[string]any {
+	m := extractCommonMeta(&pr)
+	m["projectName"] = pr.Spec.Owner.ProjectName
+	m["projectType"] = map[string]any{
+		"kind": string(pr.Spec.ProjectType.Kind),
+		"name": pr.Spec.ProjectType.Name,
+	}
+	return m
+}
+
+func projectReleaseDetail(pr *openchoreov1alpha1.ProjectRelease) map[string]any {
+	m := extractCommonMeta(pr)
+	m["projectName"] = pr.Spec.Owner.ProjectName
+	m["projectType"] = map[string]any{
+		"kind": string(pr.Spec.ProjectType.Kind),
+		"name": pr.Spec.ProjectType.Name,
+	}
+	if spec := specToMap(pr.Spec.ProjectType.Spec); len(spec) > 0 {
+		m["projectTypeSpec"] = spec
+	}
+	if pr.Spec.Parameters != nil {
+		m["parameters"] = rawExtensionToAny(pr.Spec.Parameters)
+	}
+	return m
+}
+
+// ---------------------------------------------------------------------------
+// ProjectReleaseBinding
+// ---------------------------------------------------------------------------
+
+func projectReleaseBindingSummary(rb openchoreov1alpha1.ProjectReleaseBinding) map[string]any {
+	m := extractCommonMeta(&rb)
+	m["projectName"] = rb.Spec.Owner.ProjectName
+	m["environment"] = rb.Spec.Environment
+	setIfNotEmpty(m, "projectRelease", rb.Spec.ProjectRelease)
+	setIfNotEmpty(m, "status", readyStatus(rb.Status.Conditions))
+	return m
+}
+
+func projectReleaseBindingDetail(rb *openchoreov1alpha1.ProjectReleaseBinding) map[string]any {
+	m := extractCommonMeta(rb)
+	m["projectName"] = rb.Spec.Owner.ProjectName
+	m["environment"] = rb.Spec.Environment
+	setIfNotEmpty(m, "projectRelease", rb.Spec.ProjectRelease)
+	if rb.Spec.EnvironmentConfigs != nil {
+		m["environmentConfigs"] = rawExtensionToAny(rb.Spec.EnvironmentConfigs)
+	}
+	setIfNotEmpty(m, "dataPlaneNamespace", rb.Status.Namespace)
+	setIfNotEmpty(m, "status", readyStatus(rb.Status.Conditions))
+	if conds := conditionsSummary(rb.Status.Conditions); conds != nil {
+		m["conditions"] = conds
+	}
+	return m
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -251,6 +346,10 @@ func componentReleaseDetail(cr *openchoreov1alpha1.ComponentRelease) map[string]
 	}
 	m["workloadType"] = cr.Spec.ComponentType.Spec.WorkloadType
 	m["image"] = cr.Spec.Workload.Container.Image
+	m["env"] = cr.Spec.Workload.Container.Env
+	if len(cr.Spec.Workload.Container.Files) > 0 {
+		m["files"] = cr.Spec.Workload.Container.Files
+	}
 	if len(cr.Spec.Workload.Endpoints) > 0 {
 		m["endpoints"] = cr.Spec.Workload.Endpoints
 	}
@@ -295,32 +394,28 @@ func releaseBindingDetail(rb *openchoreov1alpha1.ReleaseBinding) map[string]any 
 	if rb.Spec.State != "" {
 		m["state"] = string(rb.Spec.State)
 	}
-	if rb.Spec.ComponentTypeEnvironmentConfigs != nil {
-		m["componentTypeEnvironmentConfigs"] = rawExtensionToAny(rb.Spec.ComponentTypeEnvironmentConfigs)
+	// Emitted even when empty, so callers can tell unset from unreported.
+	m["componentTypeEnvironmentConfigs"] = rawExtensionToAny(rb.Spec.ComponentTypeEnvironmentConfigs)
+	tec := make(map[string]any, len(rb.Spec.TraitEnvironmentConfigs))
+	for k, v := range rb.Spec.TraitEnvironmentConfigs {
+		tec[k] = rawExtensionToAny(&v)
 	}
-	if len(rb.Spec.TraitEnvironmentConfigs) > 0 {
-		tec := make(map[string]any, len(rb.Spec.TraitEnvironmentConfigs))
-		for k, v := range rb.Spec.TraitEnvironmentConfigs {
-			tec[k] = rawExtensionToAny(&v)
-		}
-		m["traitEnvironmentConfigs"] = tec
-	}
-	if rb.Spec.WorkloadOverrides != nil {
-		m["workloadOverrides"] = rb.Spec.WorkloadOverrides
-	}
+	m["traitEnvironmentConfigs"] = tec
+	m["workloadOverrides"] = rb.Spec.WorkloadOverrides
 	if len(rb.Status.Endpoints) > 0 {
 		m["endpoints"] = rb.Status.Endpoints
 	}
 	if len(rb.Status.ConnectionTargets) > 0 {
 		m["connectionTargets"] = rb.Status.ConnectionTargets
 	}
-	if len(rb.Status.ResolvedConnections) > 0 {
-		m["resolvedConnections"] = rb.Status.ResolvedConnections
-	}
-	if len(rb.Status.PendingConnections) > 0 {
-		m["pendingConnections"] = rb.Status.PendingConnections
-	}
+	m["resolvedConnections"] = rb.Status.ResolvedConnections
+	m["pendingConnections"] = rb.Status.PendingConnections
+	m["resourceDependencyTargets"] = rb.Status.ResourceDependencyTargets
+	m["pendingResourceDependencies"] = rb.Status.PendingResourceDependencies
 	setIfNotEmpty(m, "status", readyStatus(rb.Status.Conditions))
+	if conds := conditionsSummary(rb.Status.Conditions); conds != nil {
+		m["conditions"] = conds
+	}
 	return m
 }
 
@@ -393,6 +488,9 @@ func workflowDetail(wf *openchoreov1alpha1.Workflow) map[string]any {
 		m["spec"] = spec
 	}
 	setIfNotEmpty(m, "status", readyStatus(wf.Status.Conditions))
+	if conds := conditionsSummary(wf.Status.Conditions); conds != nil {
+		m["conditions"] = conds
+	}
 	return m
 }
 
@@ -722,6 +820,36 @@ func resourceTreeDetail(result *k8sresourcessvc.K8sResourceTreeResult) map[strin
 				}
 				node["health"] = h
 			}
+			// The Object blob is dropped above, so metadata_only would otherwise be
+			// invisible here; it still matters because it tells the caller the node's
+			// spec and status were never read, not merely omitted from this view.
+			if n.MetadataOnly {
+				node["metadata_only"] = true
+			}
+			// Only heuristic matches carry this, so its presence is the warning that
+			// the node may not really belong to its parent.
+			if n.MatchedBy != "" {
+				node["matched_by"] = n.MatchedBy
+			}
+			if len(n.ChildrenStatus) > 0 {
+				statuses := make([]map[string]any, 0, len(n.ChildrenStatus))
+				for j := range n.ChildrenStatus {
+					s := &n.ChildrenStatus[j]
+					status := map[string]any{
+						"version": s.Version,
+						"kind":    s.Kind,
+						"state":   s.State,
+					}
+					if s.Group != "" {
+						status["group"] = s.Group
+					}
+					if s.Message != "" {
+						status["message"] = s.Message
+					}
+					statuses = append(statuses, status)
+				}
+				node["children_status"] = statuses
+			}
 			nodes = append(nodes, node)
 		}
 		entry["nodes"] = nodes
@@ -886,12 +1014,8 @@ func resourceReleaseBindingDetail(rb *openchoreov1alpha1.ResourceReleaseBinding)
 	if rb.Spec.RetainPolicy != "" {
 		m["retainPolicy"] = string(rb.Spec.RetainPolicy)
 	}
-	if rb.Spec.ResourceTypeEnvironmentConfigs != nil {
-		m["resourceTypeEnvironmentConfigs"] = rawExtensionToAny(rb.Spec.ResourceTypeEnvironmentConfigs)
-	}
-	if outputs := resolvedResourceOutputs(rb.Status.Outputs); len(outputs) > 0 {
-		m["outputs"] = outputs
-	}
+	m["resourceTypeEnvironmentConfigs"] = rawExtensionToAny(rb.Spec.ResourceTypeEnvironmentConfigs)
+	m["outputs"] = resolvedResourceOutputs(rb.Status.Outputs)
 	setIfNotEmpty(m, "status", readyStatus(rb.Status.Conditions))
 	if conds := conditionsSummary(rb.Status.Conditions); conds != nil {
 		m["conditions"] = conds

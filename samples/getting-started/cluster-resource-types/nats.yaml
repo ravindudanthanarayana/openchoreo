@@ -3,6 +3,7 @@ kind: ClusterResourceType
 metadata:
   name: nats
   annotations:
+    openchoreo.dev/local-dev-addresses: client=outputs.host:outputs.port
     openchoreo.dev/description: >-
       In-cluster NATS Core pub/sub server (no JetStream) backed by a
       single-replica Deployment. Stateless and in-memory; for demonstration
@@ -123,7 +124,7 @@ spec:
               targetPort: 8222
 
     - id: deployment
-      readyWhen: "${applied.deployment.status.readyReplicas == applied.deployment.status.replicas && applied.deployment.status.replicas > 0}"
+      readyWhen: "${has(applied.deployment.status.readyReplicas) && has(applied.deployment.status.replicas) && applied.deployment.status.readyReplicas == applied.deployment.status.replicas && applied.deployment.status.replicas > 0}"
       template:
         apiVersion: apps/v1
         kind: Deployment

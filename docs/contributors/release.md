@@ -32,16 +32,28 @@ The gate runs at two points, both keyed to the exact commit:
   branch creation), in which case the earlier green gate is reused instead of
   re-run.
 
-Reuse is tracked by a `release-e2e-gate` commit status, so it applies only when
-the tag points at the identical commit. Any new commit on the branch — a fix or
-a backported patch — is gated afresh, and only passing gates are recorded, so a
+Reuse is tracked by an `e2e-gate` commit status, which `e2e-gate.yml` stamps on
+its own tested commit whenever every leg passes — regardless of what triggered
+that run. So it also picks up a manual pre-flight dispatch or a nightly
+schedule run, not just ones run by the orchestrator itself, as long as it
+lands on the identical commit. Any new commit on the branch — a fix or a
+backported patch — is gated afresh, and only passing gates are recorded, so a
 failed gate is never reused.
+
+Reuse also requires the same Helm chart version and Backstage image tag, not
+just the same commit: the status description encodes both, and the
+orchestrator only reuses a prior gate when that description matches the
+versions it just resolved for the current run. This matters because the
+Backstage image tag tracks the `backstage-plugins` release branch tip rather
+than anything in this repo's history, so it can change between two gate
+checks at the same openchoreo commit. When the description doesn't match, the
+gate is re-run even though the commit already has a passing status.
 
 The gate shards the suite into five parallel legs, each on its own runner
 and k3d cluster:
 
 | Leg         | Scope                                     | Typical | Timeout |
-|-------------|-------------------------------------------|---------|---------|
+| ----------- | ----------------------------------------- | ------- | ------- |
 | tier1       | Core platform (CP + DP)                   | ~10 min | 45 min  |
 | tier2       | API, CLI, authz, gateway (CP + DP)        | ~10 min | 45 min  |
 | tier3       | Multi-cluster (4 clusters, one per plane) | ~25 min | 90 min  |
@@ -70,3 +82,82 @@ The orchestrator exposes a `skip_e2e` input that bypasses the gate. It is
 reserved for declared emergencies (e.g. a critical security hotfix where the
 fix has been validated out of band) and should be noted on the release issue
 when used.
+
+## Default observability module versions
+
+The k3d installers, quick-start, e2e suite, and multi-cluster guide install
+observability modules from
+[community-modules](https://github.com/openchoreo/community-modules). On
+`main`, those modules are pinned to `0.0.0-latest-dev`: the chart and images
+that community-modules publishes from its own `main`. A module release therefore
+needs no change in this repo. Release branches pin released module versions
+instead.
+
+The versions live in the files tracked by
+[`hack/pin-observability-modules.sh`](../../hack/pin-observability-modules.sh).
+Run it with `--help` to list the charts and files.
+
+- **Minor releases (new branch).** Before cutting the branch, release the
+  community-modules versions this release should ship (bump `<module>/VERSION`
+  in community-modules). Then pass each version to the `Release Orchestrator`:
+
+  | Input                           | Script flag                       | Chart                                 |
+  |---------------------------------|-----------------------------------|---------------------------------------|
+  | `logs_opensearch_version`       | `--logs-opensearch-version`       | `observability-logs-opensearch`       |
+  | `tracing_opensearch_version`    | `--tracing-opensearch-version`    | `observability-tracing-opensearch`    |
+  | `metrics_prometheus_version`    | `--metrics-prometheus-version`    | `observability-metrics-prometheus`    |
+  | `events_otel_collector_version` | `--events-otel-collector-version` | `observability-events-otel-collector` |
+  | `logs_openobserve_version`      | `--logs-openobserve-version`      | `observability-logs-openobserve`      |
+  | `finops_opencost_version`       | `--finops-opencost-version`       | `finops-opencost`                     |
+
+  All six are required whenever the orchestrator creates a release branch,
+  and each version must already be published to
+  `oci://ghcr.io/openchoreo/helm-charts`. The branch job commits the pins to
+  the new branch, so the e2e gate on branch creation tests those exact
+  versions.
+
+  `finops-opencost` is the exception: nothing in this repo installs it, so
+  there is no location to rewrite. The orchestrator still requires the input
+  and checks that the chart is published, then echoes every version into the
+  run summary for the docs constants below. `--check` cannot report it.
+
+- **Patch releases (existing branch).** Pins carry over from the branch cut.
+  The orchestrator rejects the module version inputs when the branch already
+  exists, so change a pin with a PR against `release-vX.Y` before releasing:
+
+  ```sh
+  git fetch upstream
+  git switch -c pin-observability-modules-vX.Y upstream/release-vX.Y
+  # Rewrites every file that pins the module (--help lists them)
+  hack/pin-observability-modules.sh --metrics-prometheus-version 0.7.1
+  # Fails if anything is unpinned, otherwise prints the pinned versions
+  hack/pin-observability-modules.sh --check
+  git commit -s -am "chore: pin observability-metrics-prometheus 0.7.1 on release-vX.Y"
+  ```
+
+  Release lines cut before the script existed (v1.2 and older) don't have
+  it. List every line that pins a module, edit the ones for the module you are
+  changing, then commit the same way:
+
+  ```sh
+  git grep -n -E '^(export )?(OBSERVABILITY_)?(LOGS_OPENSEARCH|TRACES_OPENSEARCH|METRICS_PROMETHEUS|EVENTS_OTEL_COLLECTOR|LOGS_OPENOBSERVE)_VERSION *\??= *"?[0-9]' -- install make
+  git grep -n -A8 -E 'observability-(logs-opensearch|tracing-opensearch|metrics-prometheus|events-otel-collector|logs-openobserve)' -- install make | grep -E -- '--version"? +"?[0-9]'
+  ```
+
+- **Docs constants.** The module keys in the versioned docs'
+  `_constants.mdx` (`logsOpensearchModule`, `tracingOpensearchModule`,
+  `metricsPrometheusModule`, `eventsOtelCollectorModule`) must match the
+  release branch's pins. From an openchoreo `main` checkout, print them with
+  `hack/pin-observability-modules.sh --check --ref upstream/release-vX.Y`.
+
+  `finOpsOpenCostModule` is not pinned in this repo, so `--check` does not
+  print it. Take it from the `finops_opencost_version` the orchestrator run
+  recorded in its branch-job summary, or from `finops-opencost/VERSION` in
+  community-modules. For a patch release that only needs a newer FinOps
+  module, updating this constant in the docs repo is the whole change: there
+  is no pin PR against `release-vX.Y` to open.
+- **Guards.** `hack/pin-observability-modules.sh --check` fails if a tracked
+  location is still unpinned. It runs in `build-and-test` for `release-v*`
+  pushes and PRs, which catches backports that carry `0.0.0-latest-dev` over
+  from `main`. The orchestrator also runs it against the target commit before
+  the gate and tag.

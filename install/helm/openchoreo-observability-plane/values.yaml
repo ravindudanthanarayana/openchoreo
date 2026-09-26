@@ -27,6 +27,22 @@ global:
   commonLabels: {}
 
   # @schema
+  # type: string
+  # description: Registry override for all first-party container images. When set, it replaces the registry host of each image repository. May include a path (e.g. registry.example.com/ghcr.io) for path-preserving mirrors. Empty uses each image's default registry.
+  # default: ""
+  # @schema
+  imageRegistry: ""
+
+  # @schema
+  # type: array
+  # description: Image pull secrets applied to all first-party pods, for pulling images from authenticated private registries. Entries are LocalObjectReferences (name only).
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  imagePullSecrets: []
+
+  # @schema
   # description: Installation mode of OpenChoreo
   # enum: [singleCluster, multiCluster, quickStart]
   # default: singleCluster
@@ -44,6 +60,38 @@ global:
 # default: cluster.local
 # @schema
 kubernetesClusterDomain: cluster.local
+
+# @schema
+# type: object
+# description: Namespace ingress isolation for observability-plane workloads. Requires a NetworkPolicy-capable CNI.
+# @schema
+networkPolicy:
+  # @schema
+  # type: boolean
+  # description: Restrict ingress to the release namespace, except for explicitly exempted applications and rules
+  # default: true
+  # @schema
+  enabled: true
+
+  # @schema
+  # type: array
+  # description: app.kubernetes.io/name values allowed unrestricted ingress
+  # items:
+  #   type: string
+  # default: [gateway-default, opentelemetry-collector]
+  # @schema
+  unrestrictedIngressAppNames:
+    - gateway-default
+    - opentelemetry-collector
+
+  # @schema
+  # type: array
+  # description: Additional ingress rules appended to the built-in rules
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  additionalIngress: []
 
 # @schema
 # type: object
@@ -210,6 +258,7 @@ controllerManager:
 
   # @schema
   # type: object
+  # additionalProperties: true
   # description: Affinity rules for pod scheduling
   # default: {}
   # @schema
@@ -327,43 +376,7 @@ controllerManager:
       # @schema
       enableWebhooks: "false"
 
-  # @schema
-  # type: object
-  # description: Cluster gateway configuration for multi-cluster communication
-  # @schema
-  clusterGateway:
-    # @schema
-    # type: boolean
-    # description: Enable cluster gateway integration for multi-cluster setups
-    # default: false
-    # @schema
-    enabled: false
-    # @schema
-    # type: string
-    # description: URL of the cluster gateway service in the control plane
-    # default: https://cluster-gateway.openchoreo-control-plane.svc.cluster.local:8443
-    # @schema
-    url: https://cluster-gateway.openchoreo-control-plane.svc.cluster.local:8443
-    # @schema
-    # type: object
-    # description: TLS configuration for cluster gateway communication
-    # @schema
-    tls:
-      # @schema
-      # type: string
-      # description: Path to the CA certificate file for gateway verification
-      # default: /etc/cluster-gateway/ca.crt
-      # @schema
-      caPath: /etc/cluster-gateway/ca.crt
-      # @schema
-      # type: string
-      # description: Name of the ConfigMap containing the gateway CA certificate
-      # default: cluster-gateway-ca
-      # @schema
-      caConfigMap: cluster-gateway-ca
-
 ## Values for dependent charts
-
 
 # @schema
 # type: object
@@ -410,6 +423,23 @@ observer:
   # default: 1
   # @schema
   replicas: 1
+
+  # @schema
+  # type: object
+  # description: Features available for evaluation and not recommended for production use. They are off by default, may change or be removed, and are not covered by upgrade guarantees.
+  # @schema
+  featurePreview:
+    # @schema
+    # type: object
+    # description: Delivery Insights (DORA metrics) collection in the Observer.
+    # @schema
+    deliveryInsights:
+      # @schema
+      # type: boolean
+      # description: Feature preview, not recommended for production. Collect DORA delivery metrics in the Observer. Requires a logs adapter that can filter events by reason across all namespaces; without one only Mean Time to Recovery is derived. Safe with multiple replicas, but more than one replica needs alertStoreBackend postgresql. Maps to FEATURE_PREVIEW_DELIVERY_INSIGHTS_ENABLED in the Observer container.
+      # default: false
+      # @schema
+      enabled: false
 
   # @schema
   # description: Alert entry storage backend for fired alerts
@@ -460,6 +490,9 @@ observer:
     #           type:
     #             type: string
     #             description: Authentication mechanism type (oauth2, etc.)
+    #           readable_id_claim:
+    #             type: string
+    #             description: JWT claim carrying a human-readable identity, recorded as an audit event's actor.id. Falls back to audit.actor.idClaim, then sub, when unset or absent from the token
     #           entitlement:
     #             type: object
     #             properties:
@@ -476,6 +509,7 @@ observer:
         priority: 1
         auth_mechanisms:
           - type: "jwt"
+            readable_id_claim: "username"
             entitlement:
               claim: "groups"
               display_name: "User Group"
@@ -484,9 +518,65 @@ observer:
         priority: 2
         auth_mechanisms:
           - type: "jwt"
+            readable_id_claim: "client_id"
             entitlement:
-              claim: "sub"
+              claim: "client_id"
               display_name: "Client ID"
+
+  # @schema
+  # type: object
+  # description: Audit logging configuration
+  # @schema
+  audit:
+    # @schema
+    # type: boolean
+    # description: Enable audit event emission for state-modifying observer API requests
+    # default: false
+    # @schema
+    enabled: false
+    # @schema
+    # type: object
+    # description: Policy settings applied when no policies entry matches
+    # @schema
+    defaults:
+      # @schema
+      # type: boolean
+      # description: Emit an audit event by default
+      # default: true
+      # @schema
+      publish: true
+    # @schema
+    # type: array
+    # description: >
+    #   Ordered, first-match-wins policy overrides. Each entry has a `match`
+    #   selector and a `set` block of overrides. See the audit logging docs
+    #   for the selector-admissibility rules enforced at startup.
+    # items:
+    #   type: object
+    #   additionalProperties: true
+    # default: [{"match":{"operations":["QueryAuditLogs"]},"set":{"publish":false}}]
+    # @schema
+    # QueryAuditLogs is the only read observer audits; every other read is
+    # exempt at the source. Reading the trail fires on each filter change and
+    # page of results, so publishing it buries the management events the trail
+    # is kept for. Drop this entry to record audit-log reads.
+    policies:
+      - match:
+          operations:
+            - "QueryAuditLogs"
+        set:
+          publish: false
+    # @schema
+    # type: object
+    # description: Audit actor settings
+    # @schema
+    actor:
+      # @schema
+      # type: string
+      # description: Fallback claim recorded as actor.id and matched by policies[].match.actors, used when the subject's mechanism sets no readable_id_claim or its token omits that claim. sub is recorded if this claim is missing too
+      # default: "username"
+      # @schema
+      idClaim: "username"
 
   # @schema
   # type: object
@@ -502,6 +592,24 @@ observer:
     # @schema
     # type: string
     # description: Timeout for tracing adapter requests
+    # default: "30s"
+    # @schema
+    timeout: "30s"
+
+  # @schema
+  # type: object
+  # description: Configurations for FinOps adapter connectivity
+  # @schema
+  finOpsAdapter:
+    # @schema
+    # type: string
+    # description: URL of the FinOps adapter service
+    # default: "http://finops-adapter:9101"
+    # @schema
+    url: "http://finops-adapter:9101"
+    # @schema
+    # type: string
+    # description: Timeout for FinOps adapter requests
     # default: "30s"
     # @schema
     timeout: "30s"
@@ -551,10 +659,10 @@ observer:
   #       description: Environment variable value
   # @schema
   extraEnvs:
-  - name: OBSERVER_BASE_URL
-    value: "http://observer.openchoreo.invalid:11080"
-  - name: AUTHZ_TIMEOUT
-    value: "30s"
+    - name: OBSERVER_BASE_URL
+      value: "http://observer.openchoreo.invalid:11080"
+    - name: AUTHZ_TIMEOUT
+      value: "30s"
 
   # @schema
   # type: object
@@ -680,6 +788,40 @@ observer:
     # @schema
     hostnames: []
 
+  # @schema
+  # type: object
+  # description: Node selector for pod scheduling
+  # additionalProperties:
+  #   type: string
+  # default: {}
+  # @schema
+  nodeSelector: {}
+
+  # @schema
+  # type: array
+  # description: Tolerations for pod scheduling
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  tolerations: []
+
+  # @schema
+  # type: object
+  # additionalProperties: true
+  # description: Affinity rules for pod scheduling
+  # default: {}
+  # @schema
+  affinity: {}
+
+  # @schema
+  # type: array
+  # description: Topology spread constraints for pod distribution across failure domains
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  topologySpreadConstraints: []
 
 ## Values for local templates
 
@@ -739,8 +881,11 @@ clusterAgent:
   # type: string
   # description: |
   #   Logical plane identifier for multi-tenancy. Multiple CRs with the same planeID share one agent.
-  #   Defaults to Helm release name if not specified.
+  #   Ships as the literal "default"; falls back to Helm release name if set as "". Rendered as
+  #   the openchoreo.dev/plane-id pod label, so it must be a valid Kubernetes label value.
   # default: default
+  # pattern: "^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$"
+  # maxLength: 63
   # @schema
   planeID: default
 
@@ -1065,11 +1210,20 @@ clusterAgent:
 
   # @schema
   # type: object
+  # additionalProperties: true
   # description: Affinity rules for pod scheduling
   # default: {}
   # @schema
   affinity: {}
 
+  # @schema
+  # type: array
+  # description: Topology spread constraints for pod distribution across failure domains
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  topologySpreadConstraints: []
 
 # @schema
 # type: object
@@ -1100,6 +1254,20 @@ gateway:
   #     infrastructure:
   #       annotations:
   #         service.beta.kubernetes.io/aws-load-balancer-type: "external"
+  #
+  #   The chart always renders spec.infrastructure so platform identity labels
+  #   reach the kgateway proxy pods. That field needs Gateway API >= v1.2 - on
+  #   older CRDs it is pruned and the proxy pods lose plane attribution.
+  #   labels is capped at 8 entries by Gateway API, platform identity included.
+  # properties:
+  #   labels:
+  #     type: object
+  #     additionalProperties:
+  #       type: string
+  #   annotations:
+  #     type: object
+  #     additionalProperties:
+  #       type: string
   # @schema
   infrastructure: {}
 
@@ -1183,7 +1351,6 @@ gateway:
     # @schema
     port: 11443
 
-
 # @schema
 # type: object
 # description: Common security configuration shared across all components
@@ -1236,6 +1403,11 @@ security:
     # default: ""
     # @schema
     authServerBaseUrl: ""
+    # @schema
+    # type: array
+    # description: OAuth scopes advertised by the observer's MCP endpoint via the protected-resource metadata (RFC 9728) and WWW-Authenticate 401 challenge. Leave empty to use the default (openid profile email).
+    # @schema
+    mcpOAuthScopes: []
   # @schema
   # type: object
   # description: JWT configuration
@@ -1440,6 +1612,12 @@ rca:
     # @schema
     modelName: ""
 
+    # @schema
+    # type: string
+    # description: Optional OpenAI-compatible base URL for LLM calls. Set this to route through the ai-gateway-agentgateway module (e.g., http://agentgateway-proxy.openchoreo-data-plane) instead of calling the provider directly. When set, the provider API key is managed at the gateway and RCA_LLM_API_KEY may be a placeholder.
+    # default: ""
+    # @schema
+    baseUrl: ""
 
   # @schema
   # description: Report storage backend type
@@ -1518,6 +1696,41 @@ rca:
   #       description: Environment variable value
   # @schema
   extraEnvs: []
+
+  # @schema
+  # type: object
+  # description: Node selector for pod scheduling
+  # additionalProperties:
+  #   type: string
+  # default: {}
+  # @schema
+  nodeSelector: {}
+
+  # @schema
+  # type: array
+  # description: Tolerations for pod scheduling
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  tolerations: []
+
+  # @schema
+  # type: object
+  # additionalProperties: true
+  # description: Affinity rules for pod scheduling
+  # default: {}
+  # @schema
+  affinity: {}
+
+  # @schema
+  # type: array
+  # description: Topology spread constraints for pod distribution across failure domains
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  topologySpreadConstraints: []
 
 # FinOps Agent Configuration
 finOpsAgent:
@@ -1676,6 +1889,13 @@ finOpsAgent:
   llmName: ""
 
   # @schema
+  # type: string
+  # description: Optional OpenAI-compatible base URL for LLM calls. Set this to route through the ai-gateway-agentgateway module (e.g., http://agentgateway-proxy.openchoreo-data-plane) instead of calling the provider directly. When set, the provider API key is managed at the gateway and LLM_API_KEY may be a placeholder.
+  # default: ""
+  # @schema
+  llmBaseUrl: ""
+
+  # @schema
   # description: Report storage backend type
   # enum: [sqlite, postgresql]
   # default: sqlite
@@ -1782,3 +2002,38 @@ finOpsAgent:
   #       description: Environment variable value
   # @schema
   extraEnvs: []
+
+  # @schema
+  # type: object
+  # description: Node selector for pod scheduling
+  # additionalProperties:
+  #   type: string
+  # default: {}
+  # @schema
+  nodeSelector: {}
+
+  # @schema
+  # type: array
+  # description: Tolerations for pod scheduling
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  tolerations: []
+
+  # @schema
+  # type: object
+  # additionalProperties: true
+  # description: Affinity rules for pod scheduling
+  # default: {}
+  # @schema
+  affinity: {}
+
+  # @schema
+  # type: array
+  # description: Topology spread constraints for pod distribution across failure domains
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  topologySpreadConstraints: []

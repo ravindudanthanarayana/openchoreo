@@ -118,6 +118,24 @@ unexpected:
   %q`, contract, needle)
 }
 
+func requireEnvContains(t *testing.T, env []envVar, name string, valueNeedle string, contract string) {
+	t.Helper()
+	for _, item := range env {
+		if item.Name == name && strings.Contains(item.Value, valueNeedle) {
+			return
+		}
+	}
+	t.Fatalf(`
+contract:
+  %s
+
+expected env:
+  %s contains %q
+
+actual env:
+  %v`, contract, name, valueNeedle, env)
+}
+
 // --- Cross-cutting invariants (scenario 21, 22) ---
 
 func TestAllTemplates_ParseAndShape(t *testing.T) {
@@ -175,10 +193,19 @@ func TestCheckoutSource_AuthAndProviderContract(t *testing.T) {
 		requireContains(t, s, "git-codecommit", "${SSH_KEY_ID}@")
 	})
 
-	t.Run("basic-auth percent-encodes credentials", func(t *testing.T) {
-		// %40 == '@', %3A == ':' — sentinel of the URL-encoding sed.
-		requireContains(t, s, "USERNAME_ENCODED", "PASSWORD_ENCODED", "%40", "%3A")
-		requireContains(t, s, "credential.helper store")
+	t.Run("basic-auth supplies credentials via askpass", func(t *testing.T) {
+		requireContains(t, s,
+			"export GIT_SECRET_PATH",
+			"chmod 700 /tmp/git-askpass.sh",
+			"export GIT_ASKPASS=/tmp/git-askpass.sh",
+			"export GIT_TERMINAL_PROMPT=0",
+		)
+		requireNotContains(t, s, "USERNAME_ENCODED",
+			"basic auth must not build a credential-bearing clone URL")
+		requireNotContains(t, s, "PASSWORD_ENCODED",
+			"basic auth must not build a credential-bearing clone URL")
+		requireNotContains(t, s, "credential.helper",
+			"basic auth must not configure a git credential helper")
 	})
 
 	t.Run("checkout by branch and by commit", func(t *testing.T) {
@@ -214,39 +241,58 @@ func TestBuildTemplates_SharedContract(t *testing.T) {
 	for _, file := range buildTemplates {
 		t.Run(file, func(t *testing.T) {
 			s := scriptForTemplate(t, file, "build-image")
+			env := envForTemplate(t, file, "build-image")
 			// Output handoff to publish-image.
 			requireContains(t, s, "/mnt/vol/app-image.tar")
 			// Path validation guard.
 			requireContains(t, s, "exit 1")
 			// build-env JSON -> --env flags, with empty/[] skipped.
-			requireContains(t, s, "build-env", `!= "[]"`, "--env")
+			requireContains(t, s, "BUILD_ENV_JSON", `!= "[]"`, "--env")
+			requireEnvContains(t, env, "BUILD_ENV_JSON", "build-env",
+				"build templates must receive build-env through container env, not raw shell interpolation")
+			requireEnvContains(t, env, "IMAGE_NAME", "image-name",
+				"build templates must receive image-name through container env")
+			requireEnvContains(t, env, "IMAGE_TAG", "image-tag",
+				"build templates must receive image-tag through container env")
+			requireEnvContains(t, env, "GIT_REVISION", "git-revision",
+				"build templates must receive git-revision through container env")
 		})
 	}
 }
 
 func TestContainerfileBuild_Specifics(t *testing.T) {
 	s := scriptForTemplate(t, "containerfile-build.yaml", "build-image")
+	env := envForTemplate(t, "containerfile-build.yaml", "build-image")
 	requireContains(t, s,
 		"podman build",
-		"dockerfile-path",
-		"docker-context",
+		"DOCKERFILE_PATH",
+		"DOCKER_CONTEXT",
 		"--build-arg", // containerfile additionally handles build-args
 		"podman save -o /mnt/vol/app-image.tar",
 	)
+	requireEnvContains(t, env, "DOCKERFILE_PATH", "dockerfile-path",
+		"containerfile build must receive dockerfile-path through container env")
+	requireEnvContains(t, env, "DOCKER_CONTEXT", "docker-context",
+		"containerfile build must receive docker-context through container env")
+	requireEnvContains(t, env, "BUILD_ARGS_JSON", "build-args",
+		"containerfile build must receive build-args through container env")
 }
 
 func TestBuildpackTemplates_Specifics(t *testing.T) {
 	for _, file := range buildpackTemplates {
 		t.Run(file, func(t *testing.T) {
 			s := scriptForTemplate(t, file, "build-image")
+			env := envForTemplate(t, file, "build-image")
 			requireContains(t, s,
 				"pack build",
 				"--builder",
 				"--run-image",
 				"--pull-policy always",
 				"--docker-host inherit",
-				"app-path",
+				"APP_PATH",
 			)
+			requireEnvContains(t, env, "APP_PATH", "app-path",
+				"buildpack templates must receive app-path through container env")
 			// Supply-chain: builder/run images pinned by digest, not a tag.
 			requireContains(t, s, "@sha256:")
 			// Rootless podman service is started and waited on.
@@ -319,6 +365,57 @@ func TestGenerateWorkload_SharedContract(t *testing.T) {
 				".spec.container.image",   // image-only merge on auto-generated
 				"openchoreo.dev/workload", // WorkflowRun annotation
 				"workload-from-source",
+			)
+		})
+	}
+}
+
+// TestGenerateWorkload_SourceProvenance guards the WorkloadSource wiring: the
+// occ invocation must forward the resolved commit metadata so
+// commit/commitAuthoredAt land on the Workload without any manual flags.
+func TestGenerateWorkload_SourceProvenance(t *testing.T) {
+	for _, file := range []string{"generate-workload.yaml", "generate-workload-k3d.yaml"} {
+		t.Run(file, func(t *testing.T) {
+			for _, name := range []string{"source-commit", "source-branch", "source-repository", "source-authored-at"} {
+				requireEqualContract(t, inputParamDefault(t, file, name), "",
+					"generate-workload-cr must expose "+name+" as an optional input parameter")
+			}
+
+			env := envForTemplate(t, file, "generate-workload-cr")
+			requireEnvContains(t, env, "SOURCE_COMMIT", "source-commit",
+				"generate-workload-cr must receive source-commit through container env")
+			requireEnvContains(t, env, "SOURCE_BRANCH", "source-branch",
+				"generate-workload-cr must receive source-branch through container env")
+			requireEnvContains(t, env, "SOURCE_REPOSITORY", "source-repository",
+				"generate-workload-cr must receive source-repository through container env")
+			requireEnvContains(t, env, "SOURCE_AUTHORED_AT", "source-authored-at",
+				"generate-workload-cr must receive source-authored-at through container env")
+
+			s := scriptForTemplate(t, file, "generate-workload-cr")
+			requireContains(t, s,
+				`--source-commit "${SOURCE_COMMIT}"`,
+				`--source-branch "${SOURCE_BRANCH}"`,
+				`--source-repository "${SOURCE_REPOSITORY}"`,
+				`--source-authored-at "${SOURCE_AUTHORED_AT}"`,
+			)
+			// Both the source-descriptor and default-generated occ invocations must
+			// forward every provenance flag, not just one invocation and not just the
+			// commit: dropping any one of the four silently degrades Lead Time.
+			for _, flag := range []string{
+				`--source-commit "${SOURCE_COMMIT}"`,
+				`--source-branch "${SOURCE_BRANCH}"`,
+				`--source-repository "${SOURCE_REPOSITORY}"`,
+				`--source-authored-at "${SOURCE_AUTHORED_AT}"`,
+			} {
+				requireEqualContract(t, strings.Count(s, flag), 2,
+					"both occ workload create invocations (source-descriptor and default) must forward "+flag)
+			}
+
+			// The 409 path merges into an existing Workload; provenance must travel with
+			// the image or the previous build's commit stays attached to the new one.
+			requireContains(t, s,
+				`NEW_SOURCE=$(jq -c '.spec.source // null' "${WORKLOAD_JSON}")`,
+				`.spec.source = $src`,
 			)
 		})
 	}

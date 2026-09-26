@@ -27,17 +27,17 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Git ref (commit SHA or branch) to check out and test; defaults to the dispatched branch"
+        description: "Git ref to check out and test: full 40-char commit SHA, branch, or tag (actions/checkout can't resolve an abbreviated SHA); defaults to the dispatched branch"
         required: false
         type: string
         default: ""
       helm_chart_version:
-        description: "Helm chart version (e.g., 0.0.0-latest-dev or 0.0.0-<commit-sha>)"
+        description: "Helm chart version (e.g., 0.0.0-latest-dev or 0.0.0-<8-char-short-sha>)"
         required: false
         type: string
         default: "0.0.0-latest-dev"
       backstage_image_tag:
-        description: "Backstage (openchoreo-ui) image tag for the UI leg; empty uses the chart's AppVersion default"
+        description: "Backstage (openchoreo-ui) image tag for the UI leg, e.g. the backstage-plugins commit's 8-char short SHA or 'latest-dev'; empty uses the chart's AppVersion default"
         required: false
         type: string
         default: ""
@@ -74,17 +74,17 @@ on:
   workflow_call:
     inputs:
       ref:
-        description: "Git ref (commit SHA or branch) to check out and test; defaults to the caller's ref"
+        description: "Git ref to check out and test: full 40-char commit SHA, branch, or tag (actions/checkout can't resolve an abbreviated SHA); defaults to the caller's ref"
         required: false
         type: string
         default: ""
       helm_chart_version:
-        description: "Helm chart version (e.g., 0.0.0-latest-dev or 0.0.0-<commit-sha>)"
+        description: "Helm chart version (e.g., 0.0.0-latest-dev or 0.0.0-<8-char-short-sha>)"
         required: false
         type: string
         default: "0.0.0-latest-dev"
       backstage_image_tag:
-        description: "Backstage (openchoreo-ui) image tag for the UI leg; empty uses the chart's AppVersion default"
+        description: "Backstage (openchoreo-ui) image tag for the UI leg, e.g. the backstage-plugins commit's 8-char short SHA or 'latest-dev'; empty uses the chart's AppVersion default"
         required: false
         type: string
         default: ""
@@ -122,7 +122,9 @@ on:
       E2E_GITHUB_PAT:
         description: "GitHub PAT with read access to the private build-test repo. When empty, the private-repo build spec self-skips."
         required: false
-
+      SLACK_WEBHOOK_URL:
+        description: "Slack Incoming Webhook URL for failure notifications. When empty, notifications are skipped."
+        required: false
 
 permissions:
   contents: read
@@ -137,21 +139,41 @@ env:
   YQ_SHA256: b96de04645707e14a12f52c37e6266832e03c29e95b9b139cddcae7314466e69
 
 jobs:
+  # Pins `inputs.ref` (which may be a branch or tag) to a single commit SHA up
+  # front, so every leg and the final status recording test/reference the
+  # exact same commit even if the ref moves later in the run.
+  resolve-ref:
+    name: Resolve tested commit
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Resolve to a commit SHA
+        id: resolve
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   tier1:
     name: E2E (Tier 1)
+    needs: [resolve-ref]
     # On `schedule` inputs is empty (the nightly runs every leg); dispatch/call honor the toggle.
     if: ${{ github.event_name == 'schedule' || inputs.run_tier1 }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Clone the code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.resolve-ref.outputs.sha }}
           persist-credentials: false
 
       - name: Clone workflow actions
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -176,16 +198,10 @@ jobs:
 
       - name: Validate Helm chart version
         run: |
-          if [ -z "${HELM_CHART_VERSION}" ]; then
-            echo "::error::HELM_CHART_VERSION is required"
+          if [[ ! "${HELM_CHART_VERSION}" =~ ^0\.0\.0-(latest-dev|[0-9a-f]{8})$ ]]; then
+            echo "::error::HELM_CHART_VERSION must be '0.0.0-latest-dev' or '0.0.0-<8-char-short-sha>' (got '${HELM_CHART_VERSION}')"
             exit 1
           fi
-          case "${HELM_CHART_VERSION}" in
-            *[!A-Za-z0-9._-]*)
-              echo "::error::HELM_CHART_VERSION contains unsupported characters"
-              exit 1
-              ;;
-          esac
 
       - name: Add e2e host entries
         run: echo '127.0.0.1 api.e2e-cp.local thunder.e2e-cp.local openchoreo.e2e-cp.local' | sudo tee -a /etc/hosts
@@ -209,18 +225,19 @@ jobs:
 
   tier2:
     name: E2E (Tier 2)
+    needs: [resolve-ref]
     if: ${{ github.event_name == 'schedule' || inputs.run_tier2 }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Clone the code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.resolve-ref.outputs.sha }}
           persist-credentials: false
 
       - name: Clone workflow actions
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -245,16 +262,10 @@ jobs:
 
       - name: Validate Helm chart version
         run: |
-          if [ -z "${HELM_CHART_VERSION}" ]; then
-            echo "::error::HELM_CHART_VERSION is required"
+          if [[ ! "${HELM_CHART_VERSION}" =~ ^0\.0\.0-(latest-dev|[0-9a-f]{8})$ ]]; then
+            echo "::error::HELM_CHART_VERSION must be '0.0.0-latest-dev' or '0.0.0-<8-char-short-sha>' (got '${HELM_CHART_VERSION}')"
             exit 1
           fi
-          case "${HELM_CHART_VERSION}" in
-            *[!A-Za-z0-9._-]*)
-              echo "::error::HELM_CHART_VERSION contains unsupported characters"
-              exit 1
-              ;;
-          esac
 
       - name: Add e2e host entries
         run: echo '127.0.0.1 api.e2e-cp.local thunder.e2e-cp.local openchoreo.e2e-cp.local' | sudo tee -a /etc/hosts
@@ -278,18 +289,19 @@ jobs:
 
   tier3:
     name: E2E (Tier 3 — Multi-cluster)
+    needs: [resolve-ref]
     if: ${{ github.event_name == 'schedule' || inputs.run_tier3 }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - name: Clone the code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.resolve-ref.outputs.sha }}
           persist-credentials: false
 
       - name: Clone workflow actions
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -314,16 +326,10 @@ jobs:
 
       - name: Validate Helm chart version
         run: |
-          if [ -z "${HELM_CHART_VERSION}" ]; then
-            echo "::error::HELM_CHART_VERSION is required"
+          if [[ ! "${HELM_CHART_VERSION}" =~ ^0\.0\.0-(latest-dev|[0-9a-f]{8})$ ]]; then
+            echo "::error::HELM_CHART_VERSION must be '0.0.0-latest-dev' or '0.0.0-<8-char-short-sha>' (got '${HELM_CHART_VERSION}')"
             exit 1
           fi
-          case "${HELM_CHART_VERSION}" in
-            *[!A-Za-z0-9._-]*)
-              echo "::error::HELM_CHART_VERSION contains unsupported characters"
-              exit 1
-              ;;
-          esac
 
       - name: Add e2e multi-cluster host entries
         # CP cluster external domains plus the OP observer hostname. The observer
@@ -355,6 +361,7 @@ jobs:
 
   ui:
     name: E2E (UI / Playwright)
+    needs: [resolve-ref]
     if: ${{ github.event_name == 'schedule' || inputs.run_ui }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -375,9 +382,9 @@ jobs:
       OCC_CONTROL_PLANE_URL: http://api.e2e-cp.local:28080
     steps:
       - name: Clone the code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.resolve-ref.outputs.sha }}
           persist-credentials: false
 
       - name: Check UI suite presence
@@ -394,7 +401,7 @@ jobs:
 
       - name: Clone workflow actions
         if: steps.ui-suite.outputs.present == 'true'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -407,7 +414,7 @@ jobs:
 
       - name: Setup Node
         if: steps.ui-suite.outputs.present == 'true'
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -431,16 +438,18 @@ jobs:
       - name: Validate Helm chart version
         if: steps.ui-suite.outputs.present == 'true'
         run: |
-          if [ -z "${HELM_CHART_VERSION}" ]; then
-            echo "::error::HELM_CHART_VERSION is required"
+          if [[ ! "${HELM_CHART_VERSION}" =~ ^0\.0\.0-(latest-dev|[0-9a-f]{8})$ ]]; then
+            echo "::error::HELM_CHART_VERSION must be '0.0.0-latest-dev' or '0.0.0-<8-char-short-sha>' (got '${HELM_CHART_VERSION}')"
             exit 1
           fi
-          case "${HELM_CHART_VERSION}" in
-            *[!A-Za-z0-9._-]*)
-              echo "::error::HELM_CHART_VERSION contains unsupported characters"
-              exit 1
-              ;;
-          esac
+
+      - name: Validate Backstage image tag
+        if: steps.ui-suite.outputs.present == 'true'
+        run: |
+          if [[ -n "${E2E_BACKSTAGE_IMAGE_TAG}" && ! "${E2E_BACKSTAGE_IMAGE_TAG}" =~ ^(latest-dev|[0-9a-f]{8})$ ]]; then
+            echo "::error::backstage_image_tag must be empty, 'latest-dev', or an 8-char short SHA (got '${E2E_BACKSTAGE_IMAGE_TAG}')"
+            exit 1
+          fi
 
       - name: Map e2e hostnames for host processes
         # The browsers resolve *.e2e-cp.local via Chromium host-resolver-rules,
@@ -519,18 +528,21 @@ jobs:
 
   ext-idp:
     name: E2E (External IdP / Dex)
+    needs: [resolve-ref]
     if: ${{ github.event_name == 'schedule' || inputs.run_ext_idp }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
+      E2E_WITH_UI: "true"
       E2E_WITH_EXT_IDP: "true"
+      E2E_BACKSTAGE_IMAGE_TAG: ${{ inputs.backstage_image_tag }}
       E2E_KUBECONTEXT: k3d-openchoreo-e2e
       UI_BASE_URL: http://openchoreo.e2e-cp.local:28080
     steps:
       - name: Clone the code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.resolve-ref.outputs.sha }}
           persist-credentials: false
 
       - name: Check UI suite presence
@@ -547,7 +559,7 @@ jobs:
 
       - name: Clone workflow actions
         if: steps.ui-suite.outputs.present == 'true'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -560,7 +572,7 @@ jobs:
 
       - name: Setup Node
         if: steps.ui-suite.outputs.present == 'true'
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -584,16 +596,10 @@ jobs:
       - name: Validate Helm chart version
         if: steps.ui-suite.outputs.present == 'true'
         run: |
-          if [ -z "${HELM_CHART_VERSION}" ]; then
-            echo "::error::HELM_CHART_VERSION is required"
+          if [[ ! "${HELM_CHART_VERSION}" =~ ^0\.0\.0-(latest-dev|[0-9a-f]{8})$ ]]; then
+            echo "::error::HELM_CHART_VERSION must be '0.0.0-latest-dev' or '0.0.0-<8-char-short-sha>' (got '${HELM_CHART_VERSION}')"
             exit 1
           fi
-          case "${HELM_CHART_VERSION}" in
-            *[!A-Za-z0-9._-]*)
-              echo "::error::HELM_CHART_VERSION contains unsupported characters"
-              exit 1
-              ;;
-          esac
 
       - name: Map e2e hostnames for host processes
         # Browsers use --host-resolver-rules; this entry covers any host process
@@ -618,7 +624,9 @@ jobs:
           make e2e.setup \
             E2E_HELM_SOURCE=oci \
             HELM_CHART_VERSION="${HELM_CHART_VERSION}" \
+            E2E_WITH_UI="${E2E_WITH_UI}" \
             E2E_WITH_EXT_IDP="${E2E_WITH_EXT_IDP}" \
+            E2E_BACKSTAGE_IMAGE_TAG="${E2E_BACKSTAGE_IMAGE_TAG}" \
             E2E_SETUP_TIMEOUT=10m
 
       - name: Run ext-idp Playwright tests
@@ -672,3 +680,126 @@ jobs:
       # already default it), so the nested quick-start workflow always receives
       # a real chart version.
       helm_chart_version: ${{ inputs.helm_chart_version || '0.0.0-latest-dev' }}
+
+  record-status:
+    name: Record e2e gate status
+    # Stamps `e2e-gate` on the commit resolve-ref pinned (not a re-resolved
+    # ref), so a moving branch that advanced during the run can't get credit
+    # for a pass it never earned.
+    needs: [resolve-ref, tier1, tier2, tier3, ui, ext-idp, quick-start]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Record gate status on the tested commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BACKSTAGE_IMAGE_TAG: ${{ inputs.backstage_image_tag }}
+          SHA: ${{ needs.resolve-ref.outputs.sha }}
+        run: |
+          if [[ "${{ needs.tier1.result }}" != "success" || "${{ needs.tier2.result }}" != "success" || \
+                "${{ needs.tier3.result }}" != "success" || "${{ needs.ui.result }}" != "success" || \
+                "${{ needs['ext-idp'].result }}" != "success" || "${{ needs['quick-start'].result }}" != "success" ]]; then
+            echo "Not every e2e gate leg succeeded; not recording gate status for ${SHA}."
+            exit 0
+          fi
+          # Encodes the tested artifact versions so reuse checks can match on them.
+          DESCRIPTION="e2e gate passed (helm=${HELM_CHART_VERSION}, backstage=${BACKSTAGE_IMAGE_TAG:-none})"
+          for attempt in 1 2 3; do
+            if gh api --method POST "repos/${{ github.repository }}/statuses/${SHA}" \
+              -f state=success \
+              -f context=e2e-gate \
+              -f description="${DESCRIPTION}" >/dev/null; then
+              echo "Recorded e2e-gate=success on ${SHA}: ${DESCRIPTION}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Attempt ${attempt}/3 to record the e2e gate status failed; retrying in $((attempt * 5))s..."
+              sleep $((attempt * 5))
+            fi
+          done
+          echo "::warning::Could not record e2e-gate status on ${SHA} after 3 attempts."
+  # Fires once if any enabled leg above failed. failure() ignores skipped legs
+  # (toggled off via run_*), so a single alert covers whichever shards ran —
+  # every leg on the nightly schedule, or a subset on dispatch/the release gate.
+  # quick-start failures are covered here too (the nested test-quick-start
+  # suppresses its own notify when called with a version). SLACK_WEBHOOK_URL
+  # resolves from repo secrets on the schedule/dispatch triggers; on the
+  # workflow_call path the caller passes it via the secrets mapping above.
+  notify:
+    name: Notify on failure
+    needs: [resolve-ref, tier1, tier2, tier3, ui, ext-idp, quick-start]
+    if: ${{ failure() }}
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Check Slack webhook is configured
+        id: guard
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -n "${SLACK_WEBHOOK_URL}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SLACK_WEBHOOK_URL is not set; skipping Slack failure notification."
+          fi
+
+      - name: Render Slack payload
+        if: steps.guard.outputs.enabled == 'true'
+        env:
+          SUITE: "End-to-End Tests"
+          REF: ${{ inputs.ref || github.ref_name }}
+          SHA: ${{ needs.resolve-ref.outputs.sha }}
+          WORKFLOW: ${{ github.workflow }}
+          EVENT_NAME: ${{ github.event_name }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ needs.resolve-ref.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          jq -n \
+            --arg suite "$SUITE" \
+            --arg ref "$REF" \
+            --arg sha "$SHA" \
+            --arg workflow "$WORKFLOW" \
+            --arg event_name "$EVENT_NAME" \
+            --arg commit_url "$COMMIT_URL" \
+            --arg run_url "$RUN_URL" \
+            '{
+              text: ":red_circle: \($suite) failed on \($ref) (\($workflow))",
+              blocks: [
+                {
+                  type: "header",
+                  text: { type: "plain_text", text: ":red_circle: \($suite) failed", emoji: true }
+                },
+                {
+                  type: "section",
+                  fields: [
+                    { type: "mrkdwn", text: "*Workflow:*\n\($workflow)" },
+                    { type: "mrkdwn", text: "*Branch / ref:*\n`\($ref)`" },
+                    { type: "mrkdwn", text: "*Trigger:*\n\($event_name)" },
+                    { type: "mrkdwn", text: "*Commit:*\n<\($commit_url)|`\($sha)`>" }
+                  ]
+                },
+                {
+                  type: "actions",
+                  elements: [
+                    {
+                      type: "button",
+                      text: { type: "plain_text", text: "View failed run", emoji: true },
+                      url: $run_url,
+                      style: "danger"
+                    }
+                  ]
+                }
+              ]
+            }' > "$RUNNER_TEMP/slack-payload.json"
+
+      - name: Post failure alert to Slack
+        if: steps.guard.outputs.enabled == 'true'
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload-file-path: "${{ runner.temp }}/slack-payload.json"

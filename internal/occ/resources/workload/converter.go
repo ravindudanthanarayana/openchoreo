@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
@@ -145,10 +146,32 @@ func ConvertWorkloadDescriptorToWorkloadCR(descriptorPath string, params CreateW
 	return workload, nil
 }
 
-func readSchemaFile(path string) (string, error) {
-	content, err := os.ReadFile(path)
+// readDescriptorFile reads relPath resolved against baseDir. It uses os.Root so a
+// descriptor only references files within its own directory: a relPath that resolves
+// outside baseDir — via "..", an absolute path, or a symlink pointing outside it —
+// returns an error instead of reading the target.
+func readDescriptorFile(baseDir, relPath string) ([]byte, error) {
+	root, err := os.OpenRoot(baseDir)
 	if err != nil {
-		return "", fmt.Errorf("failed to read schema file %s: %w", path, err)
+		return nil, err
+	}
+	defer root.Close()
+
+	f, err := root.Open(relPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	return io.ReadAll(f)
+}
+
+// readSchemaFile reads an endpoint schema file named relative to the descriptor
+// directory (baseDir) via readDescriptorFile.
+func readSchemaFile(baseDir, relPath string) (string, error) {
+	content, err := readDescriptorFile(baseDir, relPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read schema file %s: %w", relPath, err)
 	}
 	return string(content), nil
 }
@@ -193,7 +216,12 @@ func validateConversionParams(params CreateWorkloadParams) error {
 }
 
 // createBaseWorkload creates the basic workload structure with common fields
-func createBaseWorkload(workloadName string, params CreateWorkloadParams) *openchoreov1alpha1.Workload {
+func createBaseWorkload(workloadName string, params CreateWorkloadParams) (*openchoreov1alpha1.Workload, error) {
+	source, err := SourceFromParams(params)
+	if err != nil {
+		return nil, err
+	}
+
 	workload := &openchoreov1alpha1.Workload{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "openchoreo.dev/v1alpha1",
@@ -212,11 +240,38 @@ func createBaseWorkload(workloadName string, params CreateWorkloadParams) *openc
 				Container: openchoreov1alpha1.Container{
 					Image: params.ImageURL,
 				},
+				Source: source,
 			},
 		},
 	}
 
-	return workload
+	return workload, nil
+}
+
+// SourceFromParams builds the workload's commit provenance from CLI flags, or
+// nil when none were given (Source is optional: DF/CFR/MTTR compute without
+// it; only Lead Time for Changes needs it).
+func SourceFromParams(params CreateWorkloadParams) (*openchoreov1alpha1.WorkloadSource, error) {
+	if params.SourceCommit == "" && params.SourceBranch == "" &&
+		params.SourceRepository == "" && params.SourceAuthoredAt == "" {
+		return nil, nil
+	}
+
+	source := &openchoreov1alpha1.WorkloadSource{
+		Commit:     params.SourceCommit,
+		Branch:     params.SourceBranch,
+		Repository: params.SourceRepository,
+	}
+	if params.SourceAuthoredAt != "" {
+		authoredAt, err := time.Parse(time.RFC3339, params.SourceAuthoredAt)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --source-authored-at %q: must be RFC3339 (e.g. from "+
+				"'git show -s --format=%%aI <sha>'): %w", params.SourceAuthoredAt, err)
+		}
+		metaTime := metav1.NewTime(authoredAt)
+		source.AuthoredAt = &metaTime
+	}
+	return source, nil
 }
 
 func convertDescriptorToWorkload(descriptor *WorkloadDescriptor, params CreateWorkloadParams, descriptorPath string) (*openchoreov1alpha1.Workload, error) {
@@ -227,7 +282,10 @@ func convertDescriptorToWorkload(descriptor *WorkloadDescriptor, params CreateWo
 	}
 
 	// Create the base workload structure
-	workload := createBaseWorkload(workloadName, params)
+	workload, err := createBaseWorkload(workloadName, params)
+	if err != nil {
+		return nil, err
+	}
 
 	// Add endpoints from descriptor if present
 	if err := addEndpointsFromDescriptor(workload, descriptor, descriptorPath); err != nil {
@@ -274,20 +332,22 @@ func addEndpointsFromDescriptor(workload *openchoreov1alpha1.Workload, descripto
 			Visibility:  visibility,
 		}
 
-		// Set schema if provided
+		// Set the schema only when a schema file is provided. The schema type is
+		// derived from the endpoint protocol (e.g. HTTP -> openapi, gRPC -> proto)
+		// rather than copied from the endpoint type verbatim, so it matches the
+		// canonical formats understood by the rendering pipeline's schema extractor.
 		if descriptorEndpoint.SchemaFile != "" {
-			// Resolve schema file path relative to the workload descriptor directory
+			// Resolve the schema file relative to the workload descriptor directory.
 			baseDir := filepath.Dir(descriptorPath)
-			schemaFilePath := filepath.Join(baseDir, descriptorEndpoint.SchemaFile)
 
 			// Read schema file content and inline it
-			schemaContent, err := readSchemaFile(schemaFilePath)
+			schemaContent, err := readSchemaFile(baseDir, descriptorEndpoint.SchemaFile)
 			if err != nil {
-				return fmt.Errorf("failed to read schema file %s: %w", schemaFilePath, err)
+				return err
 			}
 
 			endpoint.Schema = &openchoreov1alpha1.Schema{
-				Type:    descriptorEndpoint.Type,
+				Type:    schemaFormatByEndpointType[openchoreov1alpha1.EndpointType(descriptorEndpoint.Type)],
 				Content: schemaContent,
 			}
 		}
@@ -295,6 +355,17 @@ func addEndpointsFromDescriptor(workload *openchoreov1alpha1.Workload, descripto
 		workload.Spec.Endpoints[descriptorEndpoint.Name] = endpoint
 	}
 	return nil
+}
+
+// schemaFormatByEndpointType maps an endpoint protocol to the canonical schema
+// format used for its API definition. These values mirror the canonical schema
+// types recognized by internal/pipeline/component/schemaextract. Endpoint types
+// with no API schema format (TCP, UDP, Websocket) are intentionally absent, so a
+// map lookup yields "" and no schema type is emitted for them.
+var schemaFormatByEndpointType = map[openchoreov1alpha1.EndpointType]string{
+	openchoreov1alpha1.EndpointTypeHTTP:    "openapi",
+	openchoreov1alpha1.EndpointTypeGRPC:    "proto",
+	openchoreov1alpha1.EndpointTypeGraphQL: "graphql",
 }
 
 // validEndpointVisibilities is the set of allowed visibility values for endpoints.
@@ -441,11 +512,10 @@ func addConfigurationsFromDescriptor(workload *openchoreov1alpha1.Workload, desc
 				// Reference to secret
 				crFileVar.ValueFrom = convertEnvVarSource(fileVar.ValueFrom)
 			} else if fileVar.ValueFrom != nil && fileVar.ValueFrom.Path != "" {
-				// Read file content from path
-				filePath := filepath.Join(baseDir, fileVar.ValueFrom.Path)
-				content, err := os.ReadFile(filePath)
+				// Read file content, resolved relative to the descriptor directory.
+				content, err := readDescriptorFile(baseDir, fileVar.ValueFrom.Path)
 				if err != nil {
-					return fmt.Errorf("failed to read file %s: %w", filePath, err)
+					return fmt.Errorf("failed to read file %s: %w", fileVar.ValueFrom.Path, err)
 				}
 				crFileVar.Value = string(content)
 			} else if fileVar.Value != "" {
@@ -489,7 +559,10 @@ func CreateBasicWorkload(params CreateWorkloadParams) (*openchoreov1alpha1.Workl
 	workloadName := params.ComponentName + "-workload"
 
 	// Create the basic workload using shared function
-	workload := createBaseWorkload(workloadName, params)
+	workload, err := createBaseWorkload(workloadName, params)
+	if err != nil {
+		return nil, err
+	}
 
 	return workload, nil
 }
@@ -510,6 +583,7 @@ func ConvertWorkloadCRToYAML(workload *openchoreov1alpha1.Workload) ([]byte, err
 			Container    openchoreov1alpha1.Container                   `json:"container" yaml:"container"`
 			Endpoints    map[string]openchoreov1alpha1.WorkloadEndpoint `json:"endpoints,omitempty" yaml:"endpoints,omitempty"`
 			Dependencies *openchoreov1alpha1.WorkloadDependencies       `json:"dependencies,omitempty" yaml:"dependencies,omitempty"`
+			Source       *openchoreov1alpha1.WorkloadSource             `json:"source,omitempty" yaml:"source,omitempty"`
 		} `json:"spec" yaml:"spec"`
 	}
 
@@ -524,6 +598,7 @@ func ConvertWorkloadCRToYAML(workload *openchoreov1alpha1.Workload) ([]byte, err
 	ordered.Spec.Container = workload.Spec.Container
 	ordered.Spec.Endpoints = workload.Spec.Endpoints
 	ordered.Spec.Dependencies = workload.Spec.Dependencies
+	ordered.Spec.Source = workload.Spec.Source
 
 	// Marshal with sigs.k8s.io/yaml for JSON tag support
 	return yaml.Marshal(ordered)
