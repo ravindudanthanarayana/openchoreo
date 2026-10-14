@@ -793,6 +793,20 @@ controllerManager:
     # @schema
     renderTimeout: "0"
     # @schema
+    # type: string
+    # description: How long a ReleaseBinding or ResourceReleaseBinding revision must stay Healthy before it is marked known-good (Go duration, e.g. "60s", "5m"), passed as --revision-known-good-window. "0" marks a revision known-good on its first Healthy observation. Negative durations are rejected.
+    # default: "60s"
+    # pattern: ^(0|(([0-9]+([.][0-9]+)?|[.][0-9]+)(ns|us|µs|μs|ms|s|m|h))+)$
+    # @schema
+    revisionKnownGoodWindow: "60s"
+    # @schema
+    # type: integer
+    # minimum: 0
+    # description: Number of revisions kept per ReleaseBinding and ResourceReleaseBinding, passed as --revision-history-limit. Older revisions are deleted, except the active revision, the newest known-good revision and revisions annotated openchoreo.dev/keep="true". 0 keeps every revision.
+    # default: 10
+    # @schema
+    revisionHistoryLimit: 10
+    # @schema
     # type: object
     # description: Environment variables for the controller-manager
     # @schema
@@ -1421,6 +1435,7 @@ openchoreoApi:
                 - "releasebinding:view"
                 - "releasebinding:create"
                 - "releasebinding:update"
+                - "releasebinding:rollback"
                 - "resource:view"
                 - "resource:create"
                 - "resource:update"
@@ -1434,6 +1449,7 @@ openchoreoApi:
                 - "resourcereleasebinding:view"
                 - "resourcereleasebinding:create"
                 - "resourcereleasebinding:update"
+                - "resourcereleasebinding:rollback"
                 - "resourcereleasebinding:delete"
                 - "projectreleasebinding:view"
                 - "projectreleasebinding:create"
@@ -1492,11 +1508,13 @@ openchoreoApi:
                 - "releasebinding:view"
                 - "releasebinding:create"
                 - "releasebinding:update"
+                - "releasebinding:rollback"
                 - "resource:view"
                 - "resourcerelease:view"
                 - "projectrelease:view"
                 - "resourcereleasebinding:view"
                 - "resourcereleasebinding:update"
+                - "resourcereleasebinding:rollback"
                 - "projectreleasebinding:view"
                 - "workflowrun:view"
                 - "workflowrun:create"
@@ -1542,6 +1560,7 @@ openchoreoApi:
                 - "releasebinding:view"
                 - "releasebinding:create"
                 - "releasebinding:update"
+                - "releasebinding:rollback"
                 - "releasebinding:delete"
                 - "resource:view"
                 - "resource:create"
@@ -1558,6 +1577,7 @@ openchoreoApi:
                 - "resourcereleasebinding:view"
                 - "resourcereleasebinding:create"
                 - "resourcereleasebinding:update"
+                - "resourcereleasebinding:rollback"
                 - "resourcereleasebinding:delete"
                 - "projectreleasebinding:view"
                 - "projectreleasebinding:create"

@@ -18,7 +18,7 @@ import (
 func TestGetOperations(t *testing.T) {
 	ops := GetOperations()
 
-	const want = 114
+	const want = 116
 	if len(ops) != want {
 		t.Fatalf("len(GetOperations()) = %d, want %d", len(ops), want)
 	}
@@ -52,8 +52,8 @@ func TestGetOperations(t *testing.T) {
 		seen[op.ID] = true
 	}
 
-	if mgmt != 102 || authz != 12 {
-		t.Errorf("category split = %d management / %d authorization, want 102/12", mgmt, authz)
+	if mgmt != 104 || authz != 12 {
+		t.Errorf("category split = %d management / %d authorization, want 104/12", mgmt, authz)
 	}
 	if notInSpec != 2 {
 		t.Errorf("NotInOpenAPISpec count = %d, want 2 (Exec, Wirelogs)", notInSpec)
@@ -61,8 +61,8 @@ func TestGetOperations(t *testing.T) {
 }
 
 // TestMCPBindings is a direct, readable regression test over key shapes in
-// the full MCP tool-to-operation binding table (60 tool names, 81 (tool,
-// scope) keys: 38 plain + 21 scope-collapsed tools x 2 operations + 1
+// the full MCP tool-to-operation binding table (62 tool names, 83 (tool,
+// scope) keys: 40 plain + 21 scope-collapsed tools x 2 operations + 1
 // fan-in alias). The exhaustive
 // structural checks (every tool bound or exempted, no unresolvable
 // reference) live in mcphandlers' TestAuditCoverage, which cross-references
@@ -74,7 +74,7 @@ func TestMCPBindings(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	const wantTotalKeys = 81
+	const wantTotalKeys = 83
 	if len(bindings) != wantTotalKeys {
 		t.Fatalf("len(MCPBindings()) = %d, want %d (got tools: %v)", len(bindings), wantTotalKeys, toolNames(bindings))
 	}

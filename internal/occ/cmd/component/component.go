@@ -15,6 +15,7 @@ import (
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"sigs.k8s.io/yaml"
 
+	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
 	"github.com/openchoreo/openchoreo/internal/occ/cmd/pagination"
 	"github.com/openchoreo/openchoreo/internal/occ/cmd/setoverride"
 	"github.com/openchoreo/openchoreo/internal/occ/cmd/utils"
@@ -355,10 +356,14 @@ func (cp *Component) promoteComponent(ctx context.Context, c client.Interface, p
 		return c.UpdateReleaseBinding(ctx, params.Namespace, bindingName, *existing)
 	}
 
-	// Create new binding
+	// Create new binding, marked as created by promotion so its first revision
+	// records cause Promote (the controller removes the annotation afterwards).
 	rb := gen.ReleaseBinding{
 		Metadata: gen.ObjectMeta{
 			Name: bindingName,
+			Annotations: &map[string]string{
+				openchoreov1alpha1.AnnotationKeyRevisionCause: string(openchoreov1alpha1.RevisionCausePromote),
+			},
 		},
 		Spec: &gen.ReleaseBindingSpec{
 			Owner: struct {

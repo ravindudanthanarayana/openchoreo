@@ -170,8 +170,10 @@ rules:
   - projectreleases/status
   - projects/status
   - projecttypes/status
+  - releasebindingrevisions/status
   - releasebindings/status
   - renderedreleases/status
+  - resourcereleasebindingrevisions/status
   - resourcereleasebindings/status
   - resourcereleases/status
   - resources/status
@@ -186,6 +188,18 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - openchoreo.dev
+  resources:
+  - releasebindingrevisions
+  - resourcereleasebindingrevisions
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - watch
 - apiGroups:
   - openchoreo.dev
   resources:

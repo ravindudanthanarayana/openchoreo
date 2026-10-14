@@ -1136,6 +1136,52 @@ func (m *MockCoreToolsetHandler) DeleteResourceReleaseBinding(
 	return deletedResponse, nil
 }
 
+// ReleaseBindingRevision methods
+
+func (m *MockCoreToolsetHandler) ListReleaseBindingRevisions(
+	ctx context.Context, namespaceName, componentName, environment string, opts ListOpts,
+) (any, error) {
+	m.recordCall("ListReleaseBindingRevisions", namespaceName, componentName, environment, opts)
+	return `[{"name":"release-binding-1-r1"}]`, nil
+}
+
+func (m *MockCoreToolsetHandler) GetReleaseBindingRevision(
+	ctx context.Context, namespaceName, revisionName string,
+) (any, error) {
+	m.recordCall("GetReleaseBindingRevision", namespaceName, revisionName)
+	return `{"name":"release-binding-1-r1"}`, nil
+}
+
+func (m *MockCoreToolsetHandler) RollbackReleaseBinding(
+	ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool,
+) (any, error) {
+	m.recordCall("RollbackReleaseBinding", namespaceName, bindingName, revision, dryRun)
+	return `{"revisionName":"release-binding-1-r4"}`, nil
+}
+
+// ResourceReleaseBindingRevision methods
+
+func (m *MockCoreToolsetHandler) ListResourceReleaseBindingRevisions(
+	ctx context.Context, namespaceName, resourceName, environment string, opts ListOpts,
+) (any, error) {
+	m.recordCall("ListResourceReleaseBindingRevisions", namespaceName, resourceName, environment, opts)
+	return `[{"name":"resource-release-binding-1-r1"}]`, nil
+}
+
+func (m *MockCoreToolsetHandler) GetResourceReleaseBindingRevision(
+	ctx context.Context, namespaceName, revisionName string,
+) (any, error) {
+	m.recordCall("GetResourceReleaseBindingRevision", namespaceName, revisionName)
+	return `{"name":"resource-release-binding-1-r1"}`, nil
+}
+
+func (m *MockCoreToolsetHandler) RollbackResourceReleaseBinding(
+	ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool,
+) (any, error) {
+	m.recordCall("RollbackResourceReleaseBinding", namespaceName, bindingName, revision, dryRun)
+	return `{"revisionName":"resource-release-binding-1-r3"}`, nil
+}
+
 // ProjectReleaseBinding methods
 
 func (m *MockCoreToolsetHandler) ListProjectReleaseBindings(

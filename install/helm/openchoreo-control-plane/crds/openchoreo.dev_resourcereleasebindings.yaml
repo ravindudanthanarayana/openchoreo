@@ -97,6 +97,16 @@ spec:
                 x-kubernetes-validations:
                 - message: spec.owner is immutable
                   rule: self == oldSelf
+              releasePin:
+                default: Auto
+                description: |-
+                  ReleasePin controls whether resourceRelease may be advanced automatically.
+                  Auto: resourceRelease follows new ResourceReleases
+                  Pinned: resourceRelease is held at its current value until changed explicitly
+                enum:
+                - Auto
+                - Pinned
+                type: string
               resourceRelease:
                 description: |-
                   ResourceRelease is the name of the ResourceRelease pinned by this binding.
@@ -192,6 +202,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              currentRevision:
+                description: |-
+                  CurrentRevision is the name of the revision this binding currently applies,
+                  {binding}-r{N}. The controller updates it whenever the active revision
+                  changes, including when a rollback makes an earlier revision active again.
+                type: string
               outputs:
                 description: |-
                   Outputs holds resolved output values for this binding's environment, populated

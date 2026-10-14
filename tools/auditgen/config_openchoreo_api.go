@@ -35,6 +35,7 @@ var apiGenerateReleaseOverride = auditgen.OperationDef{
 var apiActionSuffixSegments = map[string]bool{
 	"trigger":          true,
 	"generate-release": true,
+	"rollback":         true,
 }
 
 // apiResourceCategories maps every resource kind (the plural REST path segment)

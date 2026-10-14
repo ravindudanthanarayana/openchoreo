@@ -71,6 +71,17 @@ rules:
   - patch
   - update
   - watch
+# Binding revisions are written only by the controller; the API lists and
+# reads them for revision history and rollback.
+- apiGroups:
+  - openchoreo.dev
+  resources:
+  - releasebindingrevisions
+  - resourcereleasebindingrevisions
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - ""
   resources:

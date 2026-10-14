@@ -794,6 +794,18 @@ func (r *Reconciler) ensureReleaseBinding(
 
 	releaseBinding := releaseBindingList.Items[0]
 
+	// A pinned binding holds its release until someone changes it explicitly, for
+	// example after a rollback, so auto-deploy must not move it to the latest one.
+	if releaseBinding.Spec.ReleasePin == openchoreov1alpha1.ReleasePinPinned {
+		if releaseBinding.Spec.ReleaseName != releaseName {
+			logger.Info("ReleaseBinding is pinned, not moving it to the latest release",
+				"binding", releaseBinding.Name,
+				"pinnedRelease", releaseBinding.Spec.ReleaseName,
+				"latestRelease", releaseName)
+		}
+		return nil
+	}
+
 	// ReleaseBinding exists, patch the release name if different
 	if releaseBinding.Spec.ReleaseName != releaseName {
 		releaseBinding.Spec.ReleaseName = releaseName

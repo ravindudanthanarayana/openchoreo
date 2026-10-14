@@ -68,6 +68,72 @@ const (
 	ReleaseStateUndeploy ReleaseState = "Undeploy"
 )
 
+// ReleasePin controls whether a binding's release reference may be advanced automatically.
+// +kubebuilder:validation:Enum=Auto;Pinned
+type ReleasePin string
+
+const (
+	// ReleasePinAuto lets the release reference follow new releases.
+	ReleasePinAuto ReleasePin = "Auto"
+
+	// ReleasePinPinned holds the release reference at its current value until changed explicitly.
+	ReleasePinPinned ReleasePin = "Pinned"
+)
+
+const (
+	// AnnotationKeyRevisionCause is set on a ReleaseBinding or ResourceReleaseBinding by the
+	// client that makes a change, to state its cause when it cannot be told from the spec.
+	// Its only value is "Promote", on a binding created by promotion, honored only for the
+	// binding's first revision. The binding controller removes it once the revision is written.
+	AnnotationKeyRevisionCause = "openchoreo.dev/revision-cause"
+
+	// AnnotationKeyKeepRevision exempts a ReleaseBindingRevision or
+	// ResourceReleaseBindingRevision from history-limit eviction when set to "true".
+	AnnotationKeyKeepRevision = "openchoreo.dev/keep"
+)
+
+// RevisionCause records why a binding revision was created.
+// +kubebuilder:validation:Enum=Deploy;Promote;Override;Undeploy;Redeploy
+type RevisionCause string
+
+const (
+	// RevisionCauseDeploy is a new release deployed to the binding's environment.
+	RevisionCauseDeploy RevisionCause = "Deploy"
+
+	// RevisionCausePromote is a release promoted from another environment.
+	RevisionCausePromote RevisionCause = "Promote"
+
+	// RevisionCauseOverride is a change to the binding's per-environment overrides.
+	RevisionCauseOverride RevisionCause = "Override"
+
+	// RevisionCauseUndeploy is the binding being switched to the Undeploy state.
+	RevisionCauseUndeploy RevisionCause = "Undeploy"
+
+	// RevisionCauseRedeploy is a redeployment of an unchanged binding spec.
+	RevisionCauseRedeploy RevisionCause = "Redeploy"
+)
+
+// RevisionHealth is the observed health of a binding revision.
+// +kubebuilder:validation:Enum=Progressing;Healthy;Degraded;Failed;Unknown
+type RevisionHealth string
+
+const (
+	// RevisionHealthProgressing indicates the revision is still rolling out.
+	RevisionHealthProgressing RevisionHealth = "Progressing"
+
+	// RevisionHealthHealthy indicates the revision is rolled out and healthy.
+	RevisionHealthHealthy RevisionHealth = "Healthy"
+
+	// RevisionHealthDegraded indicates the revision is running with reduced health.
+	RevisionHealthDegraded RevisionHealth = "Degraded"
+
+	// RevisionHealthFailed indicates the revision failed to roll out.
+	RevisionHealthFailed RevisionHealth = "Failed"
+
+	// RevisionHealthUnknown indicates the revision's health could not be determined.
+	RevisionHealthUnknown RevisionHealth = "Unknown"
+)
+
 // EntitlementClaim represents a claim-value pair for subject identification
 // Used by AuthzRoleBinding and ClusterAuthzRoleBinding
 type EntitlementClaim struct {

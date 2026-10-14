@@ -2109,6 +2109,20 @@
               "pattern": "^(0|(([0-9]+([.][0-9]+)?|[.][0-9]+)(ns|us|µs|μs|ms|s|m|h))+)$",
               "title": "renderTimeout",
               "type": "string"
+            },
+            "revisionHistoryLimit": {
+              "default": 10,
+              "description": "Number of revisions kept per ReleaseBinding and ResourceReleaseBinding, passed as --revision-history-limit. Older revisions are deleted, except the active revision, the newest known-good revision and revisions annotated openchoreo.dev/keep=\"true\". 0 keeps every revision.",
+              "minimum": 0,
+              "title": "revisionHistoryLimit",
+              "type": "integer"
+            },
+            "revisionKnownGoodWindow": {
+              "default": "60s",
+              "description": "How long a ReleaseBinding or ResourceReleaseBinding revision must stay Healthy before it is marked known-good (Go duration, e.g. \"60s\", \"5m\"), passed as --revision-known-good-window. \"0\" marks a revision known-good on its first Healthy observation. Negative durations are rejected.",
+              "pattern": "^(0|(([0-9]+([.][0-9]+)?|[.][0-9]+)(ns|us|µs|μs|ms|s|m|h))+)$",
+              "title": "revisionKnownGoodWindow",
+              "type": "string"
             }
           },
           "required": [],

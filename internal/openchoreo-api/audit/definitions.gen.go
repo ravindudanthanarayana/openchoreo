@@ -327,6 +327,14 @@ func generatedOperationDefs() []audit.OperationDef {
 			Category: audit.CategoryManagement,
 		},
 		{
+			ID: "RollbackReleaseBinding", Action: "rollback_release_binding", ResourceType: "releasebinding",
+			Category: audit.CategoryManagement, RESTResourceParam: "releaseBindingName",
+		},
+		{
+			ID: "RollbackResourceReleaseBinding", Action: "rollback_resource_release_binding", ResourceType: "resourcereleasebinding",
+			Category: audit.CategoryManagement, RESTResourceParam: "resourceReleaseBindingName",
+		},
+		{
 			ID: "TriggerReleaseBindingCronJob", Action: "trigger_release_binding_cron_job", ResourceType: "releasebinding",
 			Category: audit.CategoryManagement, RESTResourceParam: "releaseBindingName",
 		},

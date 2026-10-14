@@ -85,6 +85,16 @@ spec:
         {{- if and .Values.controllerManager.manager.renderTimeout (ne .Values.controllerManager.manager.renderTimeout "0") }}
         - --render-timeout={{ .Values.controllerManager.manager.renderTimeout }}
         {{- end }}
+        {{- /* Rendered whenever set, not only when truthy: "0" and 0 are meaningful
+               (known-good on the first Healthy observation; keep every revision). */}}
+        {{- with .Values.controllerManager.manager }}
+        {{- if not (kindIs "invalid" .revisionKnownGoodWindow) }}
+        - --revision-known-good-window={{ .revisionKnownGoodWindow }}
+        {{- end }}
+        {{- if not (kindIs "invalid" .revisionHistoryLimit) }}
+        - --revision-history-limit={{ int64 .revisionHistoryLimit }}
+        {{- end }}
+        {{- end }}
         env:
         - name: ENABLE_WEBHOOKS
           value: {{ quote .Values.controllerManager.manager.env.enableWebhooks }}

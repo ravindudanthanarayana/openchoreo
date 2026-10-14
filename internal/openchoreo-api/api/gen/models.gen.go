@@ -36,6 +36,15 @@ const (
 	AuthzRoleRefKindClusterAuthzRole AuthzRoleRefKind = "ClusterAuthzRole"
 )
 
+// Defines values for BindingRevisionStatusHealth.
+const (
+	BindingRevisionStatusHealthDegraded    BindingRevisionStatusHealth = "Degraded"
+	BindingRevisionStatusHealthFailed      BindingRevisionStatusHealth = "Failed"
+	BindingRevisionStatusHealthHealthy     BindingRevisionStatusHealth = "Healthy"
+	BindingRevisionStatusHealthProgressing BindingRevisionStatusHealth = "Progressing"
+	BindingRevisionStatusHealthUnknown     BindingRevisionStatusHealth = "Unknown"
+)
+
 // Defines values for ClusterAuthzRoleBindingSpecEffect.
 const (
 	ClusterAuthzRoleBindingSpecEffectAllow ClusterAuthzRoleBindingSpecEffect = "allow"
@@ -206,15 +215,17 @@ const (
 
 // Defines values for ErrorResponseCode.
 const (
-	BADREQUEST           ErrorResponseCode = "BAD_REQUEST"
-	CONFLICT             ErrorResponseCode = "CONFLICT"
-	FORBIDDEN            ErrorResponseCode = "FORBIDDEN"
-	INTERNALERROR        ErrorResponseCode = "INTERNAL_ERROR"
-	NOTFOUND             ErrorResponseCode = "NOT_FOUND"
-	NOTIMPLEMENTED       ErrorResponseCode = "NOT_IMPLEMENTED"
-	UNAUTHORIZED         ErrorResponseCode = "UNAUTHORIZED"
-	UNKNOWNGITPROVIDER   ErrorResponseCode = "UNKNOWN_GIT_PROVIDER"
-	UNPROCESSABLECONTENT ErrorResponseCode = "UNPROCESSABLE_CONTENT"
+	BADREQUEST             ErrorResponseCode = "BAD_REQUEST"
+	CONCURRENTMODIFICATION ErrorResponseCode = "CONCURRENT_MODIFICATION"
+	CONFLICT               ErrorResponseCode = "CONFLICT"
+	FORBIDDEN              ErrorResponseCode = "FORBIDDEN"
+	INTERNALERROR          ErrorResponseCode = "INTERNAL_ERROR"
+	NOTFOUND               ErrorResponseCode = "NOT_FOUND"
+	NOTIMPLEMENTED         ErrorResponseCode = "NOT_IMPLEMENTED"
+	RELEASEDELETED         ErrorResponseCode = "RELEASE_DELETED"
+	UNAUTHORIZED           ErrorResponseCode = "UNAUTHORIZED"
+	UNKNOWNGITPROVIDER     ErrorResponseCode = "UNKNOWN_GIT_PROVIDER"
+	UNPROCESSABLECONTENT   ErrorResponseCode = "UNPROCESSABLE_CONTENT"
 )
 
 // Defines values for ExternalRefKind.
@@ -274,6 +285,12 @@ const (
 	PromotionPathSourceEnvironmentRefKindEnvironment PromotionPathSourceEnvironmentRefKind = "Environment"
 )
 
+// Defines values for ReleaseBindingSpecReleasePin.
+const (
+	ReleaseBindingSpecReleasePinAuto   ReleaseBindingSpecReleasePin = "Auto"
+	ReleaseBindingSpecReleasePinPinned ReleaseBindingSpecReleasePin = "Pinned"
+)
+
 // Defines values for ReleaseBindingSpecState.
 const (
 	ReleaseBindingSpecStateActive   ReleaseBindingSpecState = "Active"
@@ -294,11 +311,11 @@ const (
 
 // Defines values for RenderedReleaseStatusResourcesHealthStatus.
 const (
-	RenderedReleaseStatusResourcesHealthStatusDegraded    RenderedReleaseStatusResourcesHealthStatus = "Degraded"
-	RenderedReleaseStatusResourcesHealthStatusHealthy     RenderedReleaseStatusResourcesHealthStatus = "Healthy"
-	RenderedReleaseStatusResourcesHealthStatusProgressing RenderedReleaseStatusResourcesHealthStatus = "Progressing"
-	RenderedReleaseStatusResourcesHealthStatusSuspended   RenderedReleaseStatusResourcesHealthStatus = "Suspended"
-	RenderedReleaseStatusResourcesHealthStatusUnknown     RenderedReleaseStatusResourcesHealthStatus = "Unknown"
+	Degraded    RenderedReleaseStatusResourcesHealthStatus = "Degraded"
+	Healthy     RenderedReleaseStatusResourcesHealthStatus = "Healthy"
+	Progressing RenderedReleaseStatusResourcesHealthStatus = "Progressing"
+	Suspended   RenderedReleaseStatusResourcesHealthStatus = "Suspended"
+	Unknown     RenderedReleaseStatusResourcesHealthStatus = "Unknown"
 )
 
 // Defines values for ResolvedConnectionVisibility.
@@ -307,6 +324,12 @@ const (
 	ResolvedConnectionVisibilityInternal  ResolvedConnectionVisibility = "internal"
 	ResolvedConnectionVisibilityNamespace ResolvedConnectionVisibility = "namespace"
 	ResolvedConnectionVisibilityProject   ResolvedConnectionVisibility = "project"
+)
+
+// Defines values for ResourceReleaseBindingSpecReleasePin.
+const (
+	ResourceReleaseBindingSpecReleasePinAuto   ResourceReleaseBindingSpecReleasePin = "Auto"
+	ResourceReleaseBindingSpecReleasePinPinned ResourceReleaseBindingSpecReleasePin = "Pinned"
 )
 
 // Defines values for ResourceReleaseBindingSpecRetainPolicy.
@@ -331,6 +354,27 @@ const (
 const (
 	ResourceTypeSpecRetainPolicyDelete ResourceTypeSpecRetainPolicy = "Delete"
 	ResourceTypeSpecRetainPolicyRetain ResourceTypeSpecRetainPolicy = "Retain"
+)
+
+// Defines values for RevisionCause.
+const (
+	Deploy   RevisionCause = "Deploy"
+	Override RevisionCause = "Override"
+	Promote  RevisionCause = "Promote"
+	Redeploy RevisionCause = "Redeploy"
+	Undeploy RevisionCause = "Undeploy"
+)
+
+// Defines values for RollbackWarningCode.
+const (
+	BindingWillBePinned  RollbackWarningCode = "BindingWillBePinned"
+	NoSpecChange         RollbackWarningCode = "NoSpecChange"
+	ProjectCellDrift     RollbackWarningCode = "ProjectCellDrift"
+	SecretReferenceDrift RollbackWarningCode = "SecretReferenceDrift"
+	TargetNotKnownGood   RollbackWarningCode = "TargetNotKnownGood"
+	TargetUndeploys      RollbackWarningCode = "TargetUndeploys"
+	TargetUnhealthy      RollbackWarningCode = "TargetUnhealthy"
+	UnrecordedChange     RollbackWarningCode = "UnrecordedChange"
 )
 
 // Defines values for SecretTemplateType.
@@ -671,6 +715,26 @@ type AuthzScope struct {
 	// Project Project name
 	Project *string `json:"project,omitempty"`
 }
+
+// BindingRevisionStatus Observed state of a binding revision. Only the active revision follows the binding's health; a revision that stops being active keeps the health it last had.
+type BindingRevisionStatus struct {
+	// Active True for the one revision the binding currently applies
+	Active     *bool                        `json:"active,omitempty"`
+	Conditions *[]Condition                 `json:"conditions,omitempty"`
+	Health     *BindingRevisionStatusHealth `json:"health,omitempty"`
+
+	// HealthySince When the revision last became Healthy; unset while it is not Healthy
+	HealthySince *time.Time `json:"healthySince,omitempty"`
+
+	// KnownGood True once the revision stayed Healthy for the controller's known-good window. Never reverts.
+	KnownGood *bool `json:"knownGood,omitempty"`
+
+	// ObservedAt When health last changed
+	ObservedAt *time.Time `json:"observedAt,omitempty"`
+}
+
+// BindingRevisionStatusHealth defines model for BindingRevisionStatus.Health.
+type BindingRevisionStatusHealth string
 
 // CapabilityConstraints CEL expressions constraining access for a given action and resource path. Multiple expressions are OR'd.
 type CapabilityConstraints struct {
@@ -3069,6 +3133,51 @@ type ReleaseBindingList struct {
 	Pagination Pagination `json:"pagination"`
 }
 
+// ReleaseBindingRevision ReleaseBindingRevision resource.
+// An immutable record of one ReleaseBinding spec, owned by that binding. Only status changes after creation.
+type ReleaseBindingRevision struct {
+	// ApiVersion API version of the resource
+	ApiVersion *string `json:"apiVersion,omitempty"`
+
+	// Kind Kind of the resource
+	Kind *string `json:"kind,omitempty"`
+
+	// Metadata Standard Kubernetes object metadata (without kind/apiVersion).
+	// Matches the structure of metav1.ObjectMeta for the fields exposed via the API.
+	Metadata ObjectMeta `json:"metadata"`
+
+	// Spec The recorded state of one revision. Immutable.
+	Spec   ReleaseBindingRevisionSpec `json:"spec"`
+	Status *BindingRevisionStatus     `json:"status,omitempty"`
+}
+
+// ReleaseBindingRevisionList Paginated list of component release binding revisions
+type ReleaseBindingRevisionList struct {
+	Items []ReleaseBindingRevision `json:"items"`
+
+	// Pagination Cursor-based pagination metadata. Uses Kubernetes-native continuation tokens
+	// for efficient pagination through large result sets.
+	Pagination Pagination `json:"pagination"`
+}
+
+// ReleaseBindingRevisionSpec The recorded state of one revision. Immutable.
+type ReleaseBindingRevisionSpec struct {
+	// BindingSpec Desired state of a ReleaseBinding
+	BindingSpec ReleaseBindingSpec `json:"bindingSpec"`
+
+	// Cause Why a binding revision was created
+	Cause RevisionCause `json:"cause"`
+
+	// ComponentReleaseName ComponentRelease bound by this revision
+	ComponentReleaseName string `json:"componentReleaseName"`
+
+	// Revision Sequence number of this revision within its binding
+	Revision int64 `json:"revision"`
+
+	// SnapshotHash SHA-256 of the canonical binding spec, excluding releasePin
+	SnapshotHash string `json:"snapshotHash"`
+}
+
 // ReleaseBindingSpec Desired state of a ReleaseBinding
 type ReleaseBindingSpec struct {
 	// ComponentTypeEnvironmentConfigs Environment-specific ComponentType overrides
@@ -3089,6 +3198,9 @@ type ReleaseBindingSpec struct {
 	// ReleaseName Reference to component release
 	ReleaseName *string `json:"releaseName,omitempty"`
 
+	// ReleasePin Whether releaseName may be advanced automatically. Auto follows new ComponentReleases; Pinned holds the current release until changed explicitly. A rollback sets Pinned.
+	ReleasePin *ReleaseBindingSpecReleasePin `json:"releasePin,omitempty"`
+
 	// State Controls the state of the Release created by this binding
 	State *ReleaseBindingSpecState `json:"state,omitempty"`
 
@@ -3099,6 +3211,9 @@ type ReleaseBindingSpec struct {
 	WorkloadOverrides *WorkloadOverrides `json:"workloadOverrides,omitempty"`
 }
 
+// ReleaseBindingSpecReleasePin Whether releaseName may be advanced automatically. Auto follows new ComponentReleases; Pinned holds the current release until changed explicitly. A rollback sets Pinned.
+type ReleaseBindingSpecReleasePin string
+
 // ReleaseBindingSpecState Controls the state of the Release created by this binding
 type ReleaseBindingSpecState string
 
@@ -3106,6 +3221,9 @@ type ReleaseBindingSpecState string
 type ReleaseBindingStatus struct {
 	// Conditions Latest available observations of the ReleaseBinding's current state
 	Conditions *[]Condition `json:"conditions,omitempty"`
+
+	// CurrentRevision Name of the revision this binding currently applies ({binding}-r{N}). Updated whenever the active revision changes, including when a rollback makes an earlier revision active again.
+	CurrentRevision *string `json:"currentRevision,omitempty"`
 
 	// Endpoints Resolved invoke URLs for each named workload endpoint
 	Endpoints *[]EndpointURLStatus `json:"endpoints,omitempty"`
@@ -3557,6 +3675,53 @@ type ResourceReleaseBindingList struct {
 	Pagination Pagination `json:"pagination"`
 }
 
+// ResourceReleaseBindingRevision ResourceReleaseBindingRevision resource.
+// An immutable record of one ResourceReleaseBinding spec, owned by that binding. Only status changes after creation.
+type ResourceReleaseBindingRevision struct {
+	// ApiVersion API version of the resource
+	ApiVersion *string `json:"apiVersion,omitempty"`
+
+	// Kind Kind of the resource
+	Kind *string `json:"kind,omitempty"`
+
+	// Metadata Standard Kubernetes object metadata (without kind/apiVersion).
+	// Matches the structure of metav1.ObjectMeta for the fields exposed via the API.
+	Metadata ObjectMeta `json:"metadata"`
+
+	// Spec The recorded state of one revision. Immutable.
+	Spec   ResourceReleaseBindingRevisionSpec `json:"spec"`
+	Status *BindingRevisionStatus             `json:"status,omitempty"`
+}
+
+// ResourceReleaseBindingRevisionList Paginated list of resource release binding revisions
+type ResourceReleaseBindingRevisionList struct {
+	Items []ResourceReleaseBindingRevision `json:"items"`
+
+	// Pagination Cursor-based pagination metadata. Uses Kubernetes-native continuation tokens
+	// for efficient pagination through large result sets.
+	Pagination Pagination `json:"pagination"`
+}
+
+// ResourceReleaseBindingRevisionSpec The recorded state of one revision. Immutable.
+type ResourceReleaseBindingRevisionSpec struct {
+	// BindingSpec Desired state of a ResourceReleaseBinding. spec.owner and spec.environment
+	// are immutable after creation. spec.resourceRelease is the promote pin and is
+	// advanced manually via `occ resource promote` or kubectl edit.
+	BindingSpec ResourceReleaseBindingSpec `json:"bindingSpec"`
+
+	// Cause Why a binding revision was created
+	Cause RevisionCause `json:"cause"`
+
+	// ResourceReleaseName ResourceRelease pinned by this revision
+	ResourceReleaseName string `json:"resourceReleaseName"`
+
+	// Revision Sequence number of this revision within its binding
+	Revision int64 `json:"revision"`
+
+	// SnapshotHash SHA-256 of the canonical binding spec, excluding releasePin
+	SnapshotHash string `json:"snapshotHash"`
+}
+
 // ResourceReleaseBindingSpec Desired state of a ResourceReleaseBinding. spec.owner and spec.environment
 // are immutable after creation. spec.resourceRelease is the promote pin and is
 // advanced manually via `occ resource promote` or kubectl edit.
@@ -3573,6 +3738,9 @@ type ResourceReleaseBindingSpec struct {
 		ResourceName string `json:"resourceName"`
 	} `json:"owner"`
 
+	// ReleasePin Whether resourceRelease may be advanced automatically. Auto follows new ResourceReleases; Pinned holds the current release until changed explicitly. A rollback sets Pinned.
+	ReleasePin *ResourceReleaseBindingSpecReleasePin `json:"releasePin,omitempty"`
+
 	// ResourceRelease Pinned ResourceRelease name. Advanced manually (e.g. via `occ resource promote`).
 	ResourceRelease *string `json:"resourceRelease,omitempty"`
 
@@ -3583,6 +3751,9 @@ type ResourceReleaseBindingSpec struct {
 	RetainPolicy *ResourceReleaseBindingSpecRetainPolicy `json:"retainPolicy,omitempty"`
 }
 
+// ResourceReleaseBindingSpecReleasePin Whether resourceRelease may be advanced automatically. Auto follows new ResourceReleases; Pinned holds the current release until changed explicitly. A rollback sets Pinned.
+type ResourceReleaseBindingSpecReleasePin string
+
 // ResourceReleaseBindingSpecRetainPolicy Per-env override for retention. Falls back to ResourceType.spec.retainPolicy when unset.
 type ResourceReleaseBindingSpecRetainPolicy string
 
@@ -3590,6 +3761,9 @@ type ResourceReleaseBindingSpecRetainPolicy string
 type ResourceReleaseBindingStatus struct {
 	// Conditions Latest available observations of the binding's state. Includes Synced, ResourcesReady, OutputsResolved, Ready (aggregate), and Finalizing.
 	Conditions *[]Condition `json:"conditions,omitempty"`
+
+	// CurrentRevision Name of the revision this binding currently applies ({binding}-r{N}). Updated whenever the active revision changes, including when a rollback makes an earlier revision active again.
+	CurrentRevision *string `json:"currentRevision,omitempty"`
 
 	// Outputs Resolved outputs for this environment, populated from the underlying RenderedRelease.status by the binding controller.
 	Outputs *[]ResolvedResourceOutput `json:"outputs,omitempty"`
@@ -3740,6 +3914,69 @@ type ResourceTypeSpec struct {
 
 // ResourceTypeSpecRetainPolicy Default retention for ResourceReleaseBindings of this type. Per-env override available on the binding.
 type ResourceTypeSpecRetainPolicy string
+
+// RevisionCause Why a binding revision was created
+type RevisionCause string
+
+// RollbackRequest Request to restore the binding spec recorded by an earlier revision
+type RollbackRequest struct {
+	// DryRun Run every check and return the response without writing anything
+	DryRun *bool `json:"dryRun,omitempty"`
+
+	// Revision Number of the revision to roll back to
+	Revision int64 `json:"revision"`
+}
+
+// RollbackResponse Result of a rollback, or of its dry run
+type RollbackResponse struct {
+	// Changes The binding spec fields the rollback changes, with their current and restored values. Empty when the target spec equals the current one.
+	Changes []RollbackSpecChange `json:"changes"`
+
+	// DryRun True when nothing was written
+	DryRun bool `json:"dryRun"`
+
+	// RevertedFrom The revision that was active when the rollback was made
+	RevertedFrom *int64 `json:"revertedFrom,omitempty"`
+
+	// Revision Number of the revision active after the rollback; always the target revision
+	Revision int64 `json:"revision"`
+
+	// RevisionDisplayName How the target revision is shown to people, {release}-r{N}
+	RevisionDisplayName *string `json:"revisionDisplayName,omitempty"`
+
+	// RevisionName Object name of the revision active after the rollback ({binding}-r{N}). A rollback creates no revision, so this is always the target revision.
+	RevisionName string `json:"revisionName"`
+
+	// TargetRevision The revision whose spec is restored
+	TargetRevision int64 `json:"targetRevision"`
+
+	// Warnings Pre-flight findings that do not block the rollback
+	Warnings []RollbackWarning `json:"warnings"`
+}
+
+// RollbackSpecChange One binding spec field a rollback changes
+type RollbackSpecChange struct {
+	// Current Current value; absent when the field is unset
+	Current interface{} `json:"current,omitempty"`
+
+	// Field Top-level binding spec field
+	Field string `json:"field"`
+
+	// Target Value after the rollback; absent when the rollback unsets the field
+	Target interface{} `json:"target,omitempty"`
+}
+
+// RollbackWarning A pre-flight finding that does not block the rollback
+type RollbackWarning struct {
+	// Code TargetNotKnownGood: the target never stayed Healthy for the known-good window. TargetUnhealthy: the target was Degraded or Failed when it stopped being active. TargetUndeploys: the target revision has state Undeploy, so the rollback removes the deployment. NoSpecChange: the target spec equals the current one; no revision will be recorded. BindingWillBePinned: releasePin changes from Auto to Pinned, stopping auto-deploy for this binding. UnrecordedChange: the binding has a spec change the controller has not recorded yet; the rollback discards it. ProjectCellDrift: the project's cell in this environment is bound to a ProjectRelease created after the target revision, so the restored spec will run in a cell it was never deployed with. SecretReferenceDrift: a SecretReference the target revision uses is missing, lacks a referenced key, or was recreated after the target revision.
+	Code RollbackWarningCode `json:"code"`
+
+	// Message Human-readable explanation
+	Message string `json:"message"`
+}
+
+// RollbackWarningCode TargetNotKnownGood: the target never stayed Healthy for the known-good window. TargetUnhealthy: the target was Degraded or Failed when it stopped being active. TargetUndeploys: the target revision has state Undeploy, so the rollback removes the deployment. NoSpecChange: the target spec equals the current one; no revision will be recorded. BindingWillBePinned: releasePin changes from Auto to Pinned, stopping auto-deploy for this binding. UnrecordedChange: the binding has a spec change the controller has not recorded yet; the rollback discards it. ProjectCellDrift: the project's cell in this environment is bound to a ProjectRelease created after the target revision, so the restored spec will run in a cell it was never deployed with. SecretReferenceDrift: a SecretReference the target revision uses is missing, lacks a referenced key, or was recreated after the target revision.
+type RollbackWarningCode string
 
 // SchemaResponse JSON Schema response for component types, traits, or workflows
 type SchemaResponse map[string]interface{}
@@ -4704,6 +4941,9 @@ type ProjectTypeNameParam = string
 // ReleaseBindingNameParam defines model for ReleaseBindingNameParam.
 type ReleaseBindingNameParam = string
 
+// ReleaseBindingRevisionNameParam defines model for ReleaseBindingRevisionNameParam.
+type ReleaseBindingRevisionNameParam = string
+
 // ResourceNameParam defines model for ResourceNameParam.
 type ResourceNameParam = string
 
@@ -4713,11 +4953,20 @@ type ResourceQueryParam = string
 // ResourceReleaseBindingNameParam defines model for ResourceReleaseBindingNameParam.
 type ResourceReleaseBindingNameParam = string
 
+// ResourceReleaseBindingRevisionNameParam defines model for ResourceReleaseBindingRevisionNameParam.
+type ResourceReleaseBindingRevisionNameParam = string
+
 // ResourceReleaseNameParam defines model for ResourceReleaseNameParam.
 type ResourceReleaseNameParam = string
 
 // ResourceTypeNameParam defines model for ResourceTypeNameParam.
 type ResourceTypeNameParam = string
+
+// RevisionComponentQueryParam defines model for RevisionComponentQueryParam.
+type RevisionComponentQueryParam = string
+
+// RevisionResourceQueryParam defines model for RevisionResourceQueryParam.
+type RevisionResourceQueryParam = string
 
 // RoleNameParam defines model for RoleNameParam.
 type RoleNameParam = string
@@ -4763,6 +5012,12 @@ type NotFound = ErrorResponse
 
 // NotImplemented Standard error response format
 type NotImplemented = ErrorResponse
+
+// RollbackConflict Standard error response format
+type RollbackConflict = ErrorResponse
+
+// RollbackNotFound Standard error response format
+type RollbackNotFound = ErrorResponse
 
 // Unauthorized Standard error response format
 type Unauthorized = ErrorResponse
@@ -5225,6 +5480,22 @@ type ListProjectTypesParams struct {
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// ListReleaseBindingRevisionsParams defines parameters for ListReleaseBindingRevisions.
+type ListReleaseBindingRevisionsParams struct {
+	// Component Component whose release binding revisions to list
+	Component RevisionComponentQueryParam `form:"component" json:"component"`
+
+	// Environment Filter resources by environment name
+	Environment *EnvironmentQueryParam `form:"environment,omitempty" json:"environment,omitempty"`
+
+	// Limit Maximum number of items to return per page
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque pagination cursor from a previous response.
+	// Pass the `nextCursor` value from pagination metadata to fetch the next page.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
 // ListReleaseBindingsParams defines parameters for ListReleaseBindings.
 type ListReleaseBindingsParams struct {
 	// Component Filter resources by component name
@@ -5270,6 +5541,22 @@ type GetReleaseBindingK8sResourceLogsParams struct {
 
 	// SinceSeconds Number of seconds since which to show logs
 	SinceSeconds *int64 `form:"sinceSeconds,omitempty" json:"sinceSeconds,omitempty"`
+}
+
+// ListResourceReleaseBindingRevisionsParams defines parameters for ListResourceReleaseBindingRevisions.
+type ListResourceReleaseBindingRevisionsParams struct {
+	// Resource Resource whose release binding revisions to list
+	Resource RevisionResourceQueryParam `form:"resource" json:"resource"`
+
+	// Environment Filter resources by environment name
+	Environment *EnvironmentQueryParam `form:"environment,omitempty" json:"environment,omitempty"`
+
+	// Limit Maximum number of items to return per page
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque pagination cursor from a previous response.
+	// Pass the `nextCursor` value from pagination metadata to fetch the next page.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
 // ListResourceReleaseBindingsParams defines parameters for ListResourceReleaseBindings.
@@ -5656,11 +5943,17 @@ type CreateReleaseBindingJSONRequestBody = ReleaseBinding
 // UpdateReleaseBindingJSONRequestBody defines body for UpdateReleaseBinding for application/json ContentType.
 type UpdateReleaseBindingJSONRequestBody = ReleaseBinding
 
+// RollbackReleaseBindingJSONRequestBody defines body for RollbackReleaseBinding for application/json ContentType.
+type RollbackReleaseBindingJSONRequestBody = RollbackRequest
+
 // CreateResourceReleaseBindingJSONRequestBody defines body for CreateResourceReleaseBinding for application/json ContentType.
 type CreateResourceReleaseBindingJSONRequestBody = ResourceReleaseBinding
 
 // UpdateResourceReleaseBindingJSONRequestBody defines body for UpdateResourceReleaseBinding for application/json ContentType.
 type UpdateResourceReleaseBindingJSONRequestBody = ResourceReleaseBinding
+
+// RollbackResourceReleaseBindingJSONRequestBody defines body for RollbackResourceReleaseBinding for application/json ContentType.
+type RollbackResourceReleaseBindingJSONRequestBody = RollbackRequest
 
 // CreateResourceReleaseJSONRequestBody defines body for CreateResourceRelease for application/json ContentType.
 type CreateResourceReleaseJSONRequestBody = ResourceRelease

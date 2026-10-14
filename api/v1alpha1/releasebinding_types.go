@@ -195,6 +195,13 @@ type ReleaseBindingSpec struct {
 	// +kubebuilder:validation:Enum=Active;Undeploy
 	// +optional
 	State ReleaseState `json:"state,omitempty"`
+
+	// ReleasePin controls whether releaseName may be advanced automatically.
+	// Auto: releaseName follows new ComponentReleases
+	// Pinned: releaseName is held at its current value until changed explicitly
+	// +kubebuilder:default=Auto
+	// +optional
+	ReleasePin ReleasePin `json:"releasePin,omitempty"`
 }
 
 // ReleaseBindingOwner identifies the component this ReleaseBinding belongs to
@@ -295,6 +302,12 @@ type ReleaseBindingStatus struct {
 	// Conditions represent the latest available observations of the ReleaseBinding's current state.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// CurrentRevision is the name of the revision this binding currently applies,
+	// {binding}-r{N}. The controller updates it whenever the active revision
+	// changes, including when a rollback makes an earlier revision active again.
+	// +optional
+	CurrentRevision string `json:"currentRevision,omitempty"`
 
 	// Endpoints contains the resolved invoke URLs for each named workload endpoint,
 	// keyed by endpoint name. Populated once the component is deployed and the

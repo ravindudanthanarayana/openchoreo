@@ -86,12 +86,18 @@ const (
 	ActionViewReleaseBinding   = "releasebinding:view"
 	ActionUpdateReleaseBinding = "releasebinding:update"
 	ActionDeleteReleaseBinding = "releasebinding:delete"
+	// ActionRollbackReleaseBinding restores the spec of an earlier ReleaseBindingRevision.
+	// It is separate from update so a role can roll back without writing arbitrary specs.
+	ActionRollbackReleaseBinding = "releasebinding:rollback"
 
 	// ResourceReleaseBinding actions
 	ActionCreateResourceReleaseBinding = "resourcereleasebinding:create"
 	ActionViewResourceReleaseBinding   = "resourcereleasebinding:view"
 	ActionUpdateResourceReleaseBinding = "resourcereleasebinding:update"
 	ActionDeleteResourceReleaseBinding = "resourcereleasebinding:delete"
+	// ActionRollbackResourceReleaseBinding restores the spec of an earlier
+	// ResourceReleaseBindingRevision.
+	ActionRollbackResourceReleaseBinding = "resourcereleasebinding:rollback"
 
 	// ComponentType actions
 	ActionCreateComponentType = "componenttype:create"
@@ -377,12 +383,14 @@ var systemActions = []Action{
 	{Name: ActionCreateReleaseBinding, LowestScope: ScopeComponent, IsInternal: false},
 	{Name: ActionUpdateReleaseBinding, LowestScope: ScopeComponent, IsInternal: false},
 	{Name: ActionDeleteReleaseBinding, LowestScope: ScopeComponent, IsInternal: false},
+	{Name: ActionRollbackReleaseBinding, LowestScope: ScopeComponent, IsInternal: false},
 
 	// ResourceReleaseBinding
 	{Name: ActionViewResourceReleaseBinding, LowestScope: ScopeResource, IsInternal: false},
 	{Name: ActionCreateResourceReleaseBinding, LowestScope: ScopeResource, IsInternal: false},
 	{Name: ActionUpdateResourceReleaseBinding, LowestScope: ScopeResource, IsInternal: false},
 	{Name: ActionDeleteResourceReleaseBinding, LowestScope: ScopeResource, IsInternal: false},
+	{Name: ActionRollbackResourceReleaseBinding, LowestScope: ScopeResource, IsInternal: false},
 
 	// ComponentType
 	{Name: ActionViewComponentType, LowestScope: ScopeNamespace, IsInternal: false},
