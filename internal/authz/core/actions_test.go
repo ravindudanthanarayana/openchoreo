@@ -138,6 +138,7 @@ func TestExpandActionPattern(t *testing.T) {
 			ActionCreateReleaseBinding,
 			ActionUpdateReleaseBinding,
 			ActionDeleteReleaseBinding,
+			ActionRollbackReleaseBinding,
 		}, got)
 	})
 

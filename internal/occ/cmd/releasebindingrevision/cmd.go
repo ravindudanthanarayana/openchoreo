@@ -1,0 +1,125 @@
+// Copyright 2026 The OpenChoreo Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package releasebindingrevision
+
+import (
+	"github.com/spf13/cobra"
+
+	"github.com/openchoreo/openchoreo/internal/occ/auth"
+	"github.com/openchoreo/openchoreo/internal/occ/cmd/bindingrevision"
+	"github.com/openchoreo/openchoreo/internal/occ/flags"
+	"github.com/openchoreo/openchoreo/internal/occ/resources/client"
+)
+
+func NewReleaseBindingRevisionCmd(f client.NewClientFunc) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "releasebindingrevision",
+		Aliases: []string{"releasebindingrevisions", "rbr"},
+		Short:   "Manage release binding revisions",
+		Long:    "Commands for listing release binding revisions and rolling a release binding back to one.",
+	}
+	cmd.AddCommand(
+		newListCmd(f),
+		newGetCmd(f),
+		newRollbackCmd(f),
+	)
+	return cmd
+}
+
+func newListCmd(f client.NewClientFunc) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List release binding revisions",
+		Long:  `List the revisions of a release binding, newest first.`,
+		Example: `  # List the revisions of a release binding
+  occ releasebindingrevision list --namespace acme-corp --binding product-catalog-development`,
+		PreRunE: auth.RequireLogin(),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cl, err := f()
+			if err != nil {
+				return err
+			}
+			return New(cl).List(ListParams{
+				Namespace: flags.GetNamespace(cmd),
+				Binding:   bindingrevision.GetBinding(cmd),
+			})
+		},
+	}
+	flags.AddNamespace(cmd)
+	bindingrevision.AddBinding(cmd, "release binding")
+	return cmd
+}
+
+func newGetCmd(f client.NewClientFunc) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "get",
+		Short: "Get a release binding revision",
+		Long:  `Get one revision of a release binding, as a table row or in full as YAML.`,
+		Example: `  # Show revision 3 of a release binding
+  occ releasebindingrevision get --namespace acme-corp --binding product-catalog-development --revision 3
+
+  # Show the full revision, including the binding spec it recorded
+  occ releasebindingrevision get --namespace acme-corp --binding product-catalog-development --revision 3 -o yaml`,
+		PreRunE: auth.RequireLogin(),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cl, err := f()
+			if err != nil {
+				return err
+			}
+			return New(cl).Get(GetParams{
+				Namespace: flags.GetNamespace(cmd),
+				Binding:   bindingrevision.GetBinding(cmd),
+				Revision:  bindingrevision.GetRevision(cmd),
+				Output:    bindingrevision.GetOutput(cmd),
+			})
+		},
+	}
+	flags.AddNamespace(cmd)
+	bindingrevision.AddBinding(cmd, "release binding")
+	bindingrevision.AddRevision(cmd)
+	bindingrevision.AddOutput(cmd)
+	return cmd
+}
+
+func newRollbackCmd(f client.NewClientFunc) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "rollback",
+		Short: "Roll a release binding back to a revision",
+		Long: `Restore the binding spec recorded by an earlier revision.
+
+The rollback is previewed first: the spec fields it changes and any pre-flight
+warnings are printed, and you are asked to confirm. The binding is pinned to the
+restored release so auto-deploy does not move it forward again. No revision is
+created: the controller makes the target revision active again, under its own
+name and number.`,
+		Example: `  # Preview a rollback to revision 3 without changing anything
+  occ releasebindingrevision rollback --namespace acme-corp --binding product-catalog-development --revision 3 --dry-run
+
+  # Roll back to revision 3, confirming interactively
+  occ releasebindingrevision rollback --namespace acme-corp --binding product-catalog-development --revision 3
+
+  # Roll back without a prompt (for scripts)
+  occ releasebindingrevision rollback --namespace acme-corp --binding product-catalog-development --revision 3 --yes`,
+		PreRunE: auth.RequireLogin(),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cl, err := f()
+			if err != nil {
+				return err
+			}
+			return New(cl).Rollback(RollbackParams{
+				Namespace: flags.GetNamespace(cmd),
+				Binding:   bindingrevision.GetBinding(cmd),
+				Revision:  bindingrevision.GetRevision(cmd),
+				DryRun:    bindingrevision.GetDryRun(cmd),
+				Yes:       bindingrevision.GetYes(cmd),
+			})
+		},
+	}
+	flags.AddNamespace(cmd)
+	bindingrevision.AddBinding(cmd, "release binding")
+	bindingrevision.AddRevision(cmd)
+	bindingrevision.AddDryRun(cmd)
+	bindingrevision.AddYes(cmd)
+	return cmd
+}

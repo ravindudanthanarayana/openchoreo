@@ -1,0 +1,207 @@
+// Copyright 2026 The OpenChoreo Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package resourcereleasebinding
+
+import (
+	"context"
+	"fmt"
+	"sort"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
+	"github.com/openchoreo/openchoreo/internal/labels"
+	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services"
+	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services/bindingrevision"
+	"github.com/openchoreo/openchoreo/internal/revision"
+)
+
+var resourceReleaseBindingRevisionTypeMeta = metav1.TypeMeta{
+	APIVersion: openchoreov1alpha1.GroupVersion.String(),
+	Kind:       "ResourceReleaseBindingRevision",
+}
+
+// ListResourceReleaseBindingRevisions returns the revisions of a resource's
+// release bindings, optionally for one environment, ordered by environment and
+// then by revision number, newest first. See the ReleaseBinding service for why
+// the history is read whole and paged with an offset cursor.
+func (s *resourceReleaseBindingService) ListResourceReleaseBindingRevisions(ctx context.Context, namespaceName,
+	resourceName, environment string, opts services.ListOptions) (*services.ListResult[openchoreov1alpha1.ResourceReleaseBindingRevision], error) {
+	if err := s.validateResourceExists(ctx, namespaceName, resourceName); err != nil {
+		return nil, err
+	}
+
+	selector := client.MatchingLabels{labels.LabelKeyResourceName: revision.LabelValue(resourceName)}
+	if environment != "" {
+		selector[labels.LabelKeyEnvironmentName] = revision.LabelValue(environment)
+	}
+	var list openchoreov1alpha1.ResourceReleaseBindingRevisionList
+	if err := s.k8sClient.List(ctx, &list, client.InNamespace(namespaceName), selector); err != nil {
+		return nil, fmt.Errorf("failed to list resource release binding revisions: %w", err)
+	}
+
+	items := make([]openchoreov1alpha1.ResourceReleaseBindingRevision, 0, len(list.Items))
+	for i := range list.Items {
+		rev := list.Items[i]
+		spec := rev.Spec.BindingSpec
+		if spec.Owner.ResourceName != resourceName || (environment != "" && spec.Environment != environment) {
+			continue
+		}
+		rev.TypeMeta = resourceReleaseBindingRevisionTypeMeta
+		items = append(items, rev)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		ei, ej := items[i].Spec.BindingSpec.Environment, items[j].Spec.BindingSpec.Environment
+		if ei != ej {
+			return ei < ej
+		}
+		return items[i].Spec.Revision > items[j].Spec.Revision
+	})
+
+	return bindingrevision.Paginate(items, opts)
+}
+
+// GetResourceReleaseBindingRevision returns one revision by name.
+func (s *resourceReleaseBindingService) GetResourceReleaseBindingRevision(ctx context.Context, namespaceName,
+	revisionName string) (*openchoreov1alpha1.ResourceReleaseBindingRevision, error) {
+	rev := &openchoreov1alpha1.ResourceReleaseBindingRevision{}
+	if err := s.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: revisionName}, rev); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, bindingrevision.ErrRevisionNotFound
+		}
+		return nil, fmt.Errorf("failed to get resource release binding revision: %w", err)
+	}
+	rev.TypeMeta = resourceReleaseBindingRevisionTypeMeta
+	return rev, nil
+}
+
+// RollbackResourceReleaseBinding restores the binding spec recorded by an
+// earlier revision; see the ReleaseBinding service's RollbackReleaseBinding.
+// The release check is on the revision's ResourceRelease.
+func (s *resourceReleaseBindingService) RollbackResourceReleaseBinding(ctx context.Context, namespaceName,
+	bindingName string, req bindingrevision.RollbackRequest) (*bindingrevision.RollbackResult, error) {
+	if req.Revision < 1 {
+		return nil, &services.ValidationError{Msg: "revision must be at least 1"}
+	}
+
+	binding := &openchoreov1alpha1.ResourceReleaseBinding{}
+	if err := s.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: bindingName}, binding); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, ErrResourceReleaseBindingNotFound
+		}
+		return nil, fmt.Errorf("failed to get resource release binding: %w", err)
+	}
+
+	revs, err := s.bindingRevisions(ctx, binding)
+	if err != nil {
+		return nil, err
+	}
+	var target, active *openchoreov1alpha1.ResourceReleaseBindingRevision
+	for i := range revs {
+		if revs[i].Spec.Revision == req.Revision {
+			target = &revs[i]
+		}
+		if active == nil || revision.MoreRecentlyActive(&revs[i], revs[i].Spec.Revision, active, active.Spec.Revision) {
+			active = &revs[i]
+		}
+	}
+	if target == nil {
+		return nil, fmt.Errorf("%w: revision %d of resource release binding %q", bindingrevision.ErrRevisionNotFound,
+			req.Revision, bindingName)
+	}
+
+	if err := s.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: target.Spec.ResourceReleaseName},
+		&openchoreov1alpha1.ResourceRelease{}); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: ResourceRelease %q bound by revision %d", bindingrevision.ErrReleaseDeleted,
+				target.Spec.ResourceReleaseName, req.Revision)
+		}
+		return nil, fmt.Errorf("failed to get resource release: %w", err)
+	}
+
+	restored := *target.Spec.BindingSpec.DeepCopy()
+	restored.ReleasePin = openchoreov1alpha1.ReleasePinPinned
+
+	currentHash, err := revision.ResourceReleaseBindingSpecHash(&binding.Spec)
+	if err != nil {
+		return nil, err
+	}
+	restoredHash, err := revision.ResourceReleaseBindingSpecHash(&restored)
+	if err != nil {
+		return nil, err
+	}
+	noSpecChange := currentHash == restoredHash
+
+	changes, err := bindingrevision.SpecChanges(binding.Spec, restored)
+	if err != nil {
+		return nil, err
+	}
+
+	revertedFrom := active.Spec.Revision
+	result := &bindingrevision.RollbackResult{
+		RevisionName: target.Name,
+		RevisionDisplayName: revision.DisplayName(target.Spec.ResourceReleaseName,
+			target.Spec.Revision),
+		Revision:       req.Revision,
+		TargetRevision: req.Revision,
+		RevertedFrom:   &revertedFrom,
+		DryRun:         req.DryRun,
+		Changes:        changes,
+	}
+
+	result.Warnings = bindingrevision.CommonWarnings(req.Revision, target.Status, noSpecChange,
+		active.Spec.SnapshotHash != currentHash, binding.Spec.ReleasePin == openchoreov1alpha1.ReleasePinPinned)
+	cellDrift, err := bindingrevision.ProjectCellDrift(ctx, s.k8sClient, namespaceName, binding.Spec.Owner.ProjectName,
+		binding.Spec.Environment, req.Revision, target.CreationTimestamp)
+	if err != nil {
+		return nil, err
+	}
+	if cellDrift != nil {
+		result.Warnings = append(result.Warnings, *cellDrift)
+	}
+
+	if req.DryRun {
+		return result, nil
+	}
+
+	base := binding.DeepCopy()
+	binding.Spec = restored
+
+	if err := s.k8sClient.Patch(ctx, binding,
+		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		switch {
+		case apierrors.IsConflict(err):
+			return nil, fmt.Errorf("%w: resource release binding %q", bindingrevision.ErrConcurrentModification, bindingName)
+		case apierrors.IsNotFound(err):
+			return nil, ErrResourceReleaseBindingNotFound
+		}
+		if vErr := services.ExtractValidationError(err); vErr != nil {
+			return nil, vErr
+		}
+		return nil, fmt.Errorf("failed to roll back resource release binding: %w", err)
+	}
+
+	s.logger.Info("Rolled back resource release binding", "namespace", namespaceName, "resourceReleaseBinding", bindingName,
+		"targetRevision", req.Revision, "revertedFrom", revertedFrom)
+	return result, nil
+}
+
+// bindingRevisions returns the binding's own revisions.
+func (s *resourceReleaseBindingService) bindingRevisions(ctx context.Context,
+	binding *openchoreov1alpha1.ResourceReleaseBinding) ([]openchoreov1alpha1.ResourceReleaseBindingRevision, error) {
+	var list openchoreov1alpha1.ResourceReleaseBindingRevisionList
+	if err := s.k8sClient.List(ctx, &list, client.InNamespace(binding.Namespace),
+		client.MatchingLabels{revision.LabelKeyBindingUID: string(binding.UID)}); err != nil {
+		return nil, fmt.Errorf("failed to list resource release binding revisions: %w", err)
+	}
+	owned := make([]openchoreov1alpha1.ResourceReleaseBindingRevision, 0, len(list.Items))
+	for i := range list.Items {
+		if ref := metav1.GetControllerOf(&list.Items[i]); ref != nil && ref.UID == binding.UID {
+			owned = append(owned, list.Items[i])
+		}
+	}
+	return owned, nil
+}

@@ -47,6 +47,13 @@ type ResourceReleaseBindingSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	ResourceTypeEnvironmentConfigs *runtime.RawExtension `json:"resourceTypeEnvironmentConfigs,omitempty"`
+
+	// ReleasePin controls whether resourceRelease may be advanced automatically.
+	// Auto: resourceRelease follows new ResourceReleases
+	// Pinned: resourceRelease is held at its current value until changed explicitly
+	// +kubebuilder:default=Auto
+	// +optional
+	ReleasePin ReleasePin `json:"releasePin,omitempty"`
 }
 
 // ResourceReleaseBindingOwner identifies the resource this ResourceReleaseBinding belongs to.
@@ -84,6 +91,12 @@ type ResourceReleaseBindingStatus struct {
 	// +listType=map
 	// +listMapKey=name
 	Outputs []ResolvedResourceOutput `json:"outputs,omitempty"`
+
+	// CurrentRevision is the name of the revision this binding currently applies,
+	// {binding}-r{N}. The controller updates it whenever the active revision
+	// changes, including when a rollback makes an earlier revision active again.
+	// +optional
+	CurrentRevision string `json:"currentRevision,omitempty"`
 }
 
 // ResolvedResourceOutput is a single resolved output value populated by the

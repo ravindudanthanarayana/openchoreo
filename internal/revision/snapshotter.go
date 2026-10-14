@@ -1,0 +1,621 @@
+// Copyright 2026 The OpenChoreo Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package revision
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
+)
+
+const (
+	// LabelKeyBindingUID selects the revisions of one binding. The UID is used
+	// rather than the name because label values are capped at 63 characters and
+	// because a binding deleted and recreated under the same name must not pick
+	// up the old binding's revisions while garbage collection catches up.
+	LabelKeyBindingUID = "openchoreo.dev/binding-uid"
+
+	// LabelKeyReleaseBinding carries the owning ReleaseBinding's name, for humans
+	// and kubectl selectors. Names longer than a label value allows are shortened
+	// with LabelValue.
+	LabelKeyReleaseBinding = "openchoreo.dev/release-binding"
+
+	// LabelKeyResourceReleaseBinding carries the owning ResourceReleaseBinding's name.
+	LabelKeyResourceReleaseBinding = "openchoreo.dev/resource-release-binding"
+
+	// AnnotationKeyBindingGeneration records the binding metadata.generation at
+	// which a revision last became active: when it was created, and again each
+	// time a spec it records makes it active again. The revision carrying the
+	// highest value is the binding's current revision. A reconcile working from
+	// a binding no newer than that (informer cache lag) must not record or
+	// activate anything.
+	AnnotationKeyBindingGeneration = "openchoreo.dev/binding-generation"
+
+	// maxLabelValueLength is the Kubernetes label value limit.
+	maxLabelValueLength = 63
+
+	// EventReasonRevisionReactivated is emitted on a binding when its spec
+	// returns to one an earlier revision recorded and that revision becomes
+	// active again.
+	EventReasonRevisionReactivated = "RevisionReactivated"
+
+	// EventReasonRevisionHistoryLimitExceeded is emitted on a binding whose
+	// protected revisions alone exceed the history limit.
+	EventReasonRevisionHistoryLimitExceeded = "RevisionHistoryLimitExceeded"
+
+	// DefaultKnownGoodWindow is how long a revision must stay Healthy before it
+	// is marked known-good, when no window is configured.
+	DefaultKnownGoodWindow = 60 * time.Second
+
+	// DefaultHistoryLimit is the number of revisions kept per binding when no
+	// limit is configured.
+	DefaultHistoryLimit = 10
+
+	// KeepRevisionValue is the value of openchoreo.dev/keep that exempts a
+	// revision from history-limit eviction.
+	KeepRevisionValue = "true"
+)
+
+// Adapter supplies the kind-specific parts of recording a revision. B is the
+// binding type and R the revision type it records; both are pointer types.
+type Adapter[B client.Object, R client.Object] interface {
+	// NewRevisionList returns an empty list of revisions.
+	NewRevisionList() client.ObjectList
+	// Items returns the revisions held by a list from NewRevisionList.
+	Items(list client.ObjectList) []R
+	// Number returns spec.revision.
+	Number(rev R) int64
+	// SnapshotHash returns spec.snapshotHash.
+	SnapshotHash(rev R) string
+	// RecordedCause returns spec.cause.
+	RecordedCause(rev R) openchoreov1alpha1.RevisionCause
+	// Status returns the revision's status for in-place modification.
+	Status(rev R) *openchoreov1alpha1.BindingRevisionStatus
+	// HashInput returns the part of the binding spec whose changes create a revision.
+	HashInput(binding B) any
+	// Labels returns the kind-specific labels for the binding's revisions.
+	Labels(binding B) map[string]string
+	// Build returns a revision with its spec filled in. Metadata is set by the Snapshotter.
+	Build(binding B, number int64, cause openchoreov1alpha1.RevisionCause, hash string) R
+	// Cause classifies a spec change from the spec alone, for changes the
+	// binding's cause annotation does not decide. latest is the revision being
+	// replaced, the binding's current one; hasLatest is false when the binding
+	// has no revision yet.
+	Cause(binding B, latest R, hasLatest bool) openchoreov1alpha1.RevisionCause
+	// KnownGoodEligible reports whether the revision can become known-good. A
+	// revision that undeploys is not a rollback target, however healthy.
+	KnownGoodEligible(rev R) bool
+}
+
+// Options configures a Snapshotter.
+type Options struct {
+	// KnownGoodWindow is how long the active revision must stay Healthy before
+	// it is marked known-good. Zero marks it known-good on its first Healthy
+	// observation.
+	KnownGoodWindow time.Duration
+	// HistoryLimit is the number of revisions kept per binding; older ones are
+	// deleted after each new revision. Zero or less keeps every revision.
+	HistoryLimit int
+	// Recorder receives events about the binding. Optional.
+	Recorder record.EventRecorder
+	// Now returns the current time. Defaults to time.Now.
+	Now func() time.Time
+}
+
+// Result reports what Record did.
+type Result struct {
+	// Number is the revision that is active after Record, or 0 if none exists.
+	Number int64
+	// Name is the name of that revision, or empty if none exists. Bindings
+	// publish it as status.currentRevision.
+	Name string
+	// Created is true when this call created the revision.
+	Created bool
+	// Reactivated is true when this call made an existing revision active again
+	// because the binding spec returned to the one it records.
+	Reactivated bool
+	// Cause is the cause of a revision this call created or found already
+	// created; empty when no new revision was needed.
+	Cause openchoreov1alpha1.RevisionCause
+}
+
+// Snapshotter records each distinct binding spec as an immutable revision and
+// keeps status.active pointing at the revision that records the current spec.
+//
+// It is idempotent: a revision's name is derived from the binding name and its
+// number, so two attempts to record the same revision collide on the name and
+// the second is treated as success. Revision specs are only ever written by
+// Create; status is only ever written through the status subresource.
+type Snapshotter[B client.Object, R client.Object] struct {
+	Client  client.Client
+	Scheme  *runtime.Scheme
+	Adapter Adapter[B, R]
+	Options
+}
+
+// Record makes the revision that records the binding's current spec the active
+// one, creating it only when no revision records that spec yet.
+//
+// Revisions are unique per spec. When the spec returns to one an earlier
+// revision recorded -- a rollback, or any change back to an identical spec --
+// that revision becomes active again under its own name and number, and nothing
+// is created. A spec no revision records becomes a new revision numbered one
+// above the highest. Every other revision is marked inactive, and once the
+// current spec is recorded the binding's cause annotation is removed.
+//
+// Which revision is active only changes for a binding read newer than the
+// generation the current revision was activated at (AnnotationKeyBindingGeneration):
+// an older read is informer cache lag and changes nothing.
+//
+// Removing the annotation patches the binding's metadata. Only the binding's
+// annotations and resourceVersion are refreshed from the response, so status
+// the caller has changed in memory is kept and its later status update does not
+// conflict.
+func (s *Snapshotter[B, R]) Record(ctx context.Context, binding B) (Result, error) {
+	revs, err := s.list(ctx, binding)
+	if err != nil {
+		return Result{}, err
+	}
+	current, hasCurrent := s.current(revs)
+
+	hash, err := CanonicalHash(s.Adapter.HashInput(binding))
+	if err != nil {
+		return Result{}, fmt.Errorf("hash binding spec: %w", err)
+	}
+
+	var result Result
+	if hasCurrent {
+		result.Number = s.Adapter.Number(current)
+		result.Name = current.GetName()
+	}
+	// fresh reports whether this binding read may change the active revision.
+	fresh := !hasCurrent || binding.GetGeneration() > recordedGeneration(current)
+
+	// recorded reports whether a revision of the binding's current spec exists, which
+	// is when the cause annotation has served its purpose. A stale binding read
+	// whose spec is not recorded keeps it for the reconcile that records it.
+	recorded := false
+	if match, ok := s.matching(revs, hash); ok {
+		recorded = true
+		if s.Adapter.Number(match) != result.Number && fresh {
+			if err := s.markActivated(ctx, match, binding.GetGeneration()); err != nil {
+				return result, err
+			}
+			result.Number = s.Adapter.Number(match)
+			result.Name = match.GetName()
+			result.Reactivated = true
+			if s.Recorder != nil {
+				s.Recorder.Eventf(binding, corev1.EventTypeNormal, EventReasonRevisionReactivated,
+					"Revision %d (%s) is active again: the binding spec matches the one it recorded",
+					result.Number, result.Name)
+			}
+		}
+	} else if fresh {
+		number, rev, found, created, err := s.create(ctx, binding, revs, current, hasCurrent, hash)
+		if err != nil {
+			return result, err
+		}
+		result.Number = number
+		result.Name = Name(binding.GetName(), number)
+		result.Created = created
+		// A revision found already created is only projected when this client can
+		// read it; otherwise the next reconcile lists it and projects it then.
+		if found {
+			result.Cause = s.Adapter.RecordedCause(rev)
+			revs = append(revs, rev)
+			recorded = s.Adapter.SnapshotHash(rev) == hash
+		}
+	}
+
+	errs := []error{s.projectStatus(ctx, revs, result.Number)}
+	if recorded {
+		errs = append(errs, s.clearCauseAnnotations(ctx, binding))
+	}
+	if result.Created {
+		errs = append(errs, s.evict(ctx, binding, revs, result.Number))
+	}
+	return result, kerrors.NewAggregate(errs)
+}
+
+// ObserveHealth records health on the binding's active revision -- the current
+// one, and only when it records the binding's current spec. Every other revision
+// keeps the health it last had when it stopped being active.
+//
+// Health and observedAt change together, and only when the health changes.
+// healthySince is set when the revision becomes Healthy and cleared when it
+// leaves Healthy. Once the revision has been Healthy for KnownGoodWindow it is
+// marked known-good, and stays known-good whatever happens next. While that
+// window is still running, ObserveHealth returns how long is left, for the
+// caller to requeue after; nothing here sleeps.
+func (s *Snapshotter[B, R]) ObserveHealth(ctx context.Context, binding B,
+	health openchoreov1alpha1.RevisionHealth) (time.Duration, error) {
+	revs, err := s.list(ctx, binding)
+	if err != nil {
+		return 0, err
+	}
+	active, ok := s.current(revs)
+	if !ok {
+		return 0, nil
+	}
+	hash, err := CanonicalHash(s.Adapter.HashInput(binding))
+	if err != nil {
+		return 0, fmt.Errorf("hash binding spec: %w", err)
+	}
+	if s.Adapter.SnapshotHash(active) != hash {
+		// The current spec has no revision yet; the health describes a spec the
+		// active revision does not record.
+		return 0, nil
+	}
+
+	eligible := s.Adapter.KnownGoodEligible(active)
+	var requeueAfter time.Duration
+	err = s.updateStatus(ctx, active, func(status *openchoreov1alpha1.BindingRevisionStatus) bool {
+		requeueAfter = 0
+		now := metav1.NewTime(s.now())
+		changed := false
+
+		if status.Health != health {
+			status.Health = health
+			status.ObservedAt = &now
+			changed = true
+		}
+		switch {
+		case health == openchoreov1alpha1.RevisionHealthHealthy && status.HealthySince == nil:
+			status.HealthySince = &now
+			changed = true
+		case health != openchoreov1alpha1.RevisionHealthHealthy && status.HealthySince != nil:
+			status.HealthySince = nil
+			changed = true
+		}
+
+		if !status.KnownGood && eligible && health == openchoreov1alpha1.RevisionHealthHealthy {
+			if remaining := s.KnownGoodWindow - now.Sub(status.HealthySince.Time); remaining <= 0 {
+				status.KnownGood = true
+				changed = true
+			} else {
+				requeueAfter = remaining
+			}
+		}
+		return changed
+	})
+	if err != nil {
+		return 0, fmt.Errorf("update status of revision %q: %w", active.GetName(), err)
+	}
+	return requeueAfter, nil
+}
+
+// list returns the binding's revisions: those carrying its UID label whose
+// controller reference is the binding.
+func (s *Snapshotter[B, R]) list(ctx context.Context, binding B) ([]R, error) {
+	list := s.Adapter.NewRevisionList()
+	if err := s.Client.List(ctx, list,
+		client.InNamespace(binding.GetNamespace()),
+		client.MatchingLabels{LabelKeyBindingUID: string(binding.GetUID())},
+	); err != nil {
+		return nil, fmt.Errorf("list revisions: %w", err)
+	}
+
+	items := s.Adapter.Items(list)
+	owned := make([]R, 0, len(items))
+	for _, rev := range items {
+		if ref := metav1.GetControllerOf(rev); ref != nil && ref.UID == binding.GetUID() {
+			owned = append(owned, rev)
+		}
+	}
+	return owned, nil
+}
+
+// latest returns the revision with the highest spec.revision. List order is
+// never relied on.
+func (s *Snapshotter[B, R]) latest(revs []R) (R, bool) {
+	var latest R
+	found := false
+	for _, rev := range revs {
+		if !found || s.Adapter.Number(rev) > s.Adapter.Number(latest) {
+			latest, found = rev, true
+		}
+	}
+	return latest, found
+}
+
+// current returns the revision most recently made active: the one with the
+// highest AnnotationKeyBindingGeneration, the highest spec.revision breaking
+// ties. Without reactivations this is the latest revision.
+func (s *Snapshotter[B, R]) current(revs []R) (R, bool) {
+	var current R
+	found := false
+	for _, rev := range revs {
+		if !found {
+			current, found = rev, true
+			continue
+		}
+		if MoreRecentlyActive(rev, s.Adapter.Number(rev), current, s.Adapter.Number(current)) {
+			current = rev
+		}
+	}
+	return current, found
+}
+
+// matching returns the revision that records the spec with this hash. Specs
+// are unique per binding, so there is at most one; should there be more, the
+// newest is used.
+func (s *Snapshotter[B, R]) matching(revs []R, hash string) (R, bool) {
+	var match R
+	found := false
+	for _, rev := range revs {
+		if s.Adapter.SnapshotHash(rev) != hash {
+			continue
+		}
+		if !found || s.Adapter.Number(rev) > s.Adapter.Number(match) {
+			match, found = rev, true
+		}
+	}
+	return match, found
+}
+
+// markActivated records on the revision the binding generation it became
+// active at, making it the binding's current revision. Only metadata is
+// patched; the spec stays immutable.
+func (s *Snapshotter[B, R]) markActivated(ctx context.Context, rev R, generation int64) error {
+	patched, ok := rev.DeepCopyObject().(R)
+	if !ok {
+		return fmt.Errorf("copy revision %q", rev.GetName())
+	}
+	annotations := make(map[string]string, len(rev.GetAnnotations())+1)
+	for k, v := range rev.GetAnnotations() {
+		annotations[k] = v
+	}
+	annotations[AnnotationKeyBindingGeneration] = strconv.FormatInt(generation, 10)
+	patched.SetAnnotations(annotations)
+	if err := s.Client.Patch(ctx, patched, client.MergeFrom(rev)); err != nil {
+		return fmt.Errorf("activate revision %q: %w", rev.GetName(), err)
+	}
+	rev.SetAnnotations(patched.GetAnnotations())
+	rev.SetResourceVersion(patched.GetResourceVersion())
+	return nil
+}
+
+// create builds and creates the binding's next revision, numbered one above
+// its highest, so each binding counts r1, r2, r3... on its own. current is
+// the revision it replaces, used to classify the change.
+// It returns the revision number and, when found is true, the stored revision:
+// the one created, or the one that already existed under that name. found is
+// false when the existing revision cannot be read yet.
+func (s *Snapshotter[B, R]) create(ctx context.Context, binding B, revs []R, current R, hasCurrent bool,
+	hash string) (number int64, rev R, found, created bool, err error) {
+	number = 1
+	if latest, ok := s.latest(revs); ok {
+		number = s.Adapter.Number(latest) + 1
+	}
+
+	built := s.Adapter.Build(binding, number, s.cause(binding, current, hasCurrent), hash)
+	built.SetName(Name(binding.GetName(), number))
+	built.SetNamespace(binding.GetNamespace())
+
+	revLabels := s.Adapter.Labels(binding)
+	revLabels[LabelKeyBindingUID] = string(binding.GetUID())
+	built.SetLabels(revLabels)
+	built.SetAnnotations(map[string]string{
+		AnnotationKeyBindingGeneration: strconv.FormatInt(binding.GetGeneration(), 10),
+	})
+	if err := controllerutil.SetControllerReference(binding, built, s.Scheme); err != nil {
+		return number, rev, false, false, fmt.Errorf("set owner reference on revision %q: %w", built.GetName(), err)
+	}
+
+	if err := s.Client.Create(ctx, built); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return number, rev, false, false, fmt.Errorf("create revision %q: %w", built.GetName(), err)
+		}
+		// Another attempt recorded this revision number first: a retry after a lost
+		// response, or a reconcile working from a cache that had not yet seen it.
+		// Treated as success; the stored revision is read back, never overwritten.
+		existing, ok := built.DeepCopyObject().(R)
+		if !ok {
+			return number, rev, false, false, fmt.Errorf("copy revision %q", built.GetName())
+		}
+		if err := s.Client.Get(ctx, client.ObjectKeyFromObject(built), existing); err != nil {
+			if apierrors.IsNotFound(err) {
+				return number, rev, false, false, nil
+			}
+			return number, rev, false, false, fmt.Errorf("get existing revision %q: %w", built.GetName(), err)
+		}
+		// The name can also be held by a revision of an earlier binding with the
+		// same name, deleted and recreated before garbage collection removed its
+		// revisions. That revision is not ours: retry until it is gone.
+		if ref := metav1.GetControllerOf(existing); ref == nil || ref.UID != binding.GetUID() {
+			return number, rev, false, false, fmt.Errorf(
+				"revision name %q is held by a revision of another binding; waiting for it to be garbage collected", built.GetName())
+		}
+		return number, existing, true, false, nil
+	}
+	return number, built, true, true, nil
+}
+
+// cause classifies the change. A Promote cause annotation decides a binding's
+// first revision; anything else is classified by the adapter from the spec.
+func (s *Snapshotter[B, R]) cause(binding B, current R, hasCurrent bool) openchoreov1alpha1.RevisionCause {
+	if !hasCurrent && openchoreov1alpha1.RevisionCause(
+		binding.GetAnnotations()[openchoreov1alpha1.AnnotationKeyRevisionCause]) == openchoreov1alpha1.RevisionCausePromote {
+		return openchoreov1alpha1.RevisionCausePromote
+	}
+	return s.Adapter.Cause(binding, current, hasCurrent)
+}
+
+// clearCauseAnnotations removes the cause annotation from the binding, if it
+// has one. The patch is applied to a copy; only annotations and resourceVersion
+// are carried back to binding.
+func (s *Snapshotter[B, R]) clearCauseAnnotations(ctx context.Context, binding B) error {
+	current := binding.GetAnnotations()
+	if _, ok := current[openchoreov1alpha1.AnnotationKeyRevisionCause]; !ok {
+		return nil
+	}
+
+	patched, ok := binding.DeepCopyObject().(client.Object)
+	if !ok {
+		return fmt.Errorf("copy binding %q", binding.GetName())
+	}
+	remaining := make(map[string]string, len(current))
+	for k, v := range current {
+		if k != openchoreov1alpha1.AnnotationKeyRevisionCause {
+			remaining[k] = v
+		}
+	}
+	patched.SetAnnotations(remaining)
+
+	if err := s.Client.Patch(ctx, patched, client.MergeFrom(binding)); err != nil {
+		return fmt.Errorf("remove revision cause annotation: %w", err)
+	}
+	binding.SetAnnotations(patched.GetAnnotations())
+	binding.SetResourceVersion(patched.GetResourceVersion())
+	return nil
+}
+
+// projectStatus makes the revision numbered active the only active revision.
+// A revision becoming active starts at health Progressing: a new one, and one
+// made active again, since its spec is being applied anew. Its known-good mark
+// is kept. A revision that stops being active keeps its health as last
+// observed. Only revisions whose status changes are written, so this is safe to
+// run on every reconcile.
+func (s *Snapshotter[B, R]) projectStatus(ctx context.Context, revs []R, active int64) error {
+	var errs []error
+	for _, rev := range revs {
+		want := s.Adapter.Number(rev) == active
+		err := s.updateStatus(ctx, rev, func(status *openchoreov1alpha1.BindingRevisionStatus) bool {
+			if status.Active == want && (!want || status.Health != "") {
+				return false
+			}
+			if want && (!status.Active || status.Health == "") {
+				now := metav1.NewTime(s.now())
+				status.Health = openchoreov1alpha1.RevisionHealthProgressing
+				status.ObservedAt = &now
+				status.HealthySince = nil
+			}
+			status.Active = want
+			return true
+		})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("update status of revision %q: %w", rev.GetName(), err))
+		}
+	}
+	return kerrors.NewAggregate(errs)
+}
+
+// updateStatus applies mutate to the revision's status and writes it through
+// the status subresource when mutate reports a change. On a conflict it reads
+// the revision again and reapplies mutate to the fresh status, so concurrent
+// writers never overwrite each other's changes.
+func (s *Snapshotter[B, R]) updateStatus(ctx context.Context, rev R,
+	mutate func(status *openchoreov1alpha1.BindingRevisionStatus) bool) error {
+	first := true
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if !first {
+			if err := s.Client.Get(ctx, client.ObjectKeyFromObject(rev), rev); err != nil {
+				return err
+			}
+		}
+		first = false
+		if !mutate(s.Adapter.Status(rev)) {
+			return nil
+		}
+		return s.Client.Status().Update(ctx, rev)
+	})
+}
+
+// evict deletes the binding's oldest revisions beyond HistoryLimit, keeping the
+// active revision, the newest known-good revision and revisions annotated
+// openchoreo.dev/keep: "true" (see SelectEvictions). When those alone exceed
+// the limit it keeps them and records a warning event on the binding.
+func (s *Snapshotter[B, R]) evict(ctx context.Context, binding B, revs []R, active int64) error {
+	if s.HistoryLimit <= 0 {
+		return nil
+	}
+
+	byName := make(map[string]R, len(revs))
+	candidates := make([]EvictionCandidate, 0, len(revs))
+	for _, rev := range revs {
+		byName[rev.GetName()] = rev
+		candidates = append(candidates, EvictionCandidate{
+			Name:      rev.GetName(),
+			Number:    s.Adapter.Number(rev),
+			Active:    s.Adapter.Number(rev) == active,
+			KnownGood: s.Adapter.Status(rev).KnownGood,
+			Keep:      rev.GetAnnotations()[openchoreov1alpha1.AnnotationKeyKeepRevision] == KeepRevisionValue,
+		})
+	}
+
+	evict, overLimit := SelectEvictions(candidates, s.HistoryLimit)
+	var errs []error
+	for _, c := range evict {
+		err := s.Client.Delete(ctx, byName[c.Name])
+		if client.IgnoreNotFound(err) != nil {
+			errs = append(errs, fmt.Errorf("delete revision %q: %w", c.Name, err))
+		}
+	}
+	if overLimit && s.Recorder != nil {
+		s.Recorder.Eventf(binding, corev1.EventTypeWarning, EventReasonRevisionHistoryLimitExceeded,
+			"%d revisions are kept, above the history limit of %d: the active revision, the newest known-good "+
+				"revision and revisions annotated %s=%s are never deleted",
+			len(revs)-len(evict), s.HistoryLimit, openchoreov1alpha1.AnnotationKeyKeepRevision, KeepRevisionValue)
+	}
+	return kerrors.NewAggregate(errs)
+}
+
+// now returns the current time from Options.Now, or time.Now.
+func (s *Snapshotter[B, R]) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+// MoreRecentlyActive reports whether revision a, numbered aNumber, became
+// active more recently than revision b, numbered bNumber: it carries a higher
+// AnnotationKeyBindingGeneration, or the same one and a higher number. The
+// binding's current revision is the one no other revision is more recently
+// active than. Callers outside the controller use it to find that revision
+// the same way the controller does.
+func MoreRecentlyActive(a client.Object, aNumber int64, b client.Object, bNumber int64) bool {
+	ga, gb := recordedGeneration(a), recordedGeneration(b)
+	return ga > gb || (ga == gb && aNumber > bNumber)
+}
+
+// recordedGeneration returns the binding generation a revision last became
+// active at, or 0 if it is not recorded.
+func recordedGeneration(rev client.Object) int64 {
+	gen, err := strconv.ParseInt(rev.GetAnnotations()[AnnotationKeyBindingGeneration], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return gen
+}
+
+// LabelValue returns s if it is a valid label value, and otherwise a stable
+// shortened form: a prefix of s followed by "-" and 10 hex characters of the
+// SHA-256 of s. Kubernetes object names only contain characters that are
+// valid in label values, so the result is valid for any object name.
+func LabelValue(s string) string {
+	if len(s) <= maxLabelValueLength {
+		return s
+	}
+	sum := sha256.Sum256([]byte(s))
+	hash := hex.EncodeToString(sum[:])[:10]
+	prefix := strings.TrimRight(s[:maxLabelValueLength-len(hash)-1], "-._")
+	return prefix + "-" + hash
+}

@@ -1,0 +1,599 @@
+// Copyright 2026 The OpenChoreo Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package releasebinding
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
+	"github.com/openchoreo/openchoreo/internal/labels"
+	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services"
+	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services/bindingrevision"
+	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services/testutil"
+	"github.com/openchoreo/openchoreo/internal/revision"
+)
+
+const (
+	rbUID     = types.UID("uid-test-rb")
+	releaseA  = "test-component-aaa111"
+	releaseB  = "test-component-bbb222"
+	releaseC  = "test-component-ccc333"
+	secretRef = "db-credentials"
+)
+
+var t0 = time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+
+// fixture is a binding at revision 3 of a three-revision history:
+// r1 binds releaseA (Healthy, known-good), r2 binds releaseB, r3 binds releaseC
+// with a replicas override and is active.
+type fixture struct {
+	binding *openchoreov1alpha1.ReleaseBinding
+	revs    []*openchoreov1alpha1.ReleaseBindingRevision
+	extra   []client.Object
+}
+
+func specFor(release string, replicas string) openchoreov1alpha1.ReleaseBindingSpec {
+	spec := openchoreov1alpha1.ReleaseBindingSpec{
+		Owner:       openchoreov1alpha1.ReleaseBindingOwner{ProjectName: testProjectName, ComponentName: testComponentName},
+		Environment: testEnvironmentName,
+		ReleaseName: release,
+		State:       openchoreov1alpha1.ReleaseStateActive,
+		ReleasePin:  openchoreov1alpha1.ReleasePinAuto,
+	}
+	if replicas != "" {
+		spec.ComponentTypeEnvironmentConfigs = &runtime.RawExtension{Raw: []byte(`{"replicas":` + replicas + `}`)}
+	}
+	return spec
+}
+
+func newRevision(t *testing.T, bindingName string, uid types.UID, n int64, spec openchoreov1alpha1.ReleaseBindingSpec,
+	createdAt time.Time) *openchoreov1alpha1.ReleaseBindingRevision {
+	t.Helper()
+	hash, err := revision.ReleaseBindingSpecHash(&spec)
+	require.NoError(t, err)
+	return &openchoreov1alpha1.ReleaseBindingRevision{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              revision.Name(bindingName, n),
+			Namespace:         testNamespace,
+			CreationTimestamp: metav1.NewTime(createdAt),
+			Labels: map[string]string{
+				revision.LabelKeyBindingUID:    string(uid),
+				labels.LabelKeyComponentName:   spec.Owner.ComponentName,
+				labels.LabelKeyEnvironmentName: spec.Environment,
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: openchoreov1alpha1.GroupVersion.String(), Kind: "ReleaseBinding",
+				Name: bindingName, UID: uid, Controller: ptr.To(true),
+			}},
+		},
+		Spec: openchoreov1alpha1.ReleaseBindingRevisionSpec{
+			Revision: n, Cause: openchoreov1alpha1.RevisionCauseDeploy, ComponentReleaseName: spec.ReleaseName,
+			SnapshotHash: hash, BindingSpec: spec,
+		},
+	}
+}
+
+func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	current := specFor(releaseC, "3")
+	binding := testutil.NewReleaseBinding(testNamespace, testProjectName, testComponentName, testEnvironmentName, testRBName)
+	binding.UID = rbUID
+	binding.Spec = current
+
+	r1 := newRevision(t, testRBName, rbUID, 1, specFor(releaseA, ""), t0)
+	r1.Status = openchoreov1alpha1.BindingRevisionStatus{Health: openchoreov1alpha1.RevisionHealthHealthy, KnownGood: true}
+	r2 := newRevision(t, testRBName, rbUID, 2, specFor(releaseB, ""), t0.Add(time.Hour))
+	r3 := newRevision(t, testRBName, rbUID, 3, current, t0.Add(2*time.Hour))
+	r3.Status = openchoreov1alpha1.BindingRevisionStatus{Health: openchoreov1alpha1.RevisionHealthHealthy, Active: true}
+
+	return &fixture{binding: binding, revs: []*openchoreov1alpha1.ReleaseBindingRevision{r1, r2, r3}}
+}
+
+func (f *fixture) objects() []client.Object {
+	objs := make([]client.Object, 0, 5+len(f.revs)+len(f.extra))
+	objs = append(objs,
+		f.binding,
+		testutil.NewComponent(testNamespace, testProjectName, testComponentName),
+		testutil.NewComponentRelease(testNamespace, testProjectName, testComponentName, releaseA),
+		testutil.NewComponentRelease(testNamespace, testProjectName, testComponentName, releaseB),
+		testutil.NewComponentRelease(testNamespace, testProjectName, testComponentName, releaseC),
+	)
+	for _, r := range f.revs {
+		objs = append(objs, r)
+	}
+	return append(objs, f.extra...)
+}
+
+func (f *fixture) client() client.Client {
+	return testutil.NewFakeClient(f.objects()...)
+}
+
+func getRB(t *testing.T, c client.Client) *openchoreov1alpha1.ReleaseBinding {
+	t.Helper()
+	rb := &openchoreov1alpha1.ReleaseBinding{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: testRBName}, rb))
+	return rb
+}
+
+// revisionVersions returns each revision's resourceVersion, to prove they were not written.
+func revisionVersions(t *testing.T, c client.Client) map[string]string {
+	t.Helper()
+	var list openchoreov1alpha1.ReleaseBindingRevisionList
+	require.NoError(t, c.List(context.Background(), &list, client.InNamespace(testNamespace)))
+	out := map[string]string{}
+	for _, r := range list.Items {
+		out[r.Name] = r.ResourceVersion
+	}
+	return out
+}
+
+func warningCodes(ws []bindingrevision.Warning) []bindingrevision.WarningCode {
+	out := make([]bindingrevision.WarningCode, 0, len(ws))
+	for _, w := range ws {
+		out = append(out, w.Code)
+	}
+	return out
+}
+
+// ─────────────────────────────────────────────────────────────
+// RollbackReleaseBinding
+// ─────────────────────────────────────────────────────────────
+
+func TestRollbackReleaseBinding_Applies(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	c := f.client()
+	svc := NewService(c, testutil.TestLogger())
+	revsBefore := revisionVersions(t, c)
+
+	result, err := svc.RollbackReleaseBinding(ctx, testNamespace, testRBName, bindingrevision.RollbackRequest{Revision: 1})
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(1), result.Revision, "no revision is created: r1 becomes active again")
+	assert.Equal(t, testRBName+"-r1", result.RevisionName)
+	assert.Equal(t, int64(1), result.TargetRevision)
+	assert.Equal(t, ptr.To(int64(3)), result.RevertedFrom)
+	assert.False(t, result.DryRun)
+
+	rb := getRB(t, c)
+	want := specFor(releaseA, "")
+	want.ReleasePin = openchoreov1alpha1.ReleasePinPinned
+	assert.Equal(t, want, rb.Spec, "spec is r1's bindingSpec with releasePin Pinned")
+	assert.NotContains(t, rb.Annotations, openchoreov1alpha1.AnnotationKeyRevisionCause,
+		"a rollback needs no cause marker: the controller matches the spec to r1")
+
+	assert.Equal(t, revsBefore, revisionVersions(t, c), "the service never writes a revision")
+}
+
+func TestRollbackReleaseBinding_ActiveIsTheMostRecentlyActivated(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	// The binding was already rolled back to r1: r1 was made active at a later
+	// binding generation than r3, the highest-numbered revision.
+	f.binding.Spec = specFor(releaseA, "")
+	f.revs[0].Annotations = map[string]string{revision.AnnotationKeyBindingGeneration: "9"}
+	f.revs[2].Annotations = map[string]string{revision.AnnotationKeyBindingGeneration: "5"}
+
+	result, err := NewService(f.client(), testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, testRBName,
+		bindingrevision.RollbackRequest{Revision: 3, DryRun: true})
+	require.NoError(t, err)
+	assert.Equal(t, ptr.To(int64(1)), result.RevertedFrom, "r1 is active, though r3 is newer")
+	assert.Equal(t, testRBName+"-r3", result.RevisionName)
+	assert.NotContains(t, warningCodes(result.Warnings), bindingrevision.WarningUnrecordedChange,
+		"the binding's spec is the one r1 records")
+}
+
+func TestRollbackReleaseBinding_DryRunChangesNothing(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	c := f.client()
+	svc := NewService(c, testutil.TestLogger())
+	before := getRB(t, c)
+	revsBefore := revisionVersions(t, c)
+
+	result, err := svc.RollbackReleaseBinding(ctx, testNamespace, testRBName,
+		bindingrevision.RollbackRequest{Revision: 1, DryRun: true})
+	require.NoError(t, err)
+
+	assert.True(t, result.DryRun)
+	assert.Equal(t, testRBName+"-r1", result.RevisionName)
+
+	fields := map[string]bindingrevision.SpecChange{}
+	for _, ch := range result.Changes {
+		fields[ch.Field] = ch
+	}
+	assert.Len(t, result.Changes, 3, "releaseName, the override, and releasePin change: %+v", result.Changes)
+	assert.Equal(t, releaseC, fields["releaseName"].Current)
+	assert.Equal(t, releaseA, fields["releaseName"].Target)
+	assert.Equal(t, map[string]any{"replicas": float64(3)}, fields["componentTypeEnvironmentConfigs"].Current)
+	assert.Nil(t, fields["componentTypeEnvironmentConfigs"].Target, "the rollback unsets the override")
+	assert.Equal(t, "Auto", fields["releasePin"].Current)
+	assert.Equal(t, "Pinned", fields["releasePin"].Target)
+	assert.Contains(t, warningCodes(result.Warnings), bindingrevision.WarningBindingWillBePinned)
+
+	after := getRB(t, c)
+	assert.Equal(t, before.ResourceVersion, after.ResourceVersion, "dry run writes nothing")
+	assert.Equal(t, before.Spec, after.Spec)
+	assert.Equal(t, revsBefore, revisionVersions(t, c))
+}
+
+func TestRollbackReleaseBinding_Errors(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, f *fixture)
+		binding string
+		req     bindingrevision.RollbackRequest
+		wantErr error
+		wantVal bool
+	}{
+		{
+			name:    "unknown revision is not found",
+			req:     bindingrevision.RollbackRequest{Revision: 9},
+			wantErr: bindingrevision.ErrRevisionNotFound,
+		},
+		{
+			name: "a revision of another binding with the same name is not found",
+			setup: func(t *testing.T, f *fixture) {
+				f.revs[0] = newRevision(t, testRBName, "uid-deleted-binding", 1, specFor(releaseA, ""), t0)
+			},
+			req:     bindingrevision.RollbackRequest{Revision: 1},
+			wantErr: bindingrevision.ErrRevisionNotFound,
+		},
+		{
+			name:    "unknown binding is not found",
+			binding: "no-such-binding",
+			req:     bindingrevision.RollbackRequest{Revision: 1},
+			wantErr: ErrReleaseBindingNotFound,
+		},
+		{
+			name:    "revision 0 is rejected",
+			req:     bindingrevision.RollbackRequest{Revision: 0},
+			wantVal: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			if tt.setup != nil {
+				tt.setup(t, f)
+			}
+			c := f.client()
+			before := getRB(t, c)
+			name := testRBName
+			if tt.binding != "" {
+				name = tt.binding
+			}
+
+			_, err := NewService(c, testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, name, tt.req)
+			require.Error(t, err)
+			if tt.wantVal {
+				var vErr *services.ValidationError
+				assert.ErrorAs(t, err, &vErr)
+			} else {
+				assert.ErrorIs(t, err, tt.wantErr)
+			}
+			assert.Equal(t, before.ResourceVersion, getRB(t, c).ResourceVersion, "a failed rollback writes nothing")
+		})
+	}
+}
+
+func TestRollbackReleaseBinding_ReleaseDeletedIsConflict(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	objs := []client.Object{}
+	for _, o := range f.objects() {
+		if o.GetName() != releaseA { // r1's ComponentRelease has been deleted
+			objs = append(objs, o)
+		}
+	}
+	c := testutil.NewFakeClient(objs...)
+	before := getRB(t, c)
+
+	_, err := NewService(c, testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, testRBName,
+		bindingrevision.RollbackRequest{Revision: 1})
+	require.ErrorIs(t, err, bindingrevision.ErrReleaseDeleted)
+	assert.Contains(t, err.Error(), releaseA)
+	assert.Equal(t, before.ResourceVersion, getRB(t, c).ResourceVersion)
+
+	// A dry run is blocked the same way.
+	_, err = NewService(c, testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, testRBName,
+		bindingrevision.RollbackRequest{Revision: 1, DryRun: true})
+	require.ErrorIs(t, err, bindingrevision.ErrReleaseDeleted)
+}
+
+func TestRollbackReleaseBinding_ConcurrentEditIsConflict(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	// Someone edits the binding between the rollback reading it and patching it.
+	c := fake.NewClientBuilder().
+		WithScheme(testutil.NewScheme()).
+		WithObjects(f.objects()...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				if _, ok := obj.(*openchoreov1alpha1.ReleaseBinding); ok {
+					other := &openchoreov1alpha1.ReleaseBinding{}
+					if err := cl.Get(ctx, client.ObjectKeyFromObject(obj), other); err != nil {
+						return err
+					}
+					other.Spec.ReleaseName = releaseB
+					if err := cl.Update(ctx, other); err != nil {
+						return err
+					}
+				}
+				return cl.Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+
+	_, err := NewService(c, testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, testRBName,
+		bindingrevision.RollbackRequest{Revision: 1})
+	require.ErrorIs(t, err, bindingrevision.ErrConcurrentModification)
+
+	rb := getRB(t, c)
+	assert.Equal(t, releaseB, rb.Spec.ReleaseName, "the concurrent edit stands; the rollback did not overwrite it")
+	assert.NotContains(t, rb.Annotations, openchoreov1alpha1.AnnotationKeyRevisionCause)
+}
+
+func TestRollbackReleaseBinding_Warnings(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, f *fixture)
+		target  int64
+		want    []bindingrevision.WarningCode
+		wantNot []bindingrevision.WarningCode
+	}{
+		{
+			name:   "rolling back to a known-good, healthy revision only warns about the pin",
+			target: 1,
+			want:   []bindingrevision.WarningCode{bindingrevision.WarningBindingWillBePinned},
+		},
+		{
+			name:    "already pinned: no pin warning",
+			setup:   func(_ *testing.T, f *fixture) { f.binding.Spec.ReleasePin = openchoreov1alpha1.ReleasePinPinned },
+			target:  1,
+			wantNot: []bindingrevision.WarningCode{bindingrevision.WarningBindingWillBePinned},
+		},
+		{
+			name:   "target never became known-good",
+			target: 2,
+			want:   []bindingrevision.WarningCode{bindingrevision.WarningTargetNotKnownGood},
+		},
+		{
+			name: "target was Degraded when it stopped being active",
+			setup: func(_ *testing.T, f *fixture) {
+				f.revs[1].Status = openchoreov1alpha1.BindingRevisionStatus{Health: openchoreov1alpha1.RevisionHealthDegraded}
+			},
+			target: 2,
+			want:   []bindingrevision.WarningCode{bindingrevision.WarningTargetNotKnownGood, bindingrevision.WarningTargetUnhealthy},
+		},
+		{
+			name: "target undeploys",
+			setup: func(t *testing.T, f *fixture) {
+				spec := specFor(releaseB, "")
+				spec.State = openchoreov1alpha1.ReleaseStateUndeploy
+				f.revs[1] = newRevision(t, testRBName, rbUID, 2, spec, t0.Add(time.Hour))
+			},
+			target: 2,
+			want:   []bindingrevision.WarningCode{bindingrevision.WarningTargetUndeploys},
+		},
+		{
+			name:   "target records the current spec: nothing changes",
+			target: 3,
+			want:   []bindingrevision.WarningCode{bindingrevision.WarningNoSpecChange},
+		},
+		{
+			name: "the binding has a change the controller has not recorded",
+			setup: func(_ *testing.T, f *fixture) {
+				f.binding.Spec.ComponentTypeEnvironmentConfigs = &runtime.RawExtension{Raw: []byte(`{"replicas":5}`)}
+			},
+			target: 1,
+			want:   []bindingrevision.WarningCode{bindingrevision.WarningUnrecordedChange},
+		},
+		{
+			name: "the project's cell moved to a ProjectRelease created after the target",
+			setup: func(_ *testing.T, f *fixture) {
+				pr := testutil.NewProjectRelease(testNamespace, testProjectName, "test-project-cell-2")
+				pr.CreationTimestamp = metav1.NewTime(t0.Add(30 * time.Minute)) // after r1, before r2
+				prb := testutil.NewProjectReleaseBinding(testNamespace, testProjectName, testEnvironmentName, "test-project-dev")
+				prb.Spec.ProjectRelease = pr.Name
+				f.extra = append(f.extra, pr, prb)
+			},
+			target: 1,
+			want:   []bindingrevision.WarningCode{bindingrevision.WarningProjectCellDrift},
+		},
+		{
+			name: "a ProjectRelease older than the target is no drift",
+			setup: func(_ *testing.T, f *fixture) {
+				pr := testutil.NewProjectRelease(testNamespace, testProjectName, "test-project-cell-1")
+				pr.CreationTimestamp = metav1.NewTime(t0.Add(-time.Hour))
+				prb := testutil.NewProjectReleaseBinding(testNamespace, testProjectName, testEnvironmentName, "test-project-dev")
+				prb.Spec.ProjectRelease = pr.Name
+				f.extra = append(f.extra, pr, prb)
+			},
+			target:  1,
+			wantNot: []bindingrevision.WarningCode{bindingrevision.WarningProjectCellDrift},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			if tt.setup != nil {
+				tt.setup(t, f)
+			}
+			result, err := NewService(f.client(), testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace,
+				testRBName, bindingrevision.RollbackRequest{Revision: tt.target, DryRun: true})
+			require.NoError(t, err)
+
+			codes := warningCodes(result.Warnings)
+			for _, w := range tt.want {
+				assert.Contains(t, codes, w)
+			}
+			for _, w := range tt.wantNot {
+				assert.NotContains(t, codes, w)
+			}
+			// A rollback always makes its target active again; it never creates one.
+			assert.Equal(t, tt.target, result.Revision)
+			assert.Equal(t, revision.Name(testRBName, tt.target), result.RevisionName)
+		})
+	}
+}
+
+func TestRollbackReleaseBinding_SecretReferenceDrift(t *testing.T) {
+	ctx := context.Background()
+
+	secretRefFixture := func(createdAt time.Time, keys ...string) *openchoreov1alpha1.SecretReference {
+		ref := &openchoreov1alpha1.SecretReference{
+			ObjectMeta: metav1.ObjectMeta{Name: secretRef, Namespace: testNamespace, CreationTimestamp: metav1.NewTime(createdAt)},
+		}
+		for _, k := range keys {
+			ref.Spec.Data = append(ref.Spec.Data, openchoreov1alpha1.SecretDataSource{SecretKey: k})
+		}
+		return ref
+	}
+
+	tests := []struct {
+		name      string
+		secretRef *openchoreov1alpha1.SecretReference
+		wantMsgs  []string
+	}{
+		{name: "present, older than the target, with the key: no warning", secretRef: secretRefFixture(t0.Add(-time.Hour), "password")},
+		{name: "missing", secretRef: nil, wantMsgs: []string{`SecretReference "db-credentials" used by revision 1 no longer exists`}},
+		{name: "key removed", secretRef: secretRefFixture(t0.Add(-time.Hour), "username"),
+			wantMsgs: []string{`SecretReference "db-credentials" no longer has key "password" used by revision 1`}},
+		{name: "recreated after the target", secretRef: secretRefFixture(t0.Add(time.Minute), "password"),
+			wantMsgs: []string{`SecretReference "db-credentials" was recreated after revision 1`}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			// r1's spec overrides an env var from the SecretReference.
+			spec := specFor(releaseA, "")
+			spec.WorkloadOverrides = &openchoreov1alpha1.WorkloadOverrideTemplateSpec{
+				Container: &openchoreov1alpha1.ContainerOverride{Env: []openchoreov1alpha1.EnvVar{{
+					Key:       "DB_PASSWORD",
+					ValueFrom: &openchoreov1alpha1.EnvVarValueFrom{SecretKeyRef: &openchoreov1alpha1.SecretKeyRef{Name: secretRef, Key: "password"}},
+				}}},
+			}
+			f.revs[0] = newRevision(t, testRBName, rbUID, 1, spec, t0)
+			if tt.secretRef != nil {
+				f.extra = append(f.extra, tt.secretRef)
+			}
+
+			result, err := NewService(f.client(), testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace,
+				testRBName, bindingrevision.RollbackRequest{Revision: 1, DryRun: true})
+			require.NoError(t, err)
+
+			var msgs []string
+			for _, w := range result.Warnings {
+				if w.Code == bindingrevision.WarningSecretReferenceDrift {
+					msgs = append(msgs, w.Message)
+				}
+			}
+			assert.Equal(t, tt.wantMsgs, msgs)
+		})
+	}
+}
+
+// ─────────────────────────────────────────────────────────────
+// List and Get
+// ─────────────────────────────────────────────────────────────
+
+func TestListReleaseBindingRevisions(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	// A staging binding's history, and a revision of another component.
+	staging := newRevision(t, "test-rb-staging", "uid-staging", 1, func() openchoreov1alpha1.ReleaseBindingSpec {
+		s := specFor(releaseA, "")
+		s.Environment = "staging"
+		return s
+	}(), t0)
+	other := newRevision(t, "other-dev", "uid-other", 1, func() openchoreov1alpha1.ReleaseBindingSpec {
+		s := specFor(releaseA, "")
+		s.Owner.ComponentName = "other"
+		return s
+	}(), t0)
+	f.extra = append(f.extra, staging, other)
+	svc := NewService(f.client(), testutil.TestLogger())
+
+	names := func(items []openchoreov1alpha1.ReleaseBindingRevision) []string {
+		out := make([]string, 0, len(items))
+		for _, i := range items {
+			out = append(out, i.Name)
+		}
+		return out
+	}
+
+	t.Run("all environments, by environment then newest first", func(t *testing.T) {
+		result, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "", services.ListOptions{})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"test-rb-r3", "test-rb-r2", "test-rb-r1", "test-rb-staging-r1"}, names(result.Items))
+		assert.Equal(t, releaseBindingRevisionTypeMeta, result.Items[0].TypeMeta)
+	})
+
+	t.Run("one environment", func(t *testing.T) {
+		result, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "staging", services.ListOptions{})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"test-rb-staging-r1"}, names(result.Items))
+	})
+
+	t.Run("pages keep the order", func(t *testing.T) {
+		page1, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "", services.ListOptions{Limit: 3})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"test-rb-r3", "test-rb-r2", "test-rb-r1"}, names(page1.Items))
+		require.NotEmpty(t, page1.NextCursor)
+		assert.Equal(t, ptr.To(int64(1)), page1.RemainingCount)
+
+		page2, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "",
+			services.ListOptions{Limit: 3, Cursor: page1.NextCursor})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"test-rb-staging-r1"}, names(page2.Items))
+		assert.Empty(t, page2.NextCursor)
+	})
+
+	t.Run("invalid cursor is a validation error", func(t *testing.T) {
+		_, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "", services.ListOptions{Cursor: "%%%"})
+		var vErr *services.ValidationError
+		assert.True(t, errors.As(err, &vErr))
+	})
+
+	t.Run("unknown component", func(t *testing.T) {
+		_, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, "no-such-component", "", services.ListOptions{})
+		assert.ErrorIs(t, err, ErrComponentNotFound)
+	})
+}
+
+func TestGetReleaseBindingRevision(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newFixture(t).client(), testutil.TestLogger())
+
+	rev, err := svc.GetReleaseBindingRevision(ctx, testNamespace, "test-rb-r2")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), rev.Spec.Revision)
+	assert.Equal(t, releaseBindingRevisionTypeMeta, rev.TypeMeta)
+
+	_, err = svc.GetReleaseBindingRevision(ctx, testNamespace, "test-rb-r9")
+	assert.ErrorIs(t, err, bindingrevision.ErrRevisionNotFound)
+}

@@ -1,0 +1,297 @@
+// Copyright 2026 The OpenChoreo Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package releasebinding
+
+import (
+	"context"
+	"fmt"
+	"sort"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
+	"github.com/openchoreo/openchoreo/internal/labels"
+	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services"
+	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services/bindingrevision"
+	"github.com/openchoreo/openchoreo/internal/revision"
+)
+
+var releaseBindingRevisionTypeMeta = metav1.TypeMeta{
+	APIVersion: openchoreov1alpha1.GroupVersion.String(),
+	Kind:       "ReleaseBindingRevision",
+}
+
+// ListReleaseBindingRevisions returns the revisions of a component's release
+// bindings, optionally for one environment, ordered by environment and then by
+// revision number, newest first.
+//
+// A component's history is bounded by the revision history limit, so it is read
+// whole, sorted, and paged with an offset cursor; a Kubernetes continue token
+// would page in name order, where r10 sorts before r2.
+func (s *releaseBindingService) ListReleaseBindingRevisions(ctx context.Context, namespaceName, componentName,
+	environment string, opts services.ListOptions) (*services.ListResult[openchoreov1alpha1.ReleaseBindingRevision], error) {
+	if err := s.validateComponentExists(ctx, namespaceName, componentName); err != nil {
+		return nil, err
+	}
+
+	selector := client.MatchingLabels{labels.LabelKeyComponentName: revision.LabelValue(componentName)}
+	if environment != "" {
+		selector[labels.LabelKeyEnvironmentName] = revision.LabelValue(environment)
+	}
+	var list openchoreov1alpha1.ReleaseBindingRevisionList
+	if err := s.k8sClient.List(ctx, &list, client.InNamespace(namespaceName), selector); err != nil {
+		return nil, fmt.Errorf("failed to list release binding revisions: %w", err)
+	}
+
+	// Label values are shortened for long names, so match the spec exactly.
+	items := make([]openchoreov1alpha1.ReleaseBindingRevision, 0, len(list.Items))
+	for i := range list.Items {
+		rev := list.Items[i]
+		spec := rev.Spec.BindingSpec
+		if spec.Owner.ComponentName != componentName || (environment != "" && spec.Environment != environment) {
+			continue
+		}
+		rev.TypeMeta = releaseBindingRevisionTypeMeta
+		items = append(items, rev)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		ei, ej := items[i].Spec.BindingSpec.Environment, items[j].Spec.BindingSpec.Environment
+		if ei != ej {
+			return ei < ej
+		}
+		return items[i].Spec.Revision > items[j].Spec.Revision
+	})
+
+	return bindingrevision.Paginate(items, opts)
+}
+
+// GetReleaseBindingRevision returns one revision by name.
+func (s *releaseBindingService) GetReleaseBindingRevision(ctx context.Context, namespaceName,
+	revisionName string) (*openchoreov1alpha1.ReleaseBindingRevision, error) {
+	rev := &openchoreov1alpha1.ReleaseBindingRevision{}
+	if err := s.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: revisionName}, rev); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, bindingrevision.ErrRevisionNotFound
+		}
+		return nil, fmt.Errorf("failed to get release binding revision: %w", err)
+	}
+	rev.TypeMeta = releaseBindingRevisionTypeMeta
+	return rev, nil
+}
+
+// RollbackReleaseBinding restores the binding spec recorded by an earlier
+// revision. It writes only the binding -- the target's spec and releasePin:
+// Pinned -- conditional on the resourceVersion it read, so a concurrent edit
+// fails with ErrConcurrentModification. It never writes a revision and no new
+// revision is created: the restored spec is the one the target records, so
+// the controller makes the target active again under its own name and number
+// and points status.currentRevision at it. With DryRun it returns the same
+// result and writes nothing.
+func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, namespaceName, releaseBindingName string,
+	req bindingrevision.RollbackRequest) (*bindingrevision.RollbackResult, error) {
+	if req.Revision < 1 {
+		return nil, &services.ValidationError{Msg: "revision must be at least 1"}
+	}
+
+	binding := &openchoreov1alpha1.ReleaseBinding{}
+	if err := s.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: releaseBindingName}, binding); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, ErrReleaseBindingNotFound
+		}
+		return nil, fmt.Errorf("failed to get release binding: %w", err)
+	}
+
+	revs, err := s.bindingRevisions(ctx, binding)
+	if err != nil {
+		return nil, err
+	}
+	var target, active *openchoreov1alpha1.ReleaseBindingRevision
+	for i := range revs {
+		if revs[i].Spec.Revision == req.Revision {
+			target = &revs[i]
+		}
+		if active == nil || revision.MoreRecentlyActive(&revs[i], revs[i].Spec.Revision, active, active.Spec.Revision) {
+			active = &revs[i]
+		}
+	}
+	if target == nil {
+		return nil, fmt.Errorf("%w: revision %d of release binding %q", bindingrevision.ErrRevisionNotFound,
+			req.Revision, releaseBindingName)
+	}
+
+	componentRelease := &openchoreov1alpha1.ComponentRelease{}
+	if err := s.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: target.Spec.ComponentReleaseName},
+		componentRelease); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: ComponentRelease %q bound by revision %d", bindingrevision.ErrReleaseDeleted,
+				target.Spec.ComponentReleaseName, req.Revision)
+		}
+		return nil, fmt.Errorf("failed to get component release: %w", err)
+	}
+
+	restored := *target.Spec.BindingSpec.DeepCopy()
+	restored.ReleasePin = openchoreov1alpha1.ReleasePinPinned
+
+	currentHash, err := revision.ReleaseBindingSpecHash(&binding.Spec)
+	if err != nil {
+		return nil, err
+	}
+	restoredHash, err := revision.ReleaseBindingSpecHash(&restored)
+	if err != nil {
+		return nil, err
+	}
+	noSpecChange := currentHash == restoredHash
+
+	changes, err := bindingrevision.SpecChanges(binding.Spec, restored)
+	if err != nil {
+		return nil, err
+	}
+
+	revertedFrom := active.Spec.Revision
+	result := &bindingrevision.RollbackResult{
+		RevisionName: target.Name,
+		RevisionDisplayName: revision.DisplayName(target.Spec.ComponentReleaseName,
+			target.Spec.Revision),
+		Revision:       req.Revision,
+		TargetRevision: req.Revision,
+		RevertedFrom:   &revertedFrom,
+		DryRun:         req.DryRun,
+		Changes:        changes,
+	}
+
+	result.Warnings = bindingrevision.CommonWarnings(req.Revision, target.Status, noSpecChange,
+		active.Spec.SnapshotHash != currentHash, binding.Spec.ReleasePin == openchoreov1alpha1.ReleasePinPinned)
+	if restored.State == openchoreov1alpha1.ReleaseStateUndeploy {
+		result.Warnings = append(result.Warnings, bindingrevision.Warning{Code: bindingrevision.WarningTargetUndeploys,
+			Message: fmt.Sprintf("revision %d has state Undeploy; the rollback removes the deployment", req.Revision)})
+	}
+	cellDrift, err := bindingrevision.ProjectCellDrift(ctx, s.k8sClient, namespaceName, binding.Spec.Owner.ProjectName,
+		binding.Spec.Environment, req.Revision, target.CreationTimestamp)
+	if err != nil {
+		return nil, err
+	}
+	if cellDrift != nil {
+		result.Warnings = append(result.Warnings, *cellDrift)
+	}
+	secretDrift, err := s.secretReferenceDrift(ctx, namespaceName, componentRelease, &restored, target)
+	if err != nil {
+		return nil, err
+	}
+	result.Warnings = append(result.Warnings, secretDrift...)
+
+	if req.DryRun {
+		return result, nil
+	}
+
+	base := binding.DeepCopy()
+	binding.Spec = restored
+
+	if err := s.k8sClient.Patch(ctx, binding,
+		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		switch {
+		case apierrors.IsConflict(err):
+			return nil, fmt.Errorf("%w: release binding %q", bindingrevision.ErrConcurrentModification, releaseBindingName)
+		case apierrors.IsNotFound(err):
+			return nil, ErrReleaseBindingNotFound
+		}
+		if vErr := services.ExtractValidationError(err); vErr != nil {
+			return nil, vErr
+		}
+		return nil, fmt.Errorf("failed to roll back release binding: %w", err)
+	}
+
+	s.logger.Info("Rolled back release binding", "namespace", namespaceName, "releaseBinding", releaseBindingName,
+		"targetRevision", req.Revision, "revertedFrom", revertedFrom)
+	return result, nil
+}
+
+// bindingRevisions returns the binding's own revisions: those carrying its UID
+// label whose controller reference is the binding.
+func (s *releaseBindingService) bindingRevisions(ctx context.Context,
+	binding *openchoreov1alpha1.ReleaseBinding) ([]openchoreov1alpha1.ReleaseBindingRevision, error) {
+	var list openchoreov1alpha1.ReleaseBindingRevisionList
+	if err := s.k8sClient.List(ctx, &list, client.InNamespace(binding.Namespace),
+		client.MatchingLabels{revision.LabelKeyBindingUID: string(binding.UID)}); err != nil {
+		return nil, fmt.Errorf("failed to list release binding revisions: %w", err)
+	}
+	owned := make([]openchoreov1alpha1.ReleaseBindingRevision, 0, len(list.Items))
+	for i := range list.Items {
+		if ref := metav1.GetControllerOf(&list.Items[i]); ref != nil && ref.UID == binding.UID {
+			owned = append(owned, list.Items[i])
+		}
+	}
+	return owned, nil
+}
+
+// secretReferenceDrift warns about each SecretReference the restored spec uses --
+// through the ComponentRelease's workload or the binding's workload overrides --
+// that no longer exists, lacks a referenced key, or was recreated after the
+// target revision was recorded.
+func (s *releaseBindingService) secretReferenceDrift(ctx context.Context, namespaceName string,
+	componentRelease *openchoreov1alpha1.ComponentRelease, restored *openchoreov1alpha1.ReleaseBindingSpec,
+	target *openchoreov1alpha1.ReleaseBindingRevision) ([]bindingrevision.Warning, error) {
+	keys := map[string]map[string]struct{}{}
+	var names []string
+	add := func(ref *openchoreov1alpha1.SecretKeyRef) {
+		if ref == nil || ref.Name == "" {
+			return
+		}
+		if _, seen := keys[ref.Name]; !seen {
+			keys[ref.Name] = map[string]struct{}{}
+			names = append(names, ref.Name)
+		}
+		keys[ref.Name][ref.Key] = struct{}{}
+	}
+	addContainer := func(env []openchoreov1alpha1.EnvVar, files []openchoreov1alpha1.FileVar) {
+		for i := range env {
+			if env[i].ValueFrom != nil {
+				add(env[i].ValueFrom.SecretKeyRef)
+			}
+		}
+		for i := range files {
+			if files[i].ValueFrom != nil {
+				add(files[i].ValueFrom.SecretKeyRef)
+			}
+		}
+	}
+	addContainer(componentRelease.Spec.Workload.Container.Env, componentRelease.Spec.Workload.Container.Files)
+	if overrides := restored.WorkloadOverrides; overrides != nil && overrides.Container != nil {
+		addContainer(overrides.Container.Env, overrides.Container.Files)
+	}
+
+	var warnings []bindingrevision.Warning
+	for _, name := range names {
+		ref := &openchoreov1alpha1.SecretReference{}
+		if err := s.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: name}, ref); err != nil {
+			if apierrors.IsNotFound(err) {
+				warnings = append(warnings, bindingrevision.Warning{Code: bindingrevision.WarningSecretReferenceDrift,
+					Message: fmt.Sprintf("SecretReference %q used by revision %d no longer exists", name, target.Spec.Revision)})
+				continue
+			}
+			return nil, fmt.Errorf("failed to get secret reference %q: %w", name, err)
+		}
+		if ref.CreationTimestamp.After(target.CreationTimestamp.Time) {
+			warnings = append(warnings, bindingrevision.Warning{Code: bindingrevision.WarningSecretReferenceDrift,
+				Message: fmt.Sprintf("SecretReference %q was recreated after revision %d", name, target.Spec.Revision)})
+		}
+		available := map[string]struct{}{}
+		for _, data := range ref.Spec.Data {
+			available[data.SecretKey] = struct{}{}
+		}
+		missing := make([]string, 0)
+		for key := range keys[name] {
+			if _, ok := available[key]; !ok {
+				missing = append(missing, key)
+			}
+		}
+		sort.Strings(missing)
+		for _, key := range missing {
+			warnings = append(warnings, bindingrevision.Warning{Code: bindingrevision.WarningSecretReferenceDrift,
+				Message: fmt.Sprintf("SecretReference %q no longer has key %q used by revision %d", name, key, target.Spec.Revision)})
+		}
+	}
+	return warnings, nil
+}
