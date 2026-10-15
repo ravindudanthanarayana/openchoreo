@@ -95,8 +95,9 @@ var mcpEnrichment = map[string]mcpEnrichmentEntry{
 	"UpdateProjectReleaseBinding":  {ToolName: "update_project_release_binding", ResourceArg: "name"},
 	"DeleteProjectReleaseBinding":  {ToolName: "delete_project_release_binding", ResourceArg: "name"},
 
-	// Rollback tools: a dry run (the default) changes nothing and is not audited;
-	// the handlers record the resource only when dry_run is false.
+	// Rollback tools: every call is audited, dry runs (the default) included; the
+	// handlers mark the record's resource with dryRun so a preview is not
+	// mistaken for an applied rollback.
 	"RollbackReleaseBinding":         {ToolName: "rollback_release_binding", ResourceArg: "name"},
 	"RollbackResourceReleaseBinding": {ToolName: "rollback_resource_release_binding", ResourceArg: "name"},
 

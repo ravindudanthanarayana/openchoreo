@@ -4450,6 +4450,46 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: deleteReleaseBindingRevision
+      summary: Delete a component release binding revision
+      description: >-
+        Deletes one revision from its binding's history. The remaining revisions keep their
+        numbers and a deleted revision's number is never reused: new revisions are numbered
+        above the binding's status.highestRevision. A deleted revision can no longer be
+        rolled back to; deploying its spec again records a new revision.
+
+
+        Refused with 409 REVISION_PROTECTED when the revision is active, is the newest
+        known-good revision, is annotated openchoreo.dev/keep: "true" (the revisions the
+        history limit never deletes), when the binding's spec matches it (a rollback to it is
+        being applied), or when the controller has not finished recording it. The delete is
+        conditional on the revision as checked, so one made active meanwhile is refused with
+        409 CONCURRENT_MODIFICATION. With dryRun every check runs and nothing is deleted.
+        Requires the releasebinding:delete-revision permission on the binding.
+      tags: [ReleaseBindings]
+      parameters:
+        - $ref: '#/components/parameters/NamespaceNameParam'
+        - $ref: '#/components/parameters/ReleaseBindingRevisionNameParam'
+        - $ref: '#/components/parameters/RevisionBindingQueryParam'
+        - $ref: '#/components/parameters/RevisionDeleteDryRunQueryParam'
+      responses:
+        '200':
+          description: Revision deleted, or allowed to be deleted when dryRun is true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteBindingRevisionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RevisionDeleteConflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /api/v1/namespaces/{namespaceName}/releasebindings/{releaseBindingName}/k8sresources/tree:
     get:
@@ -6009,6 +6049,46 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: deleteResourceReleaseBindingRevision
+      summary: Delete a resource release binding revision
+      description: >-
+        Deletes one revision from its binding's history. The remaining revisions keep their
+        numbers and a deleted revision's number is never reused: new revisions are numbered
+        above the binding's status.highestRevision. A deleted revision can no longer be
+        rolled back to; deploying its spec again records a new revision.
+
+
+        Refused with 409 REVISION_PROTECTED when the revision is active, is the newest
+        known-good revision, is annotated openchoreo.dev/keep: "true" (the revisions the
+        history limit never deletes), when the binding's spec matches it (a rollback to it is
+        being applied), or when the controller has not finished recording it. The delete is
+        conditional on the revision as checked, so one made active meanwhile is refused with
+        409 CONCURRENT_MODIFICATION. With dryRun every check runs and nothing is deleted.
+        Requires the resourcereleasebinding:delete-revision permission on the binding.
+      tags: [ResourceReleaseBindings]
+      parameters:
+        - $ref: '#/components/parameters/NamespaceNameParam'
+        - $ref: '#/components/parameters/ResourceReleaseBindingRevisionNameParam'
+        - $ref: '#/components/parameters/RevisionBindingQueryParam'
+        - $ref: '#/components/parameters/RevisionDeleteDryRunQueryParam'
+      responses:
+        '200':
+          description: Revision deleted, or allowed to be deleted when dryRun is true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteBindingRevisionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RevisionDeleteConflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   # =============================================================================
   # Deployment Pipeline Endpoints
@@ -6792,6 +6872,25 @@ components:
         type: string
         example: api-service-dev
 
+    RevisionBindingQueryParam:
+      name: binding
+      in: query
+      required: false
+      description: >-
+        The binding the revision is expected to belong to. A revision of any other binding is
+        reported as not found.
+      schema:
+        type: string
+
+    RevisionDeleteDryRunQueryParam:
+      name: dryRun
+      in: query
+      required: false
+      description: Run every check without deleting the revision
+      schema:
+        type: boolean
+        default: false
+
     ReleaseBindingRevisionNameParam:
       name: releaseBindingRevisionName
       in: path
@@ -7094,6 +7193,26 @@ components:
                 error: "Release binding 'api-service-dev' was modified concurrently; retry the rollback"
                 code: CONCURRENT_MODIFICATION
 
+    RevisionDeleteConflict:
+      description: >-
+        The revision may not be deleted: it is protected, or it changed while it was being
+        deleted
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            active:
+              summary: The revision is the one the binding runs
+              value:
+                error: "Cannot delete revision 4 because it is currently active"
+                code: REVISION_PROTECTED
+            concurrentChange:
+              summary: The revision changed after it was checked
+              value:
+                error: "Revision 'api-service-dev-r3' changed while it was being deleted; retry"
+                code: CONCURRENT_MODIFICATION
+
     UnprocessableContent:
       description: Request body is well-formed but failed validation
       content:
@@ -7173,6 +7292,7 @@ components:
             - UNKNOWN_GIT_PROVIDER
             - RELEASE_DELETED
             - CONCURRENT_MODIFICATION
+            - REVISION_PROTECTED
           example: NOT_FOUND
         details:
           type: array
@@ -11962,6 +12082,35 @@ components:
           type: boolean
           default: false
           description: Run every check and return the response without writing anything
+
+    DeleteBindingRevisionResponse:
+      type: object
+      description: A revision deletion, applied or dry-run
+      required: [revisionName, revision, binding, environment, dryRun]
+      properties:
+        revisionName:
+          type: string
+          description: The deleted revision's object name, {binding}-r{N}
+          example: api-service-dev-r2
+        revisionDisplayName:
+          type: string
+          description: How the revision is shown to people, {release}-r{N}
+          example: api-service-v5-r2
+        revision:
+          type: integer
+          format: int64
+          description: The deleted revision's number. Other revisions keep theirs.
+          example: 2
+        binding:
+          type: string
+          description: The binding the revision belonged to
+          example: api-service-dev
+        environment:
+          type: string
+          example: development
+        dryRun:
+          type: boolean
+          description: True when nothing was deleted because dryRun was requested
 
     RollbackResponse:
       type: object

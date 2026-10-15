@@ -305,11 +305,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 			logger.Info("Reactivated ReleaseBinding revision", "revision", revResult.Number)
 		}
 	}
-	// Point the binding at its active revision; persisted with the rest of the
-	// status by the deferred update.
+	// Point the binding at its active revision and record the highest revision
+	// number it has used; persisted with the rest of the status by the deferred
+	// update.
 	if revResult.Name != "" {
 		releaseBinding.Status.CurrentRevision = revResult.Name
 	}
+	releaseBinding.Status.HighestRevision = max(releaseBinding.Status.HighestRevision, revResult.Highest)
 
 	res, err := r.reconcileRelease(ctx, releaseBinding, componentRelease, environment, dataPlaneResult, component, project)
 

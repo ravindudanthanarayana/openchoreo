@@ -4,14 +4,18 @@
 package handlers
 
 import (
+	"context"
 	"errors"
+	"strings"
 
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/api/gen"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services/bindingrevision"
+	"github.com/openchoreo/openchoreo/internal/server/middleware/audit"
 )
 
-// rollbackOutcome classifies a rollback service error for both binding kinds.
+// rollbackOutcome classifies a rollback or revision deletion service error for
+// both binding kinds.
 type rollbackOutcome int
 
 const (
@@ -66,4 +70,59 @@ func toRollbackResponse(result *bindingrevision.RollbackResult) gen.RollbackResp
 		resp.Warnings = append(resp.Warnings, gen.RollbackWarning{Code: gen.RollbackWarningCode(w.Code), Message: w.Message})
 	}
 	return resp
+}
+
+// setDryRunAuditResource names the object -- the binding of a rollback, the
+// revision of a revision deletion -- in the audit record of a route that takes
+// dryRun. Every call is audited, dry runs included, so the record carries
+// dryRun to tell a preview, which changes nothing, from an applied change. It
+// is set before the service runs so that a failed or denied call is marked too.
+func setDryRunAuditResource(ctx context.Context, namespace, name string, dryRun bool) {
+	audit.SetResource(ctx, &audit.Resource{
+		Namespace: namespace,
+		Name:      name,
+		Metadata:  map[string]any{"dryRun": dryRun},
+	})
+}
+
+// classifyDeleteRevisionError maps a revision deletion service error to its
+// HTTP outcome and, for 404 and 409, the error body. bindingNotFound is the
+// service's binding not-found error.
+func classifyDeleteRevisionError(err, bindingNotFound error) (rollbackOutcome, gen.ErrorResponse) {
+	switch {
+	case errors.Is(err, services.ErrForbidden):
+		return rollbackForbidden, gen.ErrorResponse{}
+	case errors.Is(err, bindingNotFound):
+		return rollbackNotFound, gen.ErrorResponse{Code: gen.NOTFOUND, Error: "Binding not found"}
+	case errors.Is(err, bindingrevision.ErrRevisionNotFound):
+		return rollbackNotFound, gen.ErrorResponse{Code: gen.NOTFOUND, Error: sentence(err.Error())}
+	case errors.Is(err, bindingrevision.ErrRevisionProtected):
+		return rollbackConflict, gen.ErrorResponse{Code: gen.REVISIONPROTECTED, Error: sentence(err.Error())}
+	case errors.Is(err, bindingrevision.ErrConcurrentModification):
+		return rollbackConflict, gen.ErrorResponse{Code: gen.CONCURRENTMODIFICATION, Error: sentence(err.Error())}
+	}
+	return rollbackInternalError, gen.ErrorResponse{}
+}
+
+// toDeleteRevisionResponse converts a service revision deletion result to the API response.
+func toDeleteRevisionResponse(result *bindingrevision.DeleteResult) gen.DeleteBindingRevisionResponse {
+	resp := gen.DeleteBindingRevisionResponse{
+		RevisionName: result.RevisionName,
+		Revision:     result.Revision,
+		Binding:      result.Binding,
+		Environment:  result.Environment,
+		DryRun:       result.DryRun,
+	}
+	if result.RevisionDisplayName != "" {
+		resp.RevisionDisplayName = &result.RevisionDisplayName
+	}
+	return resp
+}
+
+// sentence capitalizes an error message for an API response.
+func sentence(msg string) string {
+	if msg == "" {
+		return msg
+	}
+	return strings.ToUpper(msg[:1]) + msg[1:]
 }

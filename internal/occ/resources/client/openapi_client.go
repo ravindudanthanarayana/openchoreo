@@ -1034,11 +1034,37 @@ func (c *Client) RollbackReleaseBinding(ctx context.Context, namespaceName, rele
 	return resp.JSON200, nil
 }
 
+// DeleteReleaseBindingRevision deletes one revision from a binding's history, or with
+// params.DryRun only checks that it may be deleted
+func (c *Client) DeleteReleaseBindingRevision(ctx context.Context, namespaceName, revisionName string, params *gen.DeleteReleaseBindingRevisionParams) (*gen.DeleteBindingRevisionResponse, error) {
+	resp, err := c.client.DeleteReleaseBindingRevisionWithResponse(ctx, namespaceName, revisionName, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete release binding revision: %w", err)
+	}
+	if resp.JSON200 == nil {
+		return nil, apiError(resp.StatusCode(), resp.Body)
+	}
+	return resp.JSON200, nil
+}
+
 // ListResourceReleaseBindingRevisions retrieves the revision history of a resource's release bindings
 func (c *Client) ListResourceReleaseBindingRevisions(ctx context.Context, namespaceName string, params *gen.ListResourceReleaseBindingRevisionsParams) (*gen.ResourceReleaseBindingRevisionList, error) {
 	resp, err := c.client.ListResourceReleaseBindingRevisionsWithResponse(ctx, namespaceName, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list resource release binding revisions: %w", err)
+	}
+	if resp.JSON200 == nil {
+		return nil, apiError(resp.StatusCode(), resp.Body)
+	}
+	return resp.JSON200, nil
+}
+
+// DeleteResourceReleaseBindingRevision deletes one revision from a binding's history, or with
+// params.DryRun only checks that it may be deleted
+func (c *Client) DeleteResourceReleaseBindingRevision(ctx context.Context, namespaceName, revisionName string, params *gen.DeleteResourceReleaseBindingRevisionParams) (*gen.DeleteBindingRevisionResponse, error) {
+	resp, err := c.client.DeleteResourceReleaseBindingRevisionWithResponse(ctx, namespaceName, revisionName, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete resource release binding revision: %w", err)
 	}
 	if resp.JSON200 == nil {
 		return nil, apiError(resp.StatusCode(), resp.Body)

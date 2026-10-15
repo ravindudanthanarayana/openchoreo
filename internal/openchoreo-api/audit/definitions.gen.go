@@ -279,6 +279,10 @@ func generatedOperationDefs() []audit.OperationDef {
 			Category: audit.CategoryManagement, RESTResourceParam: "releaseBindingName",
 		},
 		{
+			ID: "DeleteReleaseBindingRevision", Action: "delete_release_binding_revision", ResourceType: "releasebindingrevision",
+			Category: audit.CategoryManagement, RESTResourceParam: "releaseBindingRevisionName",
+		},
+		{
 			ID: "DeleteResource", Action: "delete_resource", ResourceType: "resource",
 			Category: audit.CategoryManagement, RESTResourceParam: "resourceName",
 		},
@@ -289,6 +293,10 @@ func generatedOperationDefs() []audit.OperationDef {
 		{
 			ID: "DeleteResourceReleaseBinding", Action: "delete_resource_release_binding", ResourceType: "resourcereleasebinding",
 			Category: audit.CategoryManagement, RESTResourceParam: "resourceReleaseBindingName",
+		},
+		{
+			ID: "DeleteResourceReleaseBindingRevision", Action: "delete_resource_release_binding_revision", ResourceType: "resourcereleasebindingrevision",
+			Category: audit.CategoryManagement, RESTResourceParam: "resourceReleaseBindingRevisionName",
 		},
 		{
 			ID: "DeleteResourceType", Action: "delete_resource_type", ResourceType: "resourcetype",

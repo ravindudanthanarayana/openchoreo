@@ -8,9 +8,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/openchoreo/openchoreo/internal/occ/cmd/bindingrevision"
+	"github.com/openchoreo/openchoreo/internal/occ/cmd/config"
 	"github.com/openchoreo/openchoreo/internal/occ/resources/client"
 	"github.com/openchoreo/openchoreo/internal/occ/resources/client/mocks"
 	"github.com/openchoreo/openchoreo/internal/occ/testutil"
@@ -43,7 +44,7 @@ func TestNewReleaseBindingRevisionCmd_Subcommands(t *testing.T) {
 	for _, sub := range cmd.Commands() {
 		names = append(names, sub.Name())
 	}
-	assert.ElementsMatch(t, []string{"list", "get", "rollback"}, names)
+	assert.ElementsMatch(t, []string{"list", "get", "delete"}, names)
 }
 
 func TestSubcommandFlags(t *testing.T) {
@@ -51,9 +52,8 @@ func TestSubcommandFlags(t *testing.T) {
 		name  string
 		flags []string
 	}{
-		{name: "list", flags: []string{"namespace", "binding"}},
+		{name: "list", flags: []string{"namespace", "binding", "project", "component", "environment"}},
 		{name: "get", flags: []string{"namespace", "binding", "revision", "output"}},
-		{name: "rollback", flags: []string{"namespace", "binding", "revision", "dry-run", "yes"}},
 	}
 	root := NewReleaseBindingRevisionCmd(errFactory("unused"))
 	for _, tt := range tests {
@@ -68,17 +68,14 @@ func TestSubcommandFlags(t *testing.T) {
 	get, _, _ := root.Find([]string{"get"})
 	assert.Equal(t, "o", get.Flags().Lookup("output").Shorthand)
 	assert.Equal(t, "table", get.Flags().Lookup("output").DefValue)
-	rollback, _, _ := root.Find([]string{"rollback"})
-	assert.Equal(t, "y", rollback.Flags().Lookup("yes").Shorthand)
 }
 
 // --- factory errors ---
 
 func TestCmds_FactoryError(t *testing.T) {
 	for name, cmd := range map[string]func() error{
-		"list":     func() error { c := newListCmd(errFactory("factory failed")); return c.RunE(c, nil) },
-		"get":      func() error { c := newGetCmd(errFactory("factory failed")); return c.RunE(c, nil) },
-		"rollback": func() error { c := newRollbackCmd(errFactory("factory failed")); return c.RunE(c, nil) },
+		"list": func() error { c := newListCmd(errFactory("factory failed")); return c.RunE(c, nil) },
+		"get":  func() error { c := newGetCmd(errFactory("factory failed")); return c.RunE(c, nil) },
 	} {
 		assert.EqualError(t, cmd(), "factory failed", name)
 	}
@@ -112,22 +109,13 @@ func TestGetCmd_YAMLViaShorthand(t *testing.T) {
 	assert.Contains(t, out, "componentReleaseName: api-aaa")
 }
 
-func TestRollbackCmd_YesAndDryRunFlags(t *testing.T) {
-	mc := mocks.NewMockInterface(t)
-	mc.EXPECT().RollbackReleaseBinding(mock.Anything, testNS, testBinding, isDryRun(false)).Return(rollbackResp(false), nil).Once()
+// list's --project, --component and --resource are filters: they must not be
+// filled in from the current context, which would silently narrow the list.
+func TestListCmd_SkipsContextDefaults(t *testing.T) {
+	cmd := newListCmd(errFactory("unused"))
+	_, skip := cmd.Annotations[config.SkipContextDefaultsAnnotation]
+	assert.True(t, skip)
 
-	cmd := newRollbackCmd(mockFactory(mc))
-	require.NoError(t, cmd.ParseFlags([]string{"-n", testNS, "--binding", testBinding, "--revision", "1", "--yes"}))
-	out := testutil.CaptureStdout(t, func() {
-		require.NoError(t, cmd.RunE(cmd, nil))
-	})
-	assert.Contains(t, out, "Rolled back release binding")
-
-	dry := newRollbackCmd(mockFactory(mc))
-	mc.EXPECT().RollbackReleaseBinding(mock.Anything, testNS, testBinding, isDryRun(true)).Return(rollbackResp(true), nil).Once()
-	require.NoError(t, dry.ParseFlags([]string{"-n", testNS, "--binding", testBinding, "--revision", "1", "--dry-run"}))
-	out = testutil.CaptureStdout(t, func() {
-		require.NoError(t, dry.RunE(dry, nil))
-	})
-	assert.Contains(t, out, "Dry run: nothing was changed.")
+	require.NoError(t, cmd.Flags().Set("namespace", "acme"))
+	assert.Equal(t, "acme", bindingrevision.NamespaceOrContext(cmd), "an explicit --namespace wins")
 }

@@ -109,7 +109,7 @@ func (s *resourceReleaseBindingService) RollbackResourceReleaseBinding(ctx conte
 		}
 	}
 	if target == nil {
-		return nil, fmt.Errorf("%w: revision %d of resource release binding %q", bindingrevision.ErrRevisionNotFound,
+		return nil, fmt.Errorf("%w: revision %d of resource release binding %q has been deleted or never existed", bindingrevision.ErrRevisionNotFound,
 			req.Revision, bindingName)
 	}
 
@@ -187,6 +187,70 @@ func (s *resourceReleaseBindingService) RollbackResourceReleaseBinding(ctx conte
 	s.logger.Info("Rolled back resource release binding", "namespace", namespaceName, "resourceReleaseBinding", bindingName,
 		"targetRevision", req.Revision, "revertedFrom", revertedFrom)
 	return result, nil
+}
+
+// DeleteResourceReleaseBindingRevision deletes one revision of a resource release binding, unless it is
+// protected (see bindingrevision.DeleteRevision). The revision's number is not
+// reused and the remaining revisions keep theirs: the binding's
+// status.highestRevision keeps the controller numbering new revisions above it.
+// With DryRun every check runs and nothing is deleted.
+func (s *resourceReleaseBindingService) DeleteResourceReleaseBindingRevision(ctx context.Context, namespaceName,
+	revisionName string, req bindingrevision.DeleteRequest) (*bindingrevision.DeleteResult, error) {
+	rev, err := s.GetResourceReleaseBindingRevision(ctx, namespaceName, revisionName)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %q", err, revisionName)
+	}
+	owner := metav1.GetControllerOf(rev)
+	if owner == nil || owner.Kind != "ResourceReleaseBinding" || (req.Binding != "" && owner.Name != req.Binding) {
+		return nil, fmt.Errorf("%w: %q is not a revision of resource release binding %q", bindingrevision.ErrRevisionNotFound,
+			revisionName, req.Binding)
+	}
+
+	binding := &openchoreov1alpha1.ResourceReleaseBinding{}
+	if err := s.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: owner.Name}, binding); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, ErrResourceReleaseBindingNotFound
+		}
+		return nil, fmt.Errorf("failed to get resource release binding: %w", err)
+	}
+	if binding.UID != owner.UID {
+		return nil, ErrResourceReleaseBindingNotFound
+	}
+
+	revs, err := s.bindingRevisions(ctx, binding)
+	if err != nil {
+		return nil, err
+	}
+	specHash, err := revision.ResourceReleaseBindingSpecHash(&binding.Spec)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]bindingrevision.Candidate, len(revs))
+	for i := range revs {
+		candidates[i] = bindingrevision.Candidate{Object: &revs[i], Number: revs[i].Spec.Revision,
+			SnapshotHash: revs[i].Spec.SnapshotHash, Status: revs[i].Status}
+	}
+	if _, err := bindingrevision.DeleteRevision(ctx, s.k8sClient, revisionName, candidates, bindingrevision.BindingState{
+		Name:            binding.Name,
+		CurrentRevision: binding.Status.CurrentRevision,
+		HighestRevision: binding.Status.HighestRevision,
+		SpecHash:        specHash,
+	}, req.DryRun); err != nil {
+		return nil, err
+	}
+
+	if !req.DryRun {
+		s.logger.Info("Deleted resource release binding revision", "namespace", namespaceName, "resourceReleaseBinding", binding.Name,
+			"revision", rev.Spec.Revision)
+	}
+	return &bindingrevision.DeleteResult{
+		RevisionName:        rev.Name,
+		RevisionDisplayName: revision.DisplayName(rev.Spec.ResourceReleaseName, rev.Spec.Revision),
+		Revision:            rev.Spec.Revision,
+		Binding:             binding.Name,
+		Environment:         binding.Spec.Environment,
+		DryRun:              req.DryRun,
+	}, nil
 }
 
 // bindingRevisions returns the binding's own revisions.

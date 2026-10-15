@@ -14,12 +14,15 @@ import (
 
 // Revisions are a binding's history, so reading them takes
 // resourcereleasebinding:view on the binding they record; rolling back takes
-// resourcereleasebinding:rollback.
+// resourcereleasebinding:rollback, and deleting a revision takes
+// resourcereleasebinding:delete-revision.
 
-func revisionCheckRequest(namespaceName string, rev *openchoreov1alpha1.ResourceReleaseBindingRevision) services.CheckRequest {
+// revisionCheckRequest builds a check of action on a revision, scoped like a
+// check on the binding it records.
+func revisionCheckRequest(action, namespaceName string, rev *openchoreov1alpha1.ResourceReleaseBindingRevision) services.CheckRequest {
 	spec := rev.Spec.BindingSpec
 	return services.CheckRequest{
-		Action:       authz.ActionViewResourceReleaseBinding,
+		Action:       action,
 		ResourceType: resourceTypeResourceReleaseBinding,
 		ResourceID:   rev.Name,
 		Hierarchy: authz.ResourceHierarchy{
@@ -41,7 +44,7 @@ func (s *resourceReleaseBindingServiceWithAuthz) ListResourceReleaseBindingRevis
 			return s.internal.ListResourceReleaseBindingRevisions(ctx, namespaceName, resourceName, environment, pageOpts)
 		},
 		func(rev openchoreov1alpha1.ResourceReleaseBindingRevision) services.CheckRequest {
-			return revisionCheckRequest(namespaceName, &rev)
+			return revisionCheckRequest(authz.ActionViewResourceReleaseBinding, namespaceName, &rev)
 		},
 	)
 }
@@ -52,7 +55,7 @@ func (s *resourceReleaseBindingServiceWithAuthz) GetResourceReleaseBindingRevisi
 	if err != nil {
 		return nil, err
 	}
-	if err := s.authz.Check(ctx, revisionCheckRequest(namespaceName, rev)); err != nil {
+	if err := s.authz.Check(ctx, revisionCheckRequest(authz.ActionViewResourceReleaseBinding, namespaceName, rev)); err != nil {
 		return nil, err
 	}
 	return rev, nil
@@ -81,4 +84,18 @@ func (s *resourceReleaseBindingServiceWithAuthz) RollbackResourceReleaseBinding(
 		return nil, err
 	}
 	return s.internal.RollbackResourceReleaseBinding(ctx, namespaceName, bindingName, req)
+}
+
+// DeleteResourceReleaseBindingRevision checks resourcereleasebinding:delete-revision against the binding the revision
+// records, scoped like the view check.
+func (s *resourceReleaseBindingServiceWithAuthz) DeleteResourceReleaseBindingRevision(ctx context.Context, namespaceName,
+	revisionName string, req bindingrevision.DeleteRequest) (*bindingrevision.DeleteResult, error) {
+	rev, err := s.internal.GetResourceReleaseBindingRevision(ctx, namespaceName, revisionName)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authz.Check(ctx, revisionCheckRequest(authz.ActionDeleteResourceReleaseBindingRevision, namespaceName, rev)); err != nil {
+		return nil, err
+	}
+	return s.internal.DeleteResourceReleaseBindingRevision(ctx, namespaceName, revisionName, req)
 }

@@ -20,3 +20,15 @@ type DeleteParams struct {
 	Namespace                  string
 	ResourceReleaseBindingName string
 }
+
+// RollbackParams defines parameters for rolling a resource release binding back to one of
+// its revisions
+type RollbackParams struct {
+	Namespace                  string
+	ResourceReleaseBindingName string
+	Revision                   int64
+	DryRun                     bool
+	Yes                        bool
+}
+
+func (p RollbackParams) GetNamespace() string { return p.Namespace }

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/openchoreo/openchoreo/internal/occ/auth"
+	"github.com/openchoreo/openchoreo/internal/occ/cmd/bindingrevision"
 	"github.com/openchoreo/openchoreo/internal/occ/cmdutil"
 	"github.com/openchoreo/openchoreo/internal/occ/flags"
 	"github.com/openchoreo/openchoreo/internal/occ/resources/client"
@@ -28,6 +29,7 @@ func NewReleaseBindingCmd(f client.NewClientFunc) *cobra.Command {
 		newListCmd(f),
 		newGetCmd(f),
 		newDeleteCmd(f),
+		newRollbackCmd(f),
 	)
 	return cmd
 }
@@ -180,4 +182,47 @@ func isFlagInArgs(flagName string) bool {
 		}
 	}
 	return false
+}
+
+func newRollbackCmd(f client.NewClientFunc) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "rollback [RELEASE_BINDING_NAME]",
+		Short: "Roll a release binding back to one of its revisions",
+		Long: `Restore the binding spec recorded by one of the binding's revisions.
+List the revisions with "occ releasebindingrevision list --binding <name>".
+
+The rollback is previewed first: the spec fields it changes and any pre-flight
+warnings are printed, and you are asked to confirm. The binding is pinned to the
+restored release so auto-deploy does not move it forward again. No revision is
+created: the controller makes the target revision active again, under its own
+name and number.`,
+		Example: `  # Preview a rollback to revision 3 without changing anything
+  occ releasebinding rollback product-catalog-development --namespace acme-corp --revision 3 --dry-run
+
+  # Roll back to revision 3, confirming interactively
+  occ releasebinding rollback product-catalog-development --namespace acme-corp --revision 3
+
+  # Roll back without a prompt (for scripts)
+  occ releasebinding rollback product-catalog-development --namespace acme-corp --revision 3 --yes`,
+		Args:    cmdutil.ExactOneArgWithUsage(),
+		PreRunE: auth.RequireLogin(),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cl, err := f()
+			if err != nil {
+				return err
+			}
+			return New(cl).Rollback(RollbackParams{
+				Namespace:          flags.GetNamespace(cmd),
+				ReleaseBindingName: args[0],
+				Revision:           bindingrevision.GetRevision(cmd),
+				DryRun:             bindingrevision.GetDryRun(cmd),
+				Yes:                bindingrevision.GetYes(cmd),
+			})
+		},
+	}
+	flags.AddNamespace(cmd)
+	bindingrevision.AddRevision(cmd)
+	bindingrevision.AddDryRun(cmd, "Show the changes and warnings the rollback would produce without applying it")
+	bindingrevision.AddYes(cmd, "Roll back without asking for confirmation")
+	return cmd
 }

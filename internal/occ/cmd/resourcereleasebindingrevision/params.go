@@ -6,7 +6,13 @@ package resourcereleasebindingrevision
 // ListParams defines parameters for listing a resource release binding's revisions
 type ListParams struct {
 	Namespace string
-	Binding   string
+	// Binding lists one binding's revisions. Without it, the revisions of every
+	// binding in the namespace are listed, narrowed by Project, Resource and
+	// Environment.
+	Binding     string
+	Project     string
+	Resource    string
+	Environment string
 }
 
 func (p ListParams) GetNamespace() string { return p.Namespace }
@@ -21,8 +27,8 @@ type GetParams struct {
 
 func (p GetParams) GetNamespace() string { return p.Namespace }
 
-// RollbackParams defines parameters for rolling a resource release binding back to a revision
-type RollbackParams struct {
+// DeleteParams defines parameters for deleting one resource release binding revision
+type DeleteParams struct {
 	Namespace string
 	Binding   string
 	Revision  int64
@@ -30,4 +36,4 @@ type RollbackParams struct {
 	Yes       bool
 }
 
-func (p RollbackParams) GetNamespace() string { return p.Namespace }
+func (p DeleteParams) GetNamespace() string { return p.Namespace }

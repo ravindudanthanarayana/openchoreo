@@ -2159,6 +2159,67 @@ func (_c *MockInterface_DeleteReleaseBinding_Call) RunAndReturn(run func(context
 	return _c
 }
 
+// DeleteReleaseBindingRevision provides a mock function with given fields: ctx, namespaceName, revisionName, params
+func (_m *MockInterface) DeleteReleaseBindingRevision(ctx context.Context, namespaceName string, revisionName string, params *gen.DeleteReleaseBindingRevisionParams) (*gen.DeleteBindingRevisionResponse, error) {
+	ret := _m.Called(ctx, namespaceName, revisionName, params)
+
+	if len(ret) == 0 {
+		panic("no return value specified for DeleteReleaseBindingRevision")
+	}
+
+	var r0 *gen.DeleteBindingRevisionResponse
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, *gen.DeleteReleaseBindingRevisionParams) (*gen.DeleteBindingRevisionResponse, error)); ok {
+		return rf(ctx, namespaceName, revisionName, params)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, *gen.DeleteReleaseBindingRevisionParams) *gen.DeleteBindingRevisionResponse); ok {
+		r0 = rf(ctx, namespaceName, revisionName, params)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*gen.DeleteBindingRevisionResponse)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string, string, *gen.DeleteReleaseBindingRevisionParams) error); ok {
+		r1 = rf(ctx, namespaceName, revisionName, params)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockInterface_DeleteReleaseBindingRevision_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'DeleteReleaseBindingRevision'
+type MockInterface_DeleteReleaseBindingRevision_Call struct {
+	*mock.Call
+}
+
+// DeleteReleaseBindingRevision is a helper method to define mock.On call
+//   - ctx context.Context
+//   - namespaceName string
+//   - revisionName string
+//   - params *gen.DeleteReleaseBindingRevisionParams
+func (_e *MockInterface_Expecter) DeleteReleaseBindingRevision(ctx interface{}, namespaceName interface{}, revisionName interface{}, params interface{}) *MockInterface_DeleteReleaseBindingRevision_Call {
+	return &MockInterface_DeleteReleaseBindingRevision_Call{Call: _e.mock.On("DeleteReleaseBindingRevision", ctx, namespaceName, revisionName, params)}
+}
+
+func (_c *MockInterface_DeleteReleaseBindingRevision_Call) Run(run func(ctx context.Context, namespaceName string, revisionName string, params *gen.DeleteReleaseBindingRevisionParams)) *MockInterface_DeleteReleaseBindingRevision_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(string), args[2].(string), args[3].(*gen.DeleteReleaseBindingRevisionParams))
+	})
+	return _c
+}
+
+func (_c *MockInterface_DeleteReleaseBindingRevision_Call) Return(_a0 *gen.DeleteBindingRevisionResponse, _a1 error) *MockInterface_DeleteReleaseBindingRevision_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockInterface_DeleteReleaseBindingRevision_Call) RunAndReturn(run func(context.Context, string, string, *gen.DeleteReleaseBindingRevisionParams) (*gen.DeleteBindingRevisionResponse, error)) *MockInterface_DeleteReleaseBindingRevision_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // DeleteResource provides a mock function with given fields: ctx, namespaceName, resourceName
 func (_m *MockInterface) DeleteResource(ctx context.Context, namespaceName string, resourceName string) error {
 	ret := _m.Called(ctx, namespaceName, resourceName)
@@ -2299,6 +2360,67 @@ func (_c *MockInterface_DeleteResourceReleaseBinding_Call) Return(_a0 error) *Mo
 }
 
 func (_c *MockInterface_DeleteResourceReleaseBinding_Call) RunAndReturn(run func(context.Context, string, string) error) *MockInterface_DeleteResourceReleaseBinding_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// DeleteResourceReleaseBindingRevision provides a mock function with given fields: ctx, namespaceName, revisionName, params
+func (_m *MockInterface) DeleteResourceReleaseBindingRevision(ctx context.Context, namespaceName string, revisionName string, params *gen.DeleteResourceReleaseBindingRevisionParams) (*gen.DeleteBindingRevisionResponse, error) {
+	ret := _m.Called(ctx, namespaceName, revisionName, params)
+
+	if len(ret) == 0 {
+		panic("no return value specified for DeleteResourceReleaseBindingRevision")
+	}
+
+	var r0 *gen.DeleteBindingRevisionResponse
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, *gen.DeleteResourceReleaseBindingRevisionParams) (*gen.DeleteBindingRevisionResponse, error)); ok {
+		return rf(ctx, namespaceName, revisionName, params)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, *gen.DeleteResourceReleaseBindingRevisionParams) *gen.DeleteBindingRevisionResponse); ok {
+		r0 = rf(ctx, namespaceName, revisionName, params)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*gen.DeleteBindingRevisionResponse)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string, string, *gen.DeleteResourceReleaseBindingRevisionParams) error); ok {
+		r1 = rf(ctx, namespaceName, revisionName, params)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockInterface_DeleteResourceReleaseBindingRevision_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'DeleteResourceReleaseBindingRevision'
+type MockInterface_DeleteResourceReleaseBindingRevision_Call struct {
+	*mock.Call
+}
+
+// DeleteResourceReleaseBindingRevision is a helper method to define mock.On call
+//   - ctx context.Context
+//   - namespaceName string
+//   - revisionName string
+//   - params *gen.DeleteResourceReleaseBindingRevisionParams
+func (_e *MockInterface_Expecter) DeleteResourceReleaseBindingRevision(ctx interface{}, namespaceName interface{}, revisionName interface{}, params interface{}) *MockInterface_DeleteResourceReleaseBindingRevision_Call {
+	return &MockInterface_DeleteResourceReleaseBindingRevision_Call{Call: _e.mock.On("DeleteResourceReleaseBindingRevision", ctx, namespaceName, revisionName, params)}
+}
+
+func (_c *MockInterface_DeleteResourceReleaseBindingRevision_Call) Run(run func(ctx context.Context, namespaceName string, revisionName string, params *gen.DeleteResourceReleaseBindingRevisionParams)) *MockInterface_DeleteResourceReleaseBindingRevision_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(string), args[2].(string), args[3].(*gen.DeleteResourceReleaseBindingRevisionParams))
+	})
+	return _c
+}
+
+func (_c *MockInterface_DeleteResourceReleaseBindingRevision_Call) Return(_a0 *gen.DeleteBindingRevisionResponse, _a1 error) *MockInterface_DeleteResourceReleaseBindingRevision_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockInterface_DeleteResourceReleaseBindingRevision_Call) RunAndReturn(run func(context.Context, string, string, *gen.DeleteResourceReleaseBindingRevisionParams) (*gen.DeleteBindingRevisionResponse, error)) *MockInterface_DeleteResourceReleaseBindingRevision_Call {
 	_c.Call.Return(run)
 	return _c
 }

@@ -89,6 +89,9 @@ const (
 	// ActionRollbackReleaseBinding restores the spec of an earlier ReleaseBindingRevision.
 	// It is separate from update so a role can roll back without writing arbitrary specs.
 	ActionRollbackReleaseBinding = "releasebinding:rollback"
+	// ActionDeleteReleaseBindingRevision deletes one inactive ReleaseBindingRevision
+	// from a binding's history. It is separate from delete, which removes the binding.
+	ActionDeleteReleaseBindingRevision = "releasebinding:delete-revision"
 
 	// ResourceReleaseBinding actions
 	ActionCreateResourceReleaseBinding = "resourcereleasebinding:create"
@@ -98,6 +101,9 @@ const (
 	// ActionRollbackResourceReleaseBinding restores the spec of an earlier
 	// ResourceReleaseBindingRevision.
 	ActionRollbackResourceReleaseBinding = "resourcereleasebinding:rollback"
+	// ActionDeleteResourceReleaseBindingRevision deletes one inactive
+	// ResourceReleaseBindingRevision from a binding's history.
+	ActionDeleteResourceReleaseBindingRevision = "resourcereleasebinding:delete-revision"
 
 	// ComponentType actions
 	ActionCreateComponentType = "componenttype:create"
@@ -384,6 +390,7 @@ var systemActions = []Action{
 	{Name: ActionUpdateReleaseBinding, LowestScope: ScopeComponent, IsInternal: false},
 	{Name: ActionDeleteReleaseBinding, LowestScope: ScopeComponent, IsInternal: false},
 	{Name: ActionRollbackReleaseBinding, LowestScope: ScopeComponent, IsInternal: false},
+	{Name: ActionDeleteReleaseBindingRevision, LowestScope: ScopeComponent, IsInternal: false},
 
 	// ResourceReleaseBinding
 	{Name: ActionViewResourceReleaseBinding, LowestScope: ScopeResource, IsInternal: false},
@@ -391,6 +398,7 @@ var systemActions = []Action{
 	{Name: ActionUpdateResourceReleaseBinding, LowestScope: ScopeResource, IsInternal: false},
 	{Name: ActionDeleteResourceReleaseBinding, LowestScope: ScopeResource, IsInternal: false},
 	{Name: ActionRollbackResourceReleaseBinding, LowestScope: ScopeResource, IsInternal: false},
+	{Name: ActionDeleteResourceReleaseBindingRevision, LowestScope: ScopeResource, IsInternal: false},
 
 	// ComponentType
 	{Name: ActionViewComponentType, LowestScope: ScopeNamespace, IsInternal: false},

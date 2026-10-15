@@ -223,6 +223,7 @@ const (
 	NOTFOUND               ErrorResponseCode = "NOT_FOUND"
 	NOTIMPLEMENTED         ErrorResponseCode = "NOT_IMPLEMENTED"
 	RELEASEDELETED         ErrorResponseCode = "RELEASE_DELETED"
+	REVISIONPROTECTED      ErrorResponseCode = "REVISION_PROTECTED"
 	UNAUTHORIZED           ErrorResponseCode = "UNAUTHORIZED"
 	UNKNOWNGITPROVIDER     ErrorResponseCode = "UNKNOWN_GIT_PROVIDER"
 	UNPROCESSABLECONTENT   ErrorResponseCode = "UNPROCESSABLE_CONTENT"
@@ -1980,6 +1981,25 @@ type Decision struct {
 
 	// Decision Authorization result (true = allowed)
 	Decision bool `json:"decision"`
+}
+
+// DeleteBindingRevisionResponse A revision deletion, applied or dry-run
+type DeleteBindingRevisionResponse struct {
+	// Binding The binding the revision belonged to
+	Binding string `json:"binding"`
+
+	// DryRun True when nothing was deleted because dryRun was requested
+	DryRun      bool   `json:"dryRun"`
+	Environment string `json:"environment"`
+
+	// Revision The deleted revision's number. Other revisions keep theirs.
+	Revision int64 `json:"revision"`
+
+	// RevisionDisplayName How the revision is shown to people, {release}-r{N}
+	RevisionDisplayName *string `json:"revisionDisplayName,omitempty"`
+
+	// RevisionName The deleted revision's object name, {binding}-r{N}
+	RevisionName string `json:"revisionName"`
 }
 
 // DeploymentPipeline DeploymentPipeline resource.
@@ -4962,8 +4982,14 @@ type ResourceReleaseNameParam = string
 // ResourceTypeNameParam defines model for ResourceTypeNameParam.
 type ResourceTypeNameParam = string
 
+// RevisionBindingQueryParam defines model for RevisionBindingQueryParam.
+type RevisionBindingQueryParam = string
+
 // RevisionComponentQueryParam defines model for RevisionComponentQueryParam.
 type RevisionComponentQueryParam = string
+
+// RevisionDeleteDryRunQueryParam defines model for RevisionDeleteDryRunQueryParam.
+type RevisionDeleteDryRunQueryParam = bool
 
 // RevisionResourceQueryParam defines model for RevisionResourceQueryParam.
 type RevisionResourceQueryParam = string
@@ -5012,6 +5038,9 @@ type NotFound = ErrorResponse
 
 // NotImplemented Standard error response format
 type NotImplemented = ErrorResponse
+
+// RevisionDeleteConflict Standard error response format
+type RevisionDeleteConflict = ErrorResponse
 
 // RollbackConflict Standard error response format
 type RollbackConflict = ErrorResponse
@@ -5496,6 +5525,15 @@ type ListReleaseBindingRevisionsParams struct {
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// DeleteReleaseBindingRevisionParams defines parameters for DeleteReleaseBindingRevision.
+type DeleteReleaseBindingRevisionParams struct {
+	// Binding The binding the revision is expected to belong to. A revision of any other binding is reported as not found.
+	Binding *RevisionBindingQueryParam `form:"binding,omitempty" json:"binding,omitempty"`
+
+	// DryRun Run every check without deleting the revision
+	DryRun *RevisionDeleteDryRunQueryParam `form:"dryRun,omitempty" json:"dryRun,omitempty"`
+}
+
 // ListReleaseBindingsParams defines parameters for ListReleaseBindings.
 type ListReleaseBindingsParams struct {
 	// Component Filter resources by component name
@@ -5557,6 +5595,15 @@ type ListResourceReleaseBindingRevisionsParams struct {
 	// Cursor Opaque pagination cursor from a previous response.
 	// Pass the `nextCursor` value from pagination metadata to fetch the next page.
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// DeleteResourceReleaseBindingRevisionParams defines parameters for DeleteResourceReleaseBindingRevision.
+type DeleteResourceReleaseBindingRevisionParams struct {
+	// Binding The binding the revision is expected to belong to. A revision of any other binding is reported as not found.
+	Binding *RevisionBindingQueryParam `form:"binding,omitempty" json:"binding,omitempty"`
+
+	// DryRun Run every check without deleting the revision
+	DryRun *RevisionDeleteDryRunQueryParam `form:"dryRun,omitempty" json:"dryRun,omitempty"`
 }
 
 // ListResourceReleaseBindingsParams defines parameters for ListResourceReleaseBindings.

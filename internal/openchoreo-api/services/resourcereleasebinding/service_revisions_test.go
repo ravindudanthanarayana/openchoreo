@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -214,6 +215,104 @@ func TestRollbackResourceReleaseBinding_AuthzCheck(t *testing.T) {
 		svc := &resourceReleaseBindingServiceWithAuthz{internal: mockSvc, authz: testutil.NewTestAuthzChecker(pdp)}
 
 		_, err := svc.RollbackResourceReleaseBinding(testutil.AuthzContext(), "ns-1", "my-db-prod", req)
+		require.ErrorIs(t, err, services.ErrForbidden)
+	})
+}
+
+// deleteObjects is rrbObjects with r1 no longer known-good and the binding's
+// status as the controller leaves it: r2 current, 2 the highest revision.
+func deleteObjects(t *testing.T) []client.Object {
+	t.Helper()
+	objs := rrbObjects(t, true)
+	binding := objs[0].(*openchoreov1alpha1.ResourceReleaseBinding)
+	binding.Status.CurrentRevision = revision.Name(testBindingName, 2)
+	binding.Status.HighestRevision = 2
+	objs[1].(*openchoreov1alpha1.ResourceReleaseBindingRevision).Status.KnownGood = false
+	return objs
+}
+
+func TestDeleteResourceReleaseBindingRevision(t *testing.T) {
+	ctx := context.Background()
+	r1, r2 := revision.Name(testBindingName, 1), revision.Name(testBindingName, 2)
+
+	t.Run("deletes an inactive revision", func(t *testing.T) {
+		c := testutil.NewFakeClient(deleteObjects(t)...)
+		got, err := NewService(c, testutil.TestLogger()).DeleteResourceReleaseBindingRevision(ctx, testNamespace, r1,
+			bindingrevision.DeleteRequest{Binding: testBindingName})
+		require.NoError(t, err)
+		assert.Equal(t, &bindingrevision.DeleteResult{RevisionName: r1, RevisionDisplayName: rrReleaseA + "-r1", Revision: 1,
+			Binding: testBindingName, Environment: testEnvironment}, got)
+
+		err = c.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: r1}, &openchoreov1alpha1.ResourceReleaseBindingRevision{})
+		assert.True(t, apierrors.IsNotFound(err))
+		require.NoError(t, c.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: r2},
+			&openchoreov1alpha1.ResourceReleaseBindingRevision{}), "r2 keeps its number")
+
+		_, err = NewService(c, testutil.TestLogger()).RollbackResourceReleaseBinding(ctx, testNamespace, testBindingName,
+			bindingrevision.RollbackRequest{Revision: 1})
+		require.ErrorIs(t, err, bindingrevision.ErrRevisionNotFound, "a deleted revision is no rollback target")
+	})
+
+	t.Run("refuses the active revision", func(t *testing.T) {
+		c := testutil.NewFakeClient(deleteObjects(t)...)
+		_, err := NewService(c, testutil.TestLogger()).DeleteResourceReleaseBindingRevision(ctx, testNamespace, r2,
+			bindingrevision.DeleteRequest{})
+		require.ErrorIs(t, err, bindingrevision.ErrRevisionProtected)
+		assert.EqualError(t, err, "cannot delete revision 2 because it is currently active")
+	})
+
+	t.Run("refuses the newest known-good revision", func(t *testing.T) {
+		c := testutil.NewFakeClient(rrbObjects(t, true)...)
+		binding := getRRB(t, c)
+		binding.Status.HighestRevision = 2
+		require.NoError(t, c.Status().Update(ctx, binding))
+		_, err := NewService(c, testutil.TestLogger()).DeleteResourceReleaseBindingRevision(ctx, testNamespace, r1,
+			bindingrevision.DeleteRequest{})
+		require.ErrorIs(t, err, bindingrevision.ErrRevisionProtected)
+	})
+
+	t.Run("a revision of another binding is not found", func(t *testing.T) {
+		c := testutil.NewFakeClient(deleteObjects(t)...)
+		_, err := NewService(c, testutil.TestLogger()).DeleteResourceReleaseBindingRevision(ctx, testNamespace, r1,
+			bindingrevision.DeleteRequest{Binding: "other"})
+		require.ErrorIs(t, err, bindingrevision.ErrRevisionNotFound)
+	})
+}
+
+func TestDeleteResourceReleaseBindingRevision_AuthzCheck(t *testing.T) {
+	rev := &openchoreov1alpha1.ResourceReleaseBindingRevision{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-db-prod-r1", Namespace: "ns-1"},
+		Spec: openchoreov1alpha1.ResourceReleaseBindingRevisionSpec{Revision: 1,
+			BindingSpec: openchoreov1alpha1.ResourceReleaseBindingSpec{
+				Owner:       openchoreov1alpha1.ResourceReleaseBindingOwner{ProjectName: "my-proj", ResourceName: "my-db"},
+				Environment: "prod",
+			}},
+	}
+	hierarchy := authzcore.ResourceHierarchy{Namespace: "ns-1", Project: "my-proj", Resource: "my-db"}
+	req := bindingrevision.DeleteRequest{}
+
+	t.Run("allowed: checks resourcereleasebinding:delete-revision", func(t *testing.T) {
+		pdp := testutil.AllowPDP()
+		mockSvc := mocks.NewMockService(t)
+		mockSvc.On("GetResourceReleaseBindingRevision", mock.Anything, "ns-1", "my-db-prod-r1").Return(rev, nil)
+		mockSvc.On("DeleteResourceReleaseBindingRevision", mock.Anything, "ns-1", "my-db-prod-r1", req).
+			Return(&bindingrevision.DeleteResult{Revision: 1}, nil)
+		svc := &resourceReleaseBindingServiceWithAuthz{internal: mockSvc, authz: testutil.NewTestAuthzChecker(pdp)}
+
+		_, err := svc.DeleteResourceReleaseBindingRevision(testutil.AuthzContext(), "ns-1", "my-db-prod-r1", req)
+		require.NoError(t, err)
+		require.Len(t, pdp.Captured, 1)
+		testutil.RequireEvalRequest(t, pdp.Captured[0], "resourcereleasebinding:delete-revision", "resourcereleasebinding",
+			"my-db-prod-r1", hierarchy)
+	})
+
+	t.Run("denied", func(t *testing.T) {
+		pdp := testutil.DenyPDP()
+		mockSvc := mocks.NewMockService(t)
+		mockSvc.On("GetResourceReleaseBindingRevision", mock.Anything, "ns-1", "my-db-prod-r1").Return(rev, nil)
+		svc := &resourceReleaseBindingServiceWithAuthz{internal: mockSvc, authz: testutil.NewTestAuthzChecker(pdp)}
+
+		_, err := svc.DeleteResourceReleaseBindingRevision(testutil.AuthzContext(), "ns-1", "my-db-prod-r1", req)
 		require.ErrorIs(t, err, services.ErrForbidden)
 	})
 }

@@ -44,3 +44,15 @@ type DeleteParams struct {
 
 func (p DeleteParams) GetNamespace() string          { return p.Namespace }
 func (p DeleteParams) GetReleaseBindingName() string { return p.ReleaseBindingName }
+
+// RollbackParams defines parameters for rolling a release binding back to one of
+// its revisions
+type RollbackParams struct {
+	Namespace          string
+	ReleaseBindingName string
+	Revision           int64
+	DryRun             bool
+	Yes                bool
+}
+
+func (p RollbackParams) GetNamespace() string { return p.Namespace }

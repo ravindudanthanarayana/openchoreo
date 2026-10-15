@@ -72,7 +72,8 @@ rules:
   - update
   - watch
 # Binding revisions are written only by the controller; the API lists and
-# reads them for revision history and rollback.
+# reads them for revision history and rollback, and deletes one when a user
+# removes it from a binding's history. It never creates or updates them.
 - apiGroups:
   - openchoreo.dev
   resources:
@@ -82,6 +83,7 @@ rules:
   - get
   - list
   - watch
+  - delete
 - apiGroups:
   - ""
   resources:

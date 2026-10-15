@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -26,8 +27,8 @@ func TestPrintTable(t *testing.T) {
 	now := time.Now().Add(-2 * time.Hour)
 	var out bytes.Buffer
 	require.NoError(t, PrintTable(&out, []Row{
-		{Name: "api-ccc-r3", Revision: 3, Release: "api-ccc", Cause: "Override", Health: "Progressing", Active: true, CreatedAt: &now},
-		{Name: "api-bbb-r2", Revision: 2, Release: "api-bbb", Cause: "Deploy", Health: "Healthy", KnownGood: true, CreatedAt: &now},
+		{Name: "api-ccc-r3", Cause: "Override", Health: "Progressing", Active: true, CreatedAt: &now},
+		{Name: "api-bbb-r2", Cause: "Deploy", Health: "Healthy", KnownGood: true, CreatedAt: &now},
 	}))
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -45,9 +46,9 @@ func TestPrintTable_Empty(t *testing.T) {
 
 func TestStatusRow(t *testing.T) {
 	health := gen.BindingRevisionStatusHealth("Degraded")
-	row := StatusRow(Row{Revision: 1}, &gen.BindingRevisionStatus{Health: &health, Active: ptr(true), KnownGood: ptr(true)})
-	assert.Equal(t, Row{Revision: 1, Health: "Degraded", Active: true, KnownGood: true}, row)
-	assert.Equal(t, Row{Revision: 1}, StatusRow(Row{Revision: 1}, nil), "a revision with no status yet")
+	row := StatusRow(Row{Name: "api-r1"}, &gen.BindingRevisionStatus{Health: &health, Active: ptr(true), KnownGood: ptr(true)})
+	assert.Equal(t, Row{Name: "api-r1", Health: "Degraded", Active: true, KnownGood: true}, row)
+	assert.Equal(t, Row{Name: "api-r1"}, StatusRow(Row{Name: "api-r1"}, nil), "a revision with no status yet")
 }
 
 func TestValidateOutput(t *testing.T) {
@@ -188,7 +189,7 @@ func TestRunRollback_YesSkipsPromptAndPrintsWarnings(t *testing.T) {
 
 func TestRunRollback_NoTerminalWithoutYesIsAnError(t *testing.T) {
 	api := newFakeAPI()
-	confirmer, _ := answer(false, errors.New("stdin is not a terminal; pass --yes to roll back without confirmation"))
+	confirmer, _ := answer(false, errors.New("stdin is not a terminal; pass --yes to proceed without confirmation"))
 
 	_, err := run(t, api, RollbackOptions{Confirm: confirmer})
 	require.ErrorContains(t, err, "pass --yes")
@@ -243,4 +244,155 @@ func TestRunRollback_RevisionRequired(t *testing.T) {
 	err := RunRollback(context.Background(), RollbackOptions{Revision: 0, Out: io.Discard}, api.rollback)
 	require.ErrorContains(t, err, "--revision is required")
 	assert.Empty(t, api.calls)
+}
+
+func TestParseRevisionName(t *testing.T) {
+	valid := map[string]int64{
+		"frontend-development-r3":    3,  // object name
+		"frontend-v7-r12":            12, // display name
+		"frontend-20260803-1-r4":     4,  // release name with digits and dashes
+		"my-r-service-production-r7": 7,  // "-r" inside the binding name
+		"r3":                         3,
+		"3":                          3,
+	}
+	for name, want := range valid {
+		got, err := ParseRevisionName(name)
+		require.NoError(t, err, name)
+		assert.Equal(t, want, got, name)
+	}
+	n, err := ParseRevisionName(" r5 ")
+	require.NoError(t, err, "surrounding spaces are ignored")
+	assert.Equal(t, int64(5), n)
+
+	for _, name := range []string{"", "r", "r0", "0", "frontend", "frontend-r", "frontend-r03", "frontend-rx", "-r3", "frontend-r3a"} {
+		_, err := ParseRevisionName(name)
+		assert.Error(t, err, name)
+	}
+}
+
+func TestRevisionFromArgs(t *testing.T) {
+	newCmd := func() *cobra.Command {
+		cmd := &cobra.Command{Use: "get"}
+		AddRevision(cmd)
+		return cmd
+	}
+
+	cmd := newCmd()
+	n, err := RevisionFromArgs(cmd, []string{"api-dev-r4"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), n, "the name alone names the revision")
+
+	cmd = newCmd()
+	require.NoError(t, cmd.Flags().Set("revision", "4"))
+	n, err = RevisionFromArgs(cmd, nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), n, "--revision alone still works")
+
+	n, err = RevisionFromArgs(cmd, []string{"api-dev-r4"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), n, "name and --revision may both be given when they agree")
+
+	_, err = RevisionFromArgs(cmd, []string{"api-dev-r5"})
+	assert.ErrorContains(t, err, "is revision 5, but --revision is 4")
+
+	_, err = RevisionFromArgs(newCmd(), []string{"api-dev"})
+	assert.ErrorContains(t, err, "ending in -r<N>")
+}
+
+// deleteAPI records the delete calls RunDelete makes and answers each with the
+// error configured for a dry run or a real delete.
+type deleteAPI struct {
+	calls              []bool // dryRun of each call
+	dryRunErr, realErr error
+}
+
+func (d *deleteAPI) del(_ context.Context, dryRun bool) (*gen.DeleteBindingRevisionResponse, error) {
+	d.calls = append(d.calls, dryRun)
+	if dryRun && d.dryRunErr != nil {
+		return nil, d.dryRunErr
+	}
+	if !dryRun && d.realErr != nil {
+		return nil, d.realErr
+	}
+	name := "api-v2-r2"
+	return &gen.DeleteBindingRevisionResponse{RevisionName: "api-dev-r2", RevisionDisplayName: &name, Revision: 2, DryRun: dryRun}, nil
+}
+
+func runDelete(t *testing.T, api *deleteAPI, opts DeleteOptions) (string, error) {
+	t.Helper()
+	var out bytes.Buffer
+	opts.Kind, opts.Binding, opts.Revision, opts.Out = "release binding", "api-dev", 2, &out
+	opts.Target = Row{Name: "api-v2-r2", Cause: "Deploy", Health: "Failed"}
+	err := RunDelete(context.Background(), opts, api.del)
+	return out.String(), err
+}
+
+func TestRunDelete_ConfirmedDeletesAfterTheServerCheck(t *testing.T) {
+	api := &deleteAPI{}
+	confirmer, asked := answer(true, nil)
+	out, err := runDelete(t, api, DeleteOptions{Confirm: confirmer})
+	require.NoError(t, err)
+	assert.Equal(t, []bool{true, false}, api.calls, "checked with a dry run first, then deleted")
+	assert.Equal(t, 1, *asked)
+	assert.Contains(t, out, `Revision:    api-v2-r2 (revision 2 of release binding "api-dev")`)
+	assert.Contains(t, out, "Status:      Inactive")
+	assert.Contains(t, out, "Cause:       Deploy")
+	assert.Contains(t, out, "Successfully deleted revision 2: api-v2-r2")
+}
+
+func TestRunDelete_DeclinedDeletesNothing(t *testing.T) {
+	api := &deleteAPI{}
+	confirmer, _ := answer(false, nil)
+	out, err := runDelete(t, api, DeleteOptions{Confirm: confirmer})
+	require.NoError(t, err)
+	assert.Equal(t, []bool{true}, api.calls)
+	assert.Contains(t, out, "Deletion cancelled.")
+	assert.NotContains(t, out, "Successfully")
+}
+
+func TestRunDelete_YesSkipsTheQuestion(t *testing.T) {
+	api := &deleteAPI{}
+	confirmer, asked := answer(false, nil)
+	out, err := runDelete(t, api, DeleteOptions{Yes: true, Confirm: confirmer})
+	require.NoError(t, err)
+	assert.Equal(t, 0, *asked)
+	assert.Equal(t, []bool{true, false}, api.calls)
+	assert.Contains(t, out, "Successfully deleted revision 2")
+}
+
+func TestRunDelete_DryRunOnlyChecks(t *testing.T) {
+	api := &deleteAPI{}
+	confirmer, asked := answer(true, nil)
+	out, err := runDelete(t, api, DeleteOptions{DryRun: true, Confirm: confirmer})
+	require.NoError(t, err)
+	assert.Equal(t, []bool{true}, api.calls)
+	assert.Equal(t, 0, *asked)
+	assert.Contains(t, out, "Dry run: the revision can be deleted; nothing was changed.")
+}
+
+func TestRunDelete_RefusedBeforeAsking(t *testing.T) {
+	api := &deleteAPI{dryRunErr: errors.New("Cannot delete revision 2 because it is currently active")}
+	confirmer, asked := answer(true, nil)
+	out, err := runDelete(t, api, DeleteOptions{Confirm: confirmer})
+	require.EqualError(t, err, "Cannot delete revision 2 because it is currently active")
+	assert.Equal(t, 0, *asked, "a refused deletion is not offered")
+	assert.Equal(t, []bool{true}, api.calls)
+	assert.NotContains(t, out, "Successfully")
+}
+
+func TestRunDelete_FailureIsNotReportedAsSuccess(t *testing.T) {
+	api := &deleteAPI{realErr: errors.New("Revision \"api-dev-r2\" changed while it was being deleted; retry")}
+	_, asked := answer(true, nil)
+	out, err := runDelete(t, api, DeleteOptions{Yes: true})
+	require.ErrorContains(t, err, "changed while it was being deleted")
+	assert.Equal(t, 0, *asked)
+	assert.NotContains(t, out, "Successfully")
+}
+
+func TestRunDelete_NoTerminalNeedsYes(t *testing.T) {
+	api := &deleteAPI{}
+	confirmer, _ := answer(false, errors.New("stdin is not a terminal; pass --yes to proceed without confirmation"))
+	_, err := runDelete(t, api, DeleteOptions{Confirm: confirmer})
+	require.ErrorContains(t, err, "pass --yes")
+	assert.Equal(t, []bool{true}, api.calls, "nothing is deleted")
 }

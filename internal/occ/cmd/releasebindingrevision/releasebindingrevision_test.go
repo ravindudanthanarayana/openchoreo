@@ -4,6 +4,7 @@
 package releasebindingrevision
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -20,13 +21,14 @@ import (
 )
 
 const (
-	testNS      = "ns"
-	testBinding = "api-dev"
+	testNS        = "ns"
+	testBinding   = "api-dev"
+	testComponent = "api"
 )
 
 func testBindingObj() *gen.ReleaseBinding {
 	spec := &gen.ReleaseBindingSpec{Environment: "dev"}
-	spec.Owner.ComponentName = "api"
+	spec.Owner.ComponentName = testComponent
 	spec.Owner.ProjectName = "shop"
 	return &gen.ReleaseBinding{Metadata: gen.ObjectMeta{Name: testBinding}, Spec: spec}
 }
@@ -47,7 +49,7 @@ func testRevision(n int64, release, cause, health string, active, knownGood bool
 func expectHistory(mc *mocks.MockInterface) {
 	mc.EXPECT().GetReleaseBinding(mock.Anything, testNS, testBinding).Return(testBindingObj(), nil)
 	mc.EXPECT().ListReleaseBindingRevisions(mock.Anything, testNS, mock.MatchedBy(func(p *gen.ListReleaseBindingRevisionsParams) bool {
-		return p.Component == "api" && p.Environment != nil && *p.Environment == "dev"
+		return p.Component == testComponent && p.Environment != nil && *p.Environment == "dev"
 	})).Return(&gen.ReleaseBindingRevisionList{Items: []gen.ReleaseBindingRevision{
 		testRevision(3, "api-ccc", "Override", "Progressing", true, false),
 		testRevision(2, "api-bbb", "Deploy", "Degraded", false, false),
@@ -99,10 +101,102 @@ func TestList_Empty(t *testing.T) {
 	assert.Contains(t, out, "No revisions found")
 }
 
-func TestList_MissingFlags(t *testing.T) {
-	err := New(mocks.NewMockInterface(t)).List(ListParams{Namespace: testNS})
+func TestList_MissingNamespace(t *testing.T) {
+	err := New(mocks.NewMockInterface(t)).List(ListParams{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "binding")
+	assert.Contains(t, err.Error(), "namespace")
+}
+
+func bindingObj(name, component, environment string) gen.ReleaseBinding {
+	return bindingInProject(name, "shop", component, environment)
+}
+
+func bindingInProject(name, project, component, environment string) gen.ReleaseBinding {
+	spec := &gen.ReleaseBindingSpec{Environment: environment}
+	spec.Owner.ComponentName = component
+	spec.Owner.ProjectName = project
+	return gen.ReleaseBinding{Metadata: gen.ObjectMeta{Name: name}, Spec: spec}
+}
+
+func expectRevisionsOf(mc *mocks.MockInterface, component, environment string, revs ...gen.ReleaseBindingRevision) {
+	mc.EXPECT().ListReleaseBindingRevisions(mock.Anything, testNS, mock.MatchedBy(func(p *gen.ListReleaseBindingRevisionsParams) bool {
+		return p.Component == component && p.Environment != nil && *p.Environment == environment
+	})).Return(&gen.ReleaseBindingRevisionList{Items: revs}, nil)
+}
+
+// Without --binding, list shows every binding's revisions in binding-name
+// order, with each revision's binding and environment.
+func TestList_AllBindings(t *testing.T) {
+	mc := mocks.NewMockInterface(t)
+	mc.EXPECT().ListReleaseBindings(mock.Anything, testNS, mock.MatchedBy(func(p *gen.ListReleaseBindingsParams) bool {
+		return p.Component == nil
+	})).Return(&gen.ReleaseBindingList{Items: []gen.ReleaseBinding{
+		bindingObj("web-prod", "web", "production"),
+		bindingObj("api-dev", testComponent, "dev"),
+	}}, nil)
+	expectRevisionsOf(mc, testComponent, "dev",
+		testRevision(2, "api-bbb", "Deploy", "Healthy", true, false),
+		testRevision(1, "api-aaa", "Deploy", "Healthy", false, true))
+	expectRevisionsOf(mc, "web", "production",
+		testRevision(1, "web-aaa", "Deploy", "Healthy", true, true))
+
+	out := testutil.CaptureStdout(t, func() {
+		require.NoError(t, New(mc).List(ListParams{Namespace: testNS}))
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	require.Len(t, lines, 4)
+	assert.Equal(t, []string{"PROJECT", "BINDING", "ENVIRONMENT", "NAME", "CAUSE", "HEALTH", "ACTIVE", "KNOWN-GOOD", "AGE"}, strings.Fields(lines[0]))
+	assert.Equal(t, []string{"shop", "api-dev", "dev", "api-bbb-r2"}, strings.Fields(lines[1])[:4])
+	assert.Equal(t, []string{"shop", "api-dev", "dev", "api-aaa-r1"}, strings.Fields(lines[2])[:4])
+	assert.Equal(t, []string{"shop", "web-prod", "production", "web-aaa-r1"}, strings.Fields(lines[3])[:4])
+}
+
+func TestList_AllBindingsFiltered(t *testing.T) {
+	mc := mocks.NewMockInterface(t)
+	mc.EXPECT().ListReleaseBindings(mock.Anything, testNS, mock.MatchedBy(func(p *gen.ListReleaseBindingsParams) bool {
+		return p.Component != nil && *p.Component == testComponent
+	})).Return(&gen.ReleaseBindingList{Items: []gen.ReleaseBinding{
+		bindingObj("api-dev", testComponent, "dev"),
+		bindingObj("api-prod", testComponent, "production"),
+	}}, nil)
+	// Only the production binding's revisions are fetched.
+	expectRevisionsOf(mc, testComponent, "production",
+		testRevision(1, "api-aaa", "Deploy", "Healthy", true, true))
+
+	out := testutil.CaptureStdout(t, func() {
+		require.NoError(t, New(mc).List(ListParams{Namespace: testNS, Component: testComponent, Environment: "production"}))
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	require.Len(t, lines, 2)
+	assert.Equal(t, []string{"shop", "api-prod", "production", "api-aaa-r1"}, strings.Fields(lines[1])[:4])
+}
+
+// --project keeps only that project's bindings and drops the PROJECT column.
+func TestList_AllBindingsByProject(t *testing.T) {
+	mc := mocks.NewMockInterface(t)
+	mc.EXPECT().ListReleaseBindings(mock.Anything, testNS, mock.Anything).Return(&gen.ReleaseBindingList{Items: []gen.ReleaseBinding{
+		bindingInProject("api-dev", "shop", testComponent, "dev"),
+		bindingInProject("billing-dev", "finance", "billing", "dev"),
+	}}, nil)
+	expectRevisionsOf(mc, testComponent, "dev", testRevision(1, "api-aaa", "Deploy", "Healthy", true, true))
+
+	out := testutil.CaptureStdout(t, func() {
+		require.NoError(t, New(mc).List(ListParams{Namespace: testNS, Project: "shop"}))
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	require.Len(t, lines, 2)
+	assert.Equal(t, "BINDING", strings.Fields(lines[0])[0])
+	assert.Equal(t, []string{"api-dev", "dev", "api-aaa-r1"}, strings.Fields(lines[1])[:3])
+}
+
+func TestList_AllBindingsNone(t *testing.T) {
+	mc := mocks.NewMockInterface(t)
+	mc.EXPECT().ListReleaseBindings(mock.Anything, testNS, mock.Anything).Return(&gen.ReleaseBindingList{}, nil)
+
+	out := testutil.CaptureStdout(t, func() {
+		require.NoError(t, New(mc).List(ListParams{Namespace: testNS}))
+	})
+	assert.Contains(t, out, "No revisions found")
 }
 
 // --- Get ---
@@ -158,81 +252,56 @@ func TestGet_InvalidArgs(t *testing.T) {
 
 // --- Rollback ---
 
-func rollbackResp(dryRun bool) *gen.RollbackResponse {
-	from := int64(3)
-	return &gen.RollbackResponse{
-		RevisionName: "api-dev-r1", Revision: 1, TargetRevision: 1, RevertedFrom: &from, DryRun: dryRun,
-		Changes:  []gen.RollbackSpecChange{{Field: "releaseName", Current: "api-ccc", Target: "api-aaa"}},
-		Warnings: []gen.RollbackWarning{{Code: gen.ProjectCellDrift, Message: "the project's cell moved"}},
-	}
-}
+// --- Delete ---
 
-func isDryRun(want bool) any {
-	return mock.MatchedBy(func(r gen.RollbackRequest) bool {
-		return r.Revision == 1 && r.DryRun != nil && *r.DryRun == want
+func deleteParams(dryRun bool) any {
+	return mock.MatchedBy(func(p *gen.DeleteReleaseBindingRevisionParams) bool {
+		return p.Binding != nil && *p.Binding == testBinding && p.DryRun != nil && *p.DryRun == dryRun
 	})
 }
 
-func TestRollback_DryRun(t *testing.T) {
+func TestDelete_ConfirmedDeletesTheRevision(t *testing.T) {
 	mc := mocks.NewMockInterface(t)
-	mc.EXPECT().RollbackReleaseBinding(mock.Anything, testNS, testBinding, isDryRun(true)).Return(rollbackResp(true), nil)
-
-	out := testutil.CaptureStdout(t, func() {
-		require.NoError(t, New(mc).Rollback(RollbackParams{Namespace: testNS, Binding: testBinding, Revision: 1, DryRun: true}))
-	})
-	assert.Contains(t, out, `releaseName: "api-ccc" -> "api-aaa"`)
-	assert.Contains(t, out, "! ProjectCellDrift: the project's cell moved")
-	assert.Contains(t, out, "Dry run: nothing was changed.")
-}
-
-func TestRollback_ConfirmedAppliesAfterPreview(t *testing.T) {
-	mc := mocks.NewMockInterface(t)
-	mc.EXPECT().RollbackReleaseBinding(mock.Anything, testNS, testBinding, isDryRun(true)).Return(rollbackResp(true), nil).Once()
-	mc.EXPECT().RollbackReleaseBinding(mock.Anything, testNS, testBinding, isDryRun(false)).Return(rollbackResp(false), nil).Once()
+	expectHistory(mc)
+	display := "api-bbb-r2"
+	mc.EXPECT().DeleteReleaseBindingRevision(mock.Anything, testNS, "api-dev-r2", deleteParams(true)).
+		Return(&gen.DeleteBindingRevisionResponse{RevisionName: "api-dev-r2", Revision: 2, DryRun: true}, nil).Once()
+	mc.EXPECT().DeleteReleaseBindingRevision(mock.Anything, testNS, "api-dev-r2", deleteParams(false)).
+		Return(&gen.DeleteBindingRevisionResponse{RevisionName: "api-dev-r2", RevisionDisplayName: &display, Revision: 2}, nil).Once()
 
 	r := New(mc)
 	var question string
 	r.confirm = func(_ io.Writer, q string) (bool, error) { question = q; return true, nil }
-
 	out := testutil.CaptureStdout(t, func() {
-		require.NoError(t, r.Rollback(RollbackParams{Namespace: testNS, Binding: testBinding, Revision: 1}))
+		require.NoError(t, r.Delete(DeleteParams{Namespace: testNS, Binding: testBinding, Revision: 2}))
 	})
-	assert.Contains(t, question, `Roll back release binding "api-dev" to revision 1?`)
-	assert.Contains(t, out, `to revision 1: api-dev-r1 is active again`)
+	assert.Contains(t, question, "Delete this revision?")
+	assert.Contains(t, out, "Revision:    api-bbb-r2")
+	assert.Contains(t, out, "Status:      Inactive")
+	assert.Contains(t, out, "Successfully deleted revision 2: api-bbb-r2")
 }
 
-func TestRollback_DeclinedDoesNotApply(t *testing.T) {
+func TestDelete_RevisionNotFound(t *testing.T) {
 	mc := mocks.NewMockInterface(t)
-	mc.EXPECT().RollbackReleaseBinding(mock.Anything, testNS, testBinding, isDryRun(true)).Return(rollbackResp(true), nil).Once()
+	expectHistory(mc)
 
-	r := New(mc)
-	r.confirm = func(io.Writer, string) (bool, error) { return false, nil }
-
-	out := testutil.CaptureStdout(t, func() {
-		require.NoError(t, r.Rollback(RollbackParams{Namespace: testNS, Binding: testBinding, Revision: 1}))
-	})
-	assert.Contains(t, out, "Rollback cancelled.")
+	err := New(mc).Delete(DeleteParams{Namespace: testNS, Binding: testBinding, Revision: 9, Yes: true})
+	require.EqualError(t, err, `revision 9 of release binding "api-dev" not found; it may have been deleted`)
 }
 
-func TestRollback_YesAppliesWithoutPrompt(t *testing.T) {
+func TestDelete_ActiveRevisionIsRefused(t *testing.T) {
 	mc := mocks.NewMockInterface(t)
-	mc.EXPECT().RollbackReleaseBinding(mock.Anything, testNS, testBinding, isDryRun(false)).Return(rollbackResp(false), nil).Once()
+	expectHistory(mc)
+	mc.EXPECT().DeleteReleaseBindingRevision(mock.Anything, testNS, "api-dev-r3", deleteParams(true)).
+		Return(nil, errors.New("Cannot delete revision 3 because it is currently active")).Once()
 
-	r := New(mc)
-	r.confirm = func(io.Writer, string) (bool, error) { t.Fatal("must not prompt with --yes"); return false, nil }
-
-	out := testutil.CaptureStdout(t, func() {
-		require.NoError(t, r.Rollback(RollbackParams{Namespace: testNS, Binding: testBinding, Revision: 1, Yes: true}))
-	})
-	assert.Contains(t, out, "! ProjectCellDrift")
-	assert.Contains(t, out, "api-dev-r1 is active again")
+	err := New(mc).Delete(DeleteParams{Namespace: testNS, Binding: testBinding, Revision: 3, Yes: true})
+	require.EqualError(t, err, "Cannot delete revision 3 because it is currently active")
 }
 
-func TestRollback_ServerConflict(t *testing.T) {
+func TestDelete_InvalidArgs(t *testing.T) {
 	mc := mocks.NewMockInterface(t)
-	mc.EXPECT().RollbackReleaseBinding(mock.Anything, testNS, testBinding, mock.Anything).
-		Return(nil, fmt.Errorf(`release bound by the revision has been deleted: ComponentRelease "api-aaa" bound by revision 1`))
-
-	err := New(mc).Rollback(RollbackParams{Namespace: testNS, Binding: testBinding, Revision: 1, Yes: true})
-	assert.ErrorContains(t, err, `ComponentRelease "api-aaa"`)
+	require.Error(t, New(mc).Delete(DeleteParams{Binding: testBinding, Revision: 2}), "namespace is required")
+	require.Error(t, New(mc).Delete(DeleteParams{Namespace: testNS, Revision: 2}), "binding is required")
+	require.ErrorContains(t, New(mc).Delete(DeleteParams{Namespace: testNS, Binding: testBinding}), "--revision is required")
 }

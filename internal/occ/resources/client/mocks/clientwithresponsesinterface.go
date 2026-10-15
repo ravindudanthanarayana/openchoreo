@@ -7679,6 +7679,82 @@ func (_c *MockClientWithResponsesInterface_DeleteProjectWithResponse_Call) RunAn
 	return _c
 }
 
+// DeleteReleaseBindingRevisionWithResponse provides a mock function with given fields: ctx, namespaceName, releaseBindingRevisionName, params, reqEditors
+func (_m *MockClientWithResponsesInterface) DeleteReleaseBindingRevisionWithResponse(ctx context.Context, namespaceName string, releaseBindingRevisionName string, params *gen.DeleteReleaseBindingRevisionParams, reqEditors ...gen.RequestEditorFn) (*gen.DeleteReleaseBindingRevisionResp, error) {
+	_va := make([]interface{}, len(reqEditors))
+	for _i := range reqEditors {
+		_va[_i] = reqEditors[_i]
+	}
+	var _ca []interface{}
+	_ca = append(_ca, ctx, namespaceName, releaseBindingRevisionName, params)
+	_ca = append(_ca, _va...)
+	ret := _m.Called(_ca...)
+
+	if len(ret) == 0 {
+		panic("no return value specified for DeleteReleaseBindingRevisionWithResponse")
+	}
+
+	var r0 *gen.DeleteReleaseBindingRevisionResp
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, *gen.DeleteReleaseBindingRevisionParams, ...gen.RequestEditorFn) (*gen.DeleteReleaseBindingRevisionResp, error)); ok {
+		return rf(ctx, namespaceName, releaseBindingRevisionName, params, reqEditors...)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, *gen.DeleteReleaseBindingRevisionParams, ...gen.RequestEditorFn) *gen.DeleteReleaseBindingRevisionResp); ok {
+		r0 = rf(ctx, namespaceName, releaseBindingRevisionName, params, reqEditors...)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*gen.DeleteReleaseBindingRevisionResp)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string, string, *gen.DeleteReleaseBindingRevisionParams, ...gen.RequestEditorFn) error); ok {
+		r1 = rf(ctx, namespaceName, releaseBindingRevisionName, params, reqEditors...)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockClientWithResponsesInterface_DeleteReleaseBindingRevisionWithResponse_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'DeleteReleaseBindingRevisionWithResponse'
+type MockClientWithResponsesInterface_DeleteReleaseBindingRevisionWithResponse_Call struct {
+	*mock.Call
+}
+
+// DeleteReleaseBindingRevisionWithResponse is a helper method to define mock.On call
+//   - ctx context.Context
+//   - namespaceName string
+//   - releaseBindingRevisionName string
+//   - params *gen.DeleteReleaseBindingRevisionParams
+//   - reqEditors ...gen.RequestEditorFn
+func (_e *MockClientWithResponsesInterface_Expecter) DeleteReleaseBindingRevisionWithResponse(ctx interface{}, namespaceName interface{}, releaseBindingRevisionName interface{}, params interface{}, reqEditors ...interface{}) *MockClientWithResponsesInterface_DeleteReleaseBindingRevisionWithResponse_Call {
+	return &MockClientWithResponsesInterface_DeleteReleaseBindingRevisionWithResponse_Call{Call: _e.mock.On("DeleteReleaseBindingRevisionWithResponse",
+		append([]interface{}{ctx, namespaceName, releaseBindingRevisionName, params}, reqEditors...)...)}
+}
+
+func (_c *MockClientWithResponsesInterface_DeleteReleaseBindingRevisionWithResponse_Call) Run(run func(ctx context.Context, namespaceName string, releaseBindingRevisionName string, params *gen.DeleteReleaseBindingRevisionParams, reqEditors ...gen.RequestEditorFn)) *MockClientWithResponsesInterface_DeleteReleaseBindingRevisionWithResponse_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		variadicArgs := make([]gen.RequestEditorFn, len(args)-4)
+		for i, a := range args[4:] {
+			if a != nil {
+				variadicArgs[i] = a.(gen.RequestEditorFn)
+			}
+		}
+		run(args[0].(context.Context), args[1].(string), args[2].(string), args[3].(*gen.DeleteReleaseBindingRevisionParams), variadicArgs...)
+	})
+	return _c
+}
+
+func (_c *MockClientWithResponsesInterface_DeleteReleaseBindingRevisionWithResponse_Call) Return(_a0 *gen.DeleteReleaseBindingRevisionResp, _a1 error) *MockClientWithResponsesInterface_DeleteReleaseBindingRevisionWithResponse_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockClientWithResponsesInterface_DeleteReleaseBindingRevisionWithResponse_Call) RunAndReturn(run func(context.Context, string, string, *gen.DeleteReleaseBindingRevisionParams, ...gen.RequestEditorFn) (*gen.DeleteReleaseBindingRevisionResp, error)) *MockClientWithResponsesInterface_DeleteReleaseBindingRevisionWithResponse_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // DeleteReleaseBindingWithResponse provides a mock function with given fields: ctx, namespaceName, releaseBindingName, reqEditors
 func (_m *MockClientWithResponsesInterface) DeleteReleaseBindingWithResponse(ctx context.Context, namespaceName string, releaseBindingName string, reqEditors ...gen.RequestEditorFn) (*gen.DeleteReleaseBindingResp, error) {
 	_va := make([]interface{}, len(reqEditors))
@@ -7750,6 +7826,82 @@ func (_c *MockClientWithResponsesInterface_DeleteReleaseBindingWithResponse_Call
 }
 
 func (_c *MockClientWithResponsesInterface_DeleteReleaseBindingWithResponse_Call) RunAndReturn(run func(context.Context, string, string, ...gen.RequestEditorFn) (*gen.DeleteReleaseBindingResp, error)) *MockClientWithResponsesInterface_DeleteReleaseBindingWithResponse_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// DeleteResourceReleaseBindingRevisionWithResponse provides a mock function with given fields: ctx, namespaceName, resourceReleaseBindingRevisionName, params, reqEditors
+func (_m *MockClientWithResponsesInterface) DeleteResourceReleaseBindingRevisionWithResponse(ctx context.Context, namespaceName string, resourceReleaseBindingRevisionName string, params *gen.DeleteResourceReleaseBindingRevisionParams, reqEditors ...gen.RequestEditorFn) (*gen.DeleteResourceReleaseBindingRevisionResp, error) {
+	_va := make([]interface{}, len(reqEditors))
+	for _i := range reqEditors {
+		_va[_i] = reqEditors[_i]
+	}
+	var _ca []interface{}
+	_ca = append(_ca, ctx, namespaceName, resourceReleaseBindingRevisionName, params)
+	_ca = append(_ca, _va...)
+	ret := _m.Called(_ca...)
+
+	if len(ret) == 0 {
+		panic("no return value specified for DeleteResourceReleaseBindingRevisionWithResponse")
+	}
+
+	var r0 *gen.DeleteResourceReleaseBindingRevisionResp
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, *gen.DeleteResourceReleaseBindingRevisionParams, ...gen.RequestEditorFn) (*gen.DeleteResourceReleaseBindingRevisionResp, error)); ok {
+		return rf(ctx, namespaceName, resourceReleaseBindingRevisionName, params, reqEditors...)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, *gen.DeleteResourceReleaseBindingRevisionParams, ...gen.RequestEditorFn) *gen.DeleteResourceReleaseBindingRevisionResp); ok {
+		r0 = rf(ctx, namespaceName, resourceReleaseBindingRevisionName, params, reqEditors...)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*gen.DeleteResourceReleaseBindingRevisionResp)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string, string, *gen.DeleteResourceReleaseBindingRevisionParams, ...gen.RequestEditorFn) error); ok {
+		r1 = rf(ctx, namespaceName, resourceReleaseBindingRevisionName, params, reqEditors...)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockClientWithResponsesInterface_DeleteResourceReleaseBindingRevisionWithResponse_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'DeleteResourceReleaseBindingRevisionWithResponse'
+type MockClientWithResponsesInterface_DeleteResourceReleaseBindingRevisionWithResponse_Call struct {
+	*mock.Call
+}
+
+// DeleteResourceReleaseBindingRevisionWithResponse is a helper method to define mock.On call
+//   - ctx context.Context
+//   - namespaceName string
+//   - resourceReleaseBindingRevisionName string
+//   - params *gen.DeleteResourceReleaseBindingRevisionParams
+//   - reqEditors ...gen.RequestEditorFn
+func (_e *MockClientWithResponsesInterface_Expecter) DeleteResourceReleaseBindingRevisionWithResponse(ctx interface{}, namespaceName interface{}, resourceReleaseBindingRevisionName interface{}, params interface{}, reqEditors ...interface{}) *MockClientWithResponsesInterface_DeleteResourceReleaseBindingRevisionWithResponse_Call {
+	return &MockClientWithResponsesInterface_DeleteResourceReleaseBindingRevisionWithResponse_Call{Call: _e.mock.On("DeleteResourceReleaseBindingRevisionWithResponse",
+		append([]interface{}{ctx, namespaceName, resourceReleaseBindingRevisionName, params}, reqEditors...)...)}
+}
+
+func (_c *MockClientWithResponsesInterface_DeleteResourceReleaseBindingRevisionWithResponse_Call) Run(run func(ctx context.Context, namespaceName string, resourceReleaseBindingRevisionName string, params *gen.DeleteResourceReleaseBindingRevisionParams, reqEditors ...gen.RequestEditorFn)) *MockClientWithResponsesInterface_DeleteResourceReleaseBindingRevisionWithResponse_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		variadicArgs := make([]gen.RequestEditorFn, len(args)-4)
+		for i, a := range args[4:] {
+			if a != nil {
+				variadicArgs[i] = a.(gen.RequestEditorFn)
+			}
+		}
+		run(args[0].(context.Context), args[1].(string), args[2].(string), args[3].(*gen.DeleteResourceReleaseBindingRevisionParams), variadicArgs...)
+	})
+	return _c
+}
+
+func (_c *MockClientWithResponsesInterface_DeleteResourceReleaseBindingRevisionWithResponse_Call) Return(_a0 *gen.DeleteResourceReleaseBindingRevisionResp, _a1 error) *MockClientWithResponsesInterface_DeleteResourceReleaseBindingRevisionWithResponse_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockClientWithResponsesInterface_DeleteResourceReleaseBindingRevisionWithResponse_Call) RunAndReturn(run func(context.Context, string, string, *gen.DeleteResourceReleaseBindingRevisionParams, ...gen.RequestEditorFn) (*gen.DeleteResourceReleaseBindingRevisionResp, error)) *MockClientWithResponsesInterface_DeleteResourceReleaseBindingRevisionWithResponse_Call {
 	_c.Call.Return(run)
 	return _c
 }

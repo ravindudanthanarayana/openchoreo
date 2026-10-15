@@ -6,6 +6,7 @@ package mcphandlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services/bindingrevision"
 	releasebindingmocks "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/releasebinding/mocks"
 	resourcereleasebindingmocks "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/resourcereleasebinding/mocks"
+	"github.com/openchoreo/openchoreo/internal/server/middleware/audit"
 	"github.com/openchoreo/openchoreo/pkg/mcp/tools"
 )
 
@@ -246,4 +248,52 @@ func TestResourceReleaseBindingRevisionTools(t *testing.T) {
 		assert.Equal(t, testResourceReleaseBindingName, m["binding"])
 		assert.Equal(t, false, m["applied"])
 	})
+}
+
+// Every rollback tool call is audited, dry runs included: the MCP audit
+// adapter seeds the record from the tool arguments before the handler runs.
+// The record must say whether the call was a dry run (the default), so a
+// preview is not mistaken for an applied rollback.
+func TestRollbackAuditRecordsDryRun(t *testing.T) {
+	failure := errors.New("etcd is on fire")
+	for _, dryRun := range []bool{true, false} {
+		for _, svcErr := range []error{nil, failure} {
+			name := fmt.Sprintf("dryRun=%t err=%v", dryRun, svcErr)
+			result := sampleRollbackResult(dryRun)
+			if svcErr != nil {
+				result = nil
+			}
+
+			t.Run("ReleaseBinding "+name, func(t *testing.T) {
+				svc := releasebindingmocks.NewMockService(t)
+				svc.EXPECT().RollbackReleaseBinding(mock.Anything, testNS, testReleaseBindingName,
+					bindingrevision.RollbackRequest{Revision: 1, DryRun: dryRun}).Return(result, svcErr)
+				h := newTestHandler(withReleaseBindingService(svc))
+
+				ctx, data := audit.NewAuditContext(context.Background(),
+					&audit.Resource{Namespace: testNS, Name: testReleaseBindingName}, audit.RequestInfo{})
+				_, _ = h.RollbackReleaseBinding(ctx, testNS, testReleaseBindingName, 1, dryRun)
+
+				require.NotNil(t, data.Resource)
+				assert.Equal(t, testNS, data.Resource.Namespace)
+				assert.Equal(t, testReleaseBindingName, data.Resource.Name)
+				assert.Equal(t, map[string]any{"dryRun": dryRun}, data.Resource.Metadata)
+			})
+
+			t.Run("ResourceReleaseBinding "+name, func(t *testing.T) {
+				svc := resourcereleasebindingmocks.NewMockService(t)
+				svc.EXPECT().RollbackResourceReleaseBinding(mock.Anything, testNS, "db-dev",
+					bindingrevision.RollbackRequest{Revision: 1, DryRun: dryRun}).Return(result, svcErr)
+				h := newTestHandler(withResourceReleaseBindingService(svc))
+
+				ctx, data := audit.NewAuditContext(context.Background(),
+					&audit.Resource{Namespace: testNS, Name: "db-dev"}, audit.RequestInfo{})
+				_, _ = h.RollbackResourceReleaseBinding(ctx, testNS, "db-dev", 1, dryRun)
+
+				require.NotNil(t, data.Resource)
+				assert.Equal(t, "db-dev", data.Resource.Name)
+				assert.Equal(t, map[string]any{"dryRun": dryRun}, data.Resource.Metadata)
+			})
+		}
+	}
 }

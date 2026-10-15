@@ -12,7 +12,6 @@ import (
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services/bindingrevision"
 	releasebindingsvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/releasebinding"
-	"github.com/openchoreo/openchoreo/internal/server/middleware/audit"
 )
 
 // ListReleaseBindingRevisions returns the revision history of a component's release bindings.
@@ -97,6 +96,7 @@ func (h *Handler) RollbackReleaseBinding(
 	if request.Body.DryRun != nil {
 		req.DryRun = *request.Body.DryRun
 	}
+	setDryRunAuditResource(ctx, request.NamespaceName, request.ReleaseBindingName, req.DryRun)
 
 	result, err := h.services.ReleaseBindingService.RollbackReleaseBinding(ctx, request.NamespaceName,
 		request.ReleaseBindingName, req)
@@ -117,8 +117,42 @@ func (h *Handler) RollbackReleaseBinding(
 		}
 	}
 
-	if !result.DryRun {
-		audit.SetResource(ctx, &audit.Resource{Namespace: request.NamespaceName, Name: request.ReleaseBindingName})
-	}
 	return gen.RollbackReleaseBinding200JSONResponse(toRollbackResponse(result)), nil
+}
+
+// DeleteReleaseBindingRevision deletes one inactive revision from a binding's history.
+func (h *Handler) DeleteReleaseBindingRevision(
+	ctx context.Context,
+	request gen.DeleteReleaseBindingRevisionRequestObject,
+) (gen.DeleteReleaseBindingRevisionResponseObject, error) {
+	h.logger.Info("DeleteReleaseBindingRevision called", "namespaceName", request.NamespaceName,
+		"revision", request.ReleaseBindingRevisionName)
+
+	req := bindingrevision.DeleteRequest{}
+	if request.Params.Binding != nil {
+		req.Binding = *request.Params.Binding
+	}
+	if request.Params.DryRun != nil {
+		req.DryRun = *request.Params.DryRun
+	}
+	setDryRunAuditResource(ctx, request.NamespaceName, request.ReleaseBindingRevisionName, req.DryRun)
+
+	result, err := h.services.ReleaseBindingService.DeleteReleaseBindingRevision(ctx, request.NamespaceName,
+		request.ReleaseBindingRevisionName, req)
+	if err != nil {
+		outcome, body := classifyDeleteRevisionError(err, releasebindingsvc.ErrReleaseBindingNotFound)
+		switch outcome {
+		case rollbackForbidden:
+			return gen.DeleteReleaseBindingRevision403JSONResponse{ForbiddenJSONResponse: forbidden()}, nil
+		case rollbackNotFound:
+			return gen.DeleteReleaseBindingRevision404JSONResponse{NotFoundJSONResponse: gen.NotFoundJSONResponse(body)}, nil
+		case rollbackConflict:
+			return gen.DeleteReleaseBindingRevision409JSONResponse{RevisionDeleteConflictJSONResponse: gen.RevisionDeleteConflictJSONResponse(body)}, nil
+		default:
+			h.logger.Error("Failed to delete release binding revision", "error", err)
+			return gen.DeleteReleaseBindingRevision500JSONResponse{InternalErrorJSONResponse: internalError()}, nil
+		}
+	}
+
+	return gen.DeleteReleaseBindingRevision200JSONResponse(toDeleteRevisionResponse(result)), nil
 }

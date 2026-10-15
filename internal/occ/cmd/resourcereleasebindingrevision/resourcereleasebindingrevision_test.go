@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/openchoreo/openchoreo/internal/occ/cmd/config"
 	"github.com/openchoreo/openchoreo/internal/occ/resources/client"
 	"github.com/openchoreo/openchoreo/internal/occ/resources/client/mocks"
 	"github.com/openchoreo/openchoreo/internal/occ/testutil"
@@ -66,20 +67,13 @@ func TestNewResourceReleaseBindingRevisionCmd(t *testing.T) {
 	for _, sub := range cmd.Commands() {
 		names = append(names, sub.Name())
 	}
-	assert.ElementsMatch(t, []string{"list", "get", "rollback"}, names)
-
-	rollback, _, err := cmd.Find([]string{"rollback"})
-	require.NoError(t, err)
-	for _, f := range []string{"namespace", "binding", "revision", "dry-run", "yes"} {
-		assert.NotNil(t, rollback.Flags().Lookup(f), "flag --%s", f)
-	}
+	assert.ElementsMatch(t, []string{"list", "get", "delete"}, names)
 }
 
 func TestCmds_FactoryError(t *testing.T) {
 	for name, run := range map[string]func() error{
-		"list":     func() error { c := newListCmd(errFactory("factory failed")); return c.RunE(c, nil) },
-		"get":      func() error { c := newGetCmd(errFactory("factory failed")); return c.RunE(c, nil) },
-		"rollback": func() error { c := newRollbackCmd(errFactory("factory failed")); return c.RunE(c, nil) },
+		"list": func() error { c := newListCmd(errFactory("factory failed")); return c.RunE(c, nil) },
+		"get":  func() error { c := newGetCmd(errFactory("factory failed")); return c.RunE(c, nil) },
 	} {
 		assert.EqualError(t, run(), "factory failed", name)
 	}
@@ -124,38 +118,109 @@ func TestGet(t *testing.T) {
 	})
 }
 
-func TestRollback(t *testing.T) {
-	resp := func(dryRun bool) *gen.RollbackResponse {
-		return &gen.RollbackResponse{RevisionName: "db-dev-r1", Revision: 1, TargetRevision: 1, DryRun: dryRun,
-			Changes:  []gen.RollbackSpecChange{{Field: "resourceRelease", Current: "db-bbb", Target: "db-aaa"}},
-			Warnings: []gen.RollbackWarning{{Code: gen.BindingWillBePinned, Message: "releasePin changes from Auto to Pinned"}}}
+// Without --binding, list shows every resource binding's revisions, with each
+// revision's binding and environment; --resource and --environment narrow it.
+func TestList_AllBindings(t *testing.T) {
+	binding := func(name, resource, environment string) gen.ResourceReleaseBinding {
+		spec := &gen.ResourceReleaseBindingSpec{Environment: environment}
+		spec.Owner.ResourceName = resource
+		spec.Owner.ProjectName = "shop"
+		return gen.ResourceReleaseBinding{Metadata: gen.ObjectMeta{Name: name}, Spec: spec}
 	}
-	dry := func(want bool) any {
-		return mock.MatchedBy(func(r gen.RollbackRequest) bool { return r.DryRun != nil && *r.DryRun == want })
+	rev := func(n int64, release string) gen.ResourceReleaseBindingRevision {
+		created := time.Now().Add(-time.Hour)
+		h := gen.BindingRevisionStatusHealth("Healthy")
+		active, knownGood := true, true
+		return gen.ResourceReleaseBindingRevision{
+			Metadata: gen.ObjectMeta{Name: fmt.Sprintf("x-r%d", n), CreationTimestamp: &created},
+			Spec:     gen.ResourceReleaseBindingRevisionSpec{Revision: n, ResourceReleaseName: release, Cause: "Deploy", SnapshotHash: "h"},
+			Status:   &gen.BindingRevisionStatus{Health: &h, Active: &active, KnownGood: &knownGood},
+		}
 	}
 
-	t.Run("confirmed", func(t *testing.T) {
-		mc := mocks.NewMockInterface(t)
-		mc.EXPECT().RollbackResourceReleaseBinding(mock.Anything, testNS, testBinding, dry(true)).Return(resp(true), nil).Once()
-		mc.EXPECT().RollbackResourceReleaseBinding(mock.Anything, testNS, testBinding, dry(false)).Return(resp(false), nil).Once()
-		r := New(mc)
-		r.confirm = func(io.Writer, string) (bool, error) { return true, nil }
+	mc := mocks.NewMockInterface(t)
+	mc.EXPECT().ListResourceReleaseBindings(mock.Anything, testNS, mock.MatchedBy(func(p *gen.ListResourceReleaseBindingsParams) bool {
+		return p.Resource != nil && *p.Resource == "db"
+	})).Return(&gen.ResourceReleaseBindingList{Items: []gen.ResourceReleaseBinding{
+		binding("db-prod", "db", "production"),
+		binding("db-dev", "db", "dev"),
+	}}, nil)
+	for _, env := range []string{"dev", "production"} {
+		mc.EXPECT().ListResourceReleaseBindingRevisions(mock.Anything, testNS, mock.MatchedBy(func(p *gen.ListResourceReleaseBindingRevisionsParams) bool {
+			return p.Resource == "db" && p.Environment != nil && *p.Environment == env
+		})).Return(&gen.ResourceReleaseBindingRevisionList{Items: []gen.ResourceReleaseBindingRevision{rev(1, "db-"+env)}}, nil)
+	}
 
-		out := testutil.CaptureStdout(t, func() {
-			require.NoError(t, r.Rollback(RollbackParams{Namespace: testNS, Binding: testBinding, Revision: 1}))
+	out := testutil.CaptureStdout(t, func() {
+		require.NoError(t, New(mc).List(ListParams{Namespace: testNS, Resource: "db"}))
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	require.Len(t, lines, 3)
+	assert.Equal(t, []string{"PROJECT", "BINDING", "ENVIRONMENT", "NAME"}, strings.Fields(lines[0])[:4])
+	assert.Equal(t, []string{"shop", "db-dev", "dev", "db-dev-r1"}, strings.Fields(lines[1])[:4])
+	assert.Equal(t, []string{"shop", "db-prod", "production", "db-production-r1"}, strings.Fields(lines[2])[:4])
+}
+
+func TestList_AllBindingsByProject(t *testing.T) {
+	binding := func(name, project, resource string) gen.ResourceReleaseBinding {
+		spec := &gen.ResourceReleaseBindingSpec{Environment: "dev"}
+		spec.Owner.ResourceName = resource
+		spec.Owner.ProjectName = project
+		return gen.ResourceReleaseBinding{Metadata: gen.ObjectMeta{Name: name}, Spec: spec}
+	}
+	mc := mocks.NewMockInterface(t)
+	mc.EXPECT().ListResourceReleaseBindings(mock.Anything, testNS, mock.Anything).Return(&gen.ResourceReleaseBindingList{
+		Items: []gen.ResourceReleaseBinding{binding("db-dev", "shop", "db"), binding("cache-dev", "finance", "cache")},
+	}, nil)
+	h := gen.BindingRevisionStatusHealth("Healthy")
+	active := true
+	mc.EXPECT().ListResourceReleaseBindingRevisions(mock.Anything, testNS, mock.MatchedBy(func(p *gen.ListResourceReleaseBindingRevisionsParams) bool {
+		return p.Resource == "db"
+	})).Return(&gen.ResourceReleaseBindingRevisionList{Items: []gen.ResourceReleaseBindingRevision{{
+		Metadata: gen.ObjectMeta{Name: "db-dev-r1"},
+		Spec:     gen.ResourceReleaseBindingRevisionSpec{Revision: 1, ResourceReleaseName: "db-aaa", Cause: "Deploy", SnapshotHash: "h"},
+		Status:   &gen.BindingRevisionStatus{Health: &h, Active: &active},
+	}}}, nil)
+
+	out := testutil.CaptureStdout(t, func() {
+		require.NoError(t, New(mc).List(ListParams{Namespace: testNS, Project: "shop"}))
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	require.Len(t, lines, 2)
+	assert.Equal(t, []string{"BINDING", "ENVIRONMENT", "NAME"}, strings.Fields(lines[0])[:3])
+	assert.Equal(t, []string{"db-dev", "dev", "db-aaa-r1"}, strings.Fields(lines[1])[:3])
+}
+
+func TestListCmd_SkipsContextDefaults(t *testing.T) {
+	cmd := newListCmd(errFactory("unused"))
+	_, skip := cmd.Annotations[config.SkipContextDefaultsAnnotation]
+	assert.True(t, skip)
+}
+
+func TestDelete_WithYes(t *testing.T) {
+	mc := mocks.NewMockInterface(t)
+	expectHistory(mc)
+	params := func(dryRun bool) any {
+		return mock.MatchedBy(func(p *gen.DeleteResourceReleaseBindingRevisionParams) bool {
+			return p.Binding != nil && *p.Binding == testBinding && p.DryRun != nil && *p.DryRun == dryRun
 		})
-		assert.Contains(t, out, `resourceRelease: "db-bbb" -> "db-aaa"`)
-		assert.Contains(t, out, `Rolled back resource release binding "db-dev" to revision 1`)
-	})
+	}
+	mc.EXPECT().DeleteResourceReleaseBindingRevision(mock.Anything, testNS, "db-dev-r1", params(true)).
+		Return(&gen.DeleteBindingRevisionResponse{RevisionName: "db-dev-r1", Revision: 1, DryRun: true}, nil).Once()
+	mc.EXPECT().DeleteResourceReleaseBindingRevision(mock.Anything, testNS, "db-dev-r1", params(false)).
+		Return(&gen.DeleteBindingRevisionResponse{RevisionName: "db-dev-r1", Revision: 1}, nil).Once()
 
-	t.Run("dry run via flags", func(t *testing.T) {
-		mc := mocks.NewMockInterface(t)
-		mc.EXPECT().RollbackResourceReleaseBinding(mock.Anything, testNS, testBinding, dry(true)).Return(resp(true), nil).Once()
-		cmd := newRollbackCmd(mockFactory(mc))
-		require.NoError(t, cmd.ParseFlags([]string{"-n", testNS, "--binding", testBinding, "--revision", "1", "--dry-run"}))
-
-		out := testutil.CaptureStdout(t, func() { require.NoError(t, cmd.RunE(cmd, nil)) })
-		assert.Contains(t, out, "! BindingWillBePinned")
-		assert.Contains(t, out, "Dry run: nothing was changed.")
+	r := New(mc)
+	r.confirm = func(io.Writer, string) (bool, error) { t.Fatal("--yes must not ask"); return false, nil }
+	out := testutil.CaptureStdout(t, func() {
+		require.NoError(t, r.Delete(DeleteParams{Namespace: testNS, Binding: testBinding, Revision: 1, Yes: true}))
 	})
+	assert.Contains(t, out, "Successfully deleted revision 1: db-aaa-r1")
+}
+
+func TestDelete_NotFound(t *testing.T) {
+	mc := mocks.NewMockInterface(t)
+	expectHistory(mc)
+	err := New(mc).Delete(DeleteParams{Namespace: testNS, Binding: testBinding, Revision: 5})
+	require.ErrorContains(t, err, "not found; it may have been deleted")
 }

@@ -82,6 +82,8 @@ type Adapter[B client.Object, R client.Object] interface {
 	Items(list client.ObjectList) []R
 	// Number returns spec.revision.
 	Number(rev R) int64
+	// HighestRevision returns the binding's status.highestRevision.
+	HighestRevision(binding B) int64
 	// SnapshotHash returns spec.snapshotHash.
 	SnapshotHash(rev R) string
 	// RecordedCause returns spec.cause.
@@ -134,6 +136,10 @@ type Result struct {
 	// Cause is the cause of a revision this call created or found already
 	// created; empty when no new revision was needed.
 	Cause openchoreov1alpha1.RevisionCause
+	// Highest is the highest revision number the binding has recorded: its
+	// status.highestRevision or any revision Record saw, whichever is higher.
+	// Bindings publish it as status.highestRevision.
+	Highest int64
 }
 
 // Snapshotter records each distinct binding spec as an immutable revision and
@@ -180,7 +186,7 @@ func (s *Snapshotter[B, R]) Record(ctx context.Context, binding B) (Result, erro
 		return Result{}, fmt.Errorf("hash binding spec: %w", err)
 	}
 
-	var result Result
+	result := Result{Highest: s.highest(binding, revs)}
 	if hasCurrent {
 		result.Number = s.Adapter.Number(current)
 		result.Name = current.GetName()
@@ -215,6 +221,7 @@ func (s *Snapshotter[B, R]) Record(ctx context.Context, binding B) (Result, erro
 		result.Number = number
 		result.Name = Name(binding.GetName(), number)
 		result.Created = created
+		result.Highest = max(result.Highest, number)
 		// A revision found already created is only projected when this client can
 		// read it; otherwise the next reconcile lists it and projects it then.
 		if found {
@@ -322,17 +329,16 @@ func (s *Snapshotter[B, R]) list(ctx context.Context, binding B) ([]R, error) {
 	return owned, nil
 }
 
-// latest returns the revision with the highest spec.revision. List order is
-// never relied on.
-func (s *Snapshotter[B, R]) latest(revs []R) (R, bool) {
-	var latest R
-	found := false
+// highest returns the highest revision number the binding has recorded: its
+// status.highestRevision, or the highest spec.revision among revs when a
+// revision is numbered above it (one created before the status was written).
+// Deleted revisions only count through the status, which is why it is kept.
+func (s *Snapshotter[B, R]) highest(binding B, revs []R) int64 {
+	highest := s.Adapter.HighestRevision(binding)
 	for _, rev := range revs {
-		if !found || s.Adapter.Number(rev) > s.Adapter.Number(latest) {
-			latest, found = rev, true
-		}
+		highest = max(highest, s.Adapter.Number(rev))
 	}
-	return latest, found
+	return highest
 }
 
 // current returns the revision most recently made active: the one with the
@@ -393,17 +399,15 @@ func (s *Snapshotter[B, R]) markActivated(ctx context.Context, rev R, generation
 }
 
 // create builds and creates the binding's next revision, numbered one above
-// its highest, so each binding counts r1, r2, r3... on its own. current is
-// the revision it replaces, used to classify the change.
+// the highest it has recorded (see highest), so each binding counts r1, r2,
+// r3... on its own and never reuses the number of a deleted revision. current
+// is the revision it replaces, used to classify the change.
 // It returns the revision number and, when found is true, the stored revision:
 // the one created, or the one that already existed under that name. found is
 // false when the existing revision cannot be read yet.
 func (s *Snapshotter[B, R]) create(ctx context.Context, binding B, revs []R, current R, hasCurrent bool,
 	hash string) (number int64, rev R, found, created bool, err error) {
-	number = 1
-	if latest, ok := s.latest(revs); ok {
-		number = s.Adapter.Number(latest) + 1
-	}
+	number = s.highest(binding, revs) + 1
 
 	built := s.Adapter.Build(binding, number, s.cause(binding, current, hasCurrent), hash)
 	built.SetName(Name(binding.GetName(), number))
