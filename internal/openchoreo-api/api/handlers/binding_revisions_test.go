@@ -41,6 +41,8 @@ func TestClassifyRollbackError(t *testing.T) {
 			wantOutcome: rollbackConflict, wantCode: gen.RELEASEDELETED},
 		{name: "concurrent modification", err: fmt.Errorf("%w: binding b", bindingrevision.ErrConcurrentModification),
 			wantOutcome: rollbackConflict, wantCode: gen.CONCURRENTMODIFICATION},
+		{name: "no previous revision", err: fmt.Errorf("%w: none", bindingrevision.ErrNoPreviousRevision),
+			wantOutcome: rollbackConflict, wantCode: gen.NOPREVIOUSREVISION},
 		{name: "validation", err: &services.ValidationError{Msg: "revision must be at least 1"}, wantOutcome: rollbackBadRequest},
 		{name: "anything else", err: errors.New("etcd is on fire"), wantOutcome: rollbackInternalError},
 	}
@@ -95,7 +97,7 @@ func TestRollbackAuditRecordsDryRun(t *testing.T) {
 			if svcErr != nil {
 				result = nil
 			}
-			body := &gen.RollbackRequest{Revision: 1, DryRun: ptr.To(dryRun)}
+			body := &gen.RollbackRequest{Revision: ptr.To(int64(1)), DryRun: ptr.To(dryRun)}
 
 			t.Run("ReleaseBinding "+name, func(t *testing.T) {
 				svc := releasebindingmocks.NewMockService(t)
@@ -223,5 +225,59 @@ func TestDeleteRevisionHandlers(t *testing.T) {
 			NamespaceName: ns, ResourceReleaseBindingRevisionName: rev})
 		require.NoError(t, err)
 		assert.IsType(t, gen.DeleteResourceReleaseBindingRevision404JSONResponse{}, resp)
+	})
+}
+
+func TestToRollbackRequest(t *testing.T) {
+	req, invalid := toRollbackRequest(&gen.RollbackRequest{})
+	assert.Empty(t, invalid)
+	assert.Equal(t, bindingrevision.RollbackRequest{}, req, "no revision: the previously active revision (0)")
+
+	req, invalid = toRollbackRequest(&gen.RollbackRequest{Revision: ptr.To(int64(3)), DryRun: ptr.To(true)})
+	assert.Empty(t, invalid)
+	assert.Equal(t, bindingrevision.RollbackRequest{Revision: 3, DryRun: true}, req)
+
+	for _, n := range []int64{0, -2} {
+		_, invalid = toRollbackRequest(&gen.RollbackRequest{Revision: ptr.To(n)})
+		assert.Contains(t, invalid, "revision must be at least 1", "an explicit revision %d is not a request for the previous one", n)
+	}
+
+	_, invalid = toRollbackRequest(nil)
+	assert.Equal(t, "Request body is required", invalid)
+}
+
+func TestRollbackWithoutRevision(t *testing.T) {
+	const ns, binding = "test-ns", "api-dev"
+	noPrevious := fmt.Errorf("%w: the previously active revision has been deleted", bindingrevision.ErrNoPreviousRevision)
+
+	t.Run("ReleaseBinding: the service resolves the previous revision", func(t *testing.T) {
+		svc := releasebindingmocks.NewMockService(t)
+		svc.EXPECT().RollbackReleaseBinding(mock.Anything, ns, binding, bindingrevision.RollbackRequest{DryRun: true}).
+			Return(&bindingrevision.RollbackResult{RevisionName: binding + "-r1", Revision: 1, TargetRevision: 1, DryRun: true}, nil).Once()
+		svc.EXPECT().RollbackReleaseBinding(mock.Anything, ns, binding, bindingrevision.RollbackRequest{}).
+			Return(nil, noPrevious).Once()
+		h := &Handler{services: &handlerservices.Services{ReleaseBindingService: svc}, logger: slog.Default()}
+
+		resp, err := h.RollbackReleaseBinding(context.Background(), gen.RollbackReleaseBindingRequestObject{
+			NamespaceName: ns, ReleaseBindingName: binding, Body: &gen.RollbackRequest{DryRun: ptr.To(true)}})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), resp.(gen.RollbackReleaseBinding200JSONResponse).TargetRevision)
+
+		resp, err = h.RollbackReleaseBinding(context.Background(), gen.RollbackReleaseBindingRequestObject{
+			NamespaceName: ns, ReleaseBindingName: binding, Body: &gen.RollbackRequest{}})
+		require.NoError(t, err)
+		conflict := resp.(gen.RollbackReleaseBinding409JSONResponse)
+		assert.Equal(t, gen.NOPREVIOUSREVISION, conflict.Code)
+		assert.Equal(t, "No previous revision to roll back to: the previously active revision has been deleted", conflict.Error)
+	})
+
+	t.Run("ResourceReleaseBinding: an explicit revision 0 is a 400", func(t *testing.T) {
+		svc := resourcereleasebindingmocks.NewMockService(t)
+		h := &Handler{services: &handlerservices.Services{ResourceReleaseBindingService: svc}, logger: slog.Default()}
+
+		resp, err := h.RollbackResourceReleaseBinding(context.Background(), gen.RollbackResourceReleaseBindingRequestObject{
+			NamespaceName: ns, ResourceReleaseBindingName: binding, Body: &gen.RollbackRequest{Revision: ptr.To(int64(0))}})
+		require.NoError(t, err)
+		assert.IsType(t, gen.RollbackResourceReleaseBinding400JSONResponse{}, resp)
 	})
 }

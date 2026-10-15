@@ -220,6 +220,7 @@ const (
 	CONFLICT               ErrorResponseCode = "CONFLICT"
 	FORBIDDEN              ErrorResponseCode = "FORBIDDEN"
 	INTERNALERROR          ErrorResponseCode = "INTERNAL_ERROR"
+	NOPREVIOUSREVISION     ErrorResponseCode = "NO_PREVIOUS_REVISION"
 	NOTFOUND               ErrorResponseCode = "NOT_FOUND"
 	NOTIMPLEMENTED         ErrorResponseCode = "NOT_IMPLEMENTED"
 	RELEASEDELETED         ErrorResponseCode = "RELEASE_DELETED"
@@ -368,14 +369,15 @@ const (
 
 // Defines values for RollbackWarningCode.
 const (
-	BindingWillBePinned  RollbackWarningCode = "BindingWillBePinned"
-	NoSpecChange         RollbackWarningCode = "NoSpecChange"
-	ProjectCellDrift     RollbackWarningCode = "ProjectCellDrift"
-	SecretReferenceDrift RollbackWarningCode = "SecretReferenceDrift"
-	TargetNotKnownGood   RollbackWarningCode = "TargetNotKnownGood"
-	TargetUndeploys      RollbackWarningCode = "TargetUndeploys"
-	TargetUnhealthy      RollbackWarningCode = "TargetUnhealthy"
-	UnrecordedChange     RollbackWarningCode = "UnrecordedChange"
+	BindingWillBePinned      RollbackWarningCode = "BindingWillBePinned"
+	NoSpecChange             RollbackWarningCode = "NoSpecChange"
+	PreviousRevisionInferred RollbackWarningCode = "PreviousRevisionInferred"
+	ProjectCellDrift         RollbackWarningCode = "ProjectCellDrift"
+	SecretReferenceDrift     RollbackWarningCode = "SecretReferenceDrift"
+	TargetNotKnownGood       RollbackWarningCode = "TargetNotKnownGood"
+	TargetUndeploys          RollbackWarningCode = "TargetUndeploys"
+	TargetUnhealthy          RollbackWarningCode = "TargetUnhealthy"
+	UnrecordedChange         RollbackWarningCode = "UnrecordedChange"
 )
 
 // Defines values for SecretTemplateType.
@@ -3943,8 +3945,8 @@ type RollbackRequest struct {
 	// DryRun Run every check and return the response without writing anything
 	DryRun *bool `json:"dryRun,omitempty"`
 
-	// Revision Number of the revision to roll back to
-	Revision int64 `json:"revision"`
+	// Revision Number of the revision to roll back to. When omitted, the revision that was active immediately before the current one, by activation history rather than revision number (like kubectl rollout undo). If that revision was deleted, or the history cannot say which it was, the rollback is refused with 409 NO_PREVIOUS_REVISION and nothing is changed.
+	Revision *int64 `json:"revision,omitempty"`
 }
 
 // RollbackResponse Result of a rollback, or of its dry run
@@ -3988,14 +3990,14 @@ type RollbackSpecChange struct {
 
 // RollbackWarning A pre-flight finding that does not block the rollback
 type RollbackWarning struct {
-	// Code TargetNotKnownGood: the target never stayed Healthy for the known-good window. TargetUnhealthy: the target was Degraded or Failed when it stopped being active. TargetUndeploys: the target revision has state Undeploy, so the rollback removes the deployment. NoSpecChange: the target spec equals the current one; no revision will be recorded. BindingWillBePinned: releasePin changes from Auto to Pinned, stopping auto-deploy for this binding. UnrecordedChange: the binding has a spec change the controller has not recorded yet; the rollback discards it. ProjectCellDrift: the project's cell in this environment is bound to a ProjectRelease created after the target revision, so the restored spec will run in a cell it was never deployed with. SecretReferenceDrift: a SecretReference the target revision uses is missing, lacks a referenced key, or was recreated after the target revision.
+	// Code TargetNotKnownGood: the target never stayed Healthy for the known-good window. TargetUnhealthy: the target was Degraded or Failed when it stopped being active. TargetUndeploys: the target revision has state Undeploy, so the rollback removes the deployment. NoSpecChange: the target spec equals the current one; no revision will be recorded. BindingWillBePinned: releasePin changes from Auto to Pinned, stopping auto-deploy for this binding. UnrecordedChange: the binding has a spec change the controller has not recorded yet; the rollback discards it. ProjectCellDrift: the project's cell in this environment is bound to a ProjectRelease created after the target revision, so the restored spec will run in a cell it was never deployed with. SecretReferenceDrift: a SecretReference the target revision uses is missing, lacks a referenced key, or was recreated after the target revision. PreviousRevisionInferred: no revision was named and the current revision predates activation tracking, so the target is the revision activated just before it; a revision deleted since may have been active in between.
 	Code RollbackWarningCode `json:"code"`
 
 	// Message Human-readable explanation
 	Message string `json:"message"`
 }
 
-// RollbackWarningCode TargetNotKnownGood: the target never stayed Healthy for the known-good window. TargetUnhealthy: the target was Degraded or Failed when it stopped being active. TargetUndeploys: the target revision has state Undeploy, so the rollback removes the deployment. NoSpecChange: the target spec equals the current one; no revision will be recorded. BindingWillBePinned: releasePin changes from Auto to Pinned, stopping auto-deploy for this binding. UnrecordedChange: the binding has a spec change the controller has not recorded yet; the rollback discards it. ProjectCellDrift: the project's cell in this environment is bound to a ProjectRelease created after the target revision, so the restored spec will run in a cell it was never deployed with. SecretReferenceDrift: a SecretReference the target revision uses is missing, lacks a referenced key, or was recreated after the target revision.
+// RollbackWarningCode TargetNotKnownGood: the target never stayed Healthy for the known-good window. TargetUnhealthy: the target was Degraded or Failed when it stopped being active. TargetUndeploys: the target revision has state Undeploy, so the rollback removes the deployment. NoSpecChange: the target spec equals the current one; no revision will be recorded. BindingWillBePinned: releasePin changes from Auto to Pinned, stopping auto-deploy for this binding. UnrecordedChange: the binding has a spec change the controller has not recorded yet; the rollback discards it. ProjectCellDrift: the project's cell in this environment is bound to a ProjectRelease created after the target revision, so the restored spec will run in a cell it was never deployed with. SecretReferenceDrift: a SecretReference the target revision uses is missing, lacks a referenced key, or was recreated after the target revision. PreviousRevisionInferred: no revision was named and the current revision predates activation tracking, so the target is the revision activated just before it; a revision deleted since may have been active in between.
 type RollbackWarningCode string
 
 // SchemaResponse JSON Schema response for component types, traits, or workflows

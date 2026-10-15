@@ -160,6 +160,24 @@ func GetOutput(cmd *cobra.Command) string {
 	return v
 }
 
+// AddRollbackRevision adds --revision to a rollback command, where it is
+// optional: without it the rollback returns to the previously active revision.
+func AddRollbackRevision(cmd *cobra.Command) {
+	cmd.Flags().Int64("revision", 0,
+		"Revision to roll back to (default: the revision active before the current one)")
+}
+
+// GetRollbackRevision returns --revision for a rollback: 0 when the flag is
+// not given. A given value must be at least 1, so --revision 0 is an error
+// rather than a silent request for the previous revision.
+func GetRollbackRevision(cmd *cobra.Command) (int64, error) {
+	v, _ := cmd.Flags().GetInt64("revision")
+	if cmd.Flags().Changed("revision") && v < 1 {
+		return 0, fmt.Errorf("--revision must be at least 1; omit it to roll back to the previously active revision")
+	}
+	return v, nil
+}
+
 // ValidateOutput rejects an output format get does not support.
 func ValidateOutput(format string) error {
 	switch format {
@@ -294,14 +312,18 @@ func confirm(in io.Reader, out io.Writer, question string) (bool, error) {
 	return false, nil
 }
 
-// RollbackFunc calls the rollback API, as a dry run or for real.
-type RollbackFunc func(ctx context.Context, dryRun bool) (*gen.RollbackResponse, error)
+// RollbackFunc calls the rollback API, as a dry run or for real. A nil
+// revision asks the server for the revision that was active before the
+// current one.
+type RollbackFunc func(ctx context.Context, revision *int64, dryRun bool) (*gen.RollbackResponse, error)
 
 // RollbackOptions configures RunRollback.
 type RollbackOptions struct {
 	// Kind names the binding kind in messages, e.g. "release binding".
-	Kind     string
-	Binding  string
+	Kind    string
+	Binding string
+	// Revision is the revision to roll back to; 0 rolls back to the revision
+	// that was active before the current one.
 	Revision int64
 	DryRun   bool
 	Yes      bool
@@ -314,26 +336,39 @@ type RollbackOptions struct {
 //   - default: preview it, ask for confirmation, then apply it.
 //   - --yes: apply it straight away and print the warnings with the result.
 //
+// Without --revision the server picks the target: the revision that was
+// active immediately before the current one, by activation history. The
+// preview shows which, and the confirmed rollback is applied to that revision
+// by number, so it cannot move to another target if the history changes in
+// between. With --yes the server picks and applies it in one request.
+//
 // The server repeats every check when the rollback is applied, so a binding
 // that changes between the preview and the confirmation is refused, not
 // overwritten.
 func RunRollback(ctx context.Context, opts RollbackOptions, rollback RollbackFunc) error {
-	if opts.Revision < 1 {
-		return fmt.Errorf("--revision is required and must be at least 1")
+	if opts.Revision < 0 {
+		return fmt.Errorf("--revision must be at least 1, or omitted for the previously active revision")
+	}
+	implicit := opts.Revision == 0
+	var target *int64
+	if !implicit {
+		target = &opts.Revision
 	}
 
+	var preview *gen.RollbackResponse
 	if opts.DryRun || !opts.Yes {
-		preview, err := rollback(ctx, true)
-		if err != nil {
+		var err error
+		if preview, err = rollback(ctx, target, true); err != nil {
 			return err
 		}
-		printPlan(opts.Out, opts.Kind, opts.Binding, preview)
+		printPlan(opts.Out, opts.Kind, opts.Binding, preview, implicit)
 		if opts.DryRun {
 			fmt.Fprintln(opts.Out, "\nDry run: nothing was changed.")
 			return nil
 		}
 
-		ok, err := opts.Confirm(opts.Out, fmt.Sprintf("\nRoll back %s %q to revision %d?", opts.Kind, opts.Binding, opts.Revision))
+		ok, err := opts.Confirm(opts.Out, fmt.Sprintf("\nRoll back %s %q to revision %d?", opts.Kind, opts.Binding,
+			preview.TargetRevision))
 		if err != nil {
 			return err
 		}
@@ -341,14 +376,25 @@ func RunRollback(ctx context.Context, opts RollbackOptions, rollback RollbackFun
 			fmt.Fprintln(opts.Out, "Rollback cancelled.")
 			return nil
 		}
+		// Apply exactly the target the user confirmed.
+		target = &preview.TargetRevision
 	}
 
-	result, err := rollback(ctx, false)
+	result, err := rollback(ctx, target, false)
 	if err != nil {
 		return err
 	}
 	if opts.Yes {
+		if implicit {
+			fmt.Fprintf(opts.Out, "Rolling back to revision %d, the previously active revision.\n", result.TargetRevision)
+		}
 		printWarnings(opts.Out, result.Warnings)
+	}
+	if preview != nil && preview.RevertedFrom != nil && result.RevertedFrom != nil &&
+		*preview.RevertedFrom != *result.RevertedFrom {
+		fmt.Fprintf(opts.Out, "Note: the active revision changed from %d to %d after the preview; "+
+			"the rollback went to revision %d as confirmed.\n", *preview.RevertedFrom, *result.RevertedFrom,
+			result.TargetRevision)
 	}
 	if hasWarning(result.Warnings, gen.NoSpecChange) {
 		fmt.Fprintf(opts.Out, "Revision %d (%s) of %s %q is already active; nothing changed.\n",
@@ -361,12 +407,17 @@ func RunRollback(ctx context.Context, opts RollbackOptions, rollback RollbackFun
 }
 
 // printPlan describes what a rollback will do.
-func printPlan(out io.Writer, kind, binding string, plan *gen.RollbackResponse) {
+// With implicit, the server chose the target and the plan says why.
+func printPlan(out io.Writer, kind, binding string, plan *gen.RollbackResponse, implicit bool) {
 	from := ""
 	if plan.RevertedFrom != nil {
 		from = fmt.Sprintf(" from revision %d", *plan.RevertedFrom)
 	}
 	fmt.Fprintf(out, "Rolling back %s %q%s to revision %d.\n", kind, binding, from, plan.TargetRevision)
+	if implicit {
+		fmt.Fprintf(out, "Target: %s, the revision active before the current one (no --revision given).\n",
+			displayName(plan))
+	}
 	if hasWarning(plan.Warnings, gen.NoSpecChange) {
 		fmt.Fprintln(out, "That revision is already active, so nothing will change.")
 	} else {

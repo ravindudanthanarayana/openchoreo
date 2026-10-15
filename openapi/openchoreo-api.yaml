@@ -4359,8 +4359,9 @@ paths:
         status.currentRevision to it, and restarts its health at Progressing.
 
 
-        With dryRun, every check runs and the response is the same, but nothing is written.
-        Requires the releasebinding:rollback permission on the binding's component.
+        Without a revision, the target is the revision that was active immediately before the
+        current one. With dryRun, every check runs and the response is the same, but nothing is
+        written. Requires the releasebinding:rollback permission on the binding's component.
       tags: [ReleaseBindings]
       parameters:
         - $ref: '#/components/parameters/NamespaceNameParam'
@@ -5958,8 +5959,9 @@ paths:
         status.currentRevision to it, and restarts its health at Progressing.
 
 
-        With dryRun, every check runs and the response is the same, but nothing is written.
-        Requires the resourcereleasebinding:rollback permission on the binding's resource.
+        Without a revision, the target is the revision that was active immediately before the
+        current one. With dryRun, every check runs and the response is the same, but nothing is
+        written. Requires the resourcereleasebinding:rollback permission on the binding's resource.
       tags: [ResourceReleaseBindings]
       parameters:
         - $ref: '#/components/parameters/NamespaceNameParam'
@@ -7192,6 +7194,11 @@ components:
               value:
                 error: "Release binding 'api-service-dev' was modified concurrently; retry the rollback"
                 code: CONCURRENT_MODIFICATION
+            noPreviousRevision:
+              summary: No revision was named and the previously active one cannot be rolled back to
+              value:
+                error: "No previous revision to roll back to: the previously active revision has been deleted: revision 2, active before revision 4; name the revision to roll back to"
+                code: NO_PREVIOUS_REVISION
 
     RevisionDeleteConflict:
       description: >-
@@ -7293,6 +7300,7 @@ components:
             - RELEASE_DELETED
             - CONCURRENT_MODIFICATION
             - REVISION_PROTECTED
+            - NO_PREVIOUS_REVISION
           example: NOT_FOUND
         details:
           type: array
@@ -12069,14 +12077,17 @@ components:
     RollbackRequest:
       type: object
       description: Request to restore the binding spec recorded by an earlier revision
-      required:
-        - revision
       properties:
         revision:
           type: integer
           format: int64
           minimum: 1
-          description: Number of the revision to roll back to
+          description: >-
+            Number of the revision to roll back to. When omitted, the revision that was active
+            immediately before the current one, by activation history rather than revision
+            number (like kubectl rollout undo). If that revision was deleted, or the history
+            cannot say which it was, the rollback is refused with 409 NO_PREVIOUS_REVISION
+            and nothing is changed.
           example: 3
         dryRun:
           type: boolean
@@ -12201,6 +12212,9 @@ components:
             target revision, so the restored spec will run in a cell it was never deployed with.
             SecretReferenceDrift: a SecretReference the target revision uses is missing, lacks a referenced key, or
             was recreated after the target revision.
+            PreviousRevisionInferred: no revision was named and the current revision predates activation
+            tracking, so the target is the revision activated just before it; a revision deleted since may have
+            been active in between.
           enum:
             - TargetNotKnownGood
             - TargetUnhealthy
@@ -12210,6 +12224,7 @@ components:
             - UnrecordedChange
             - ProjectCellDrift
             - SecretReferenceDrift
+            - PreviousRevisionInferred
           example: BindingWillBePinned
         message:
           type: string

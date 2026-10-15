@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"k8s.io/utils/ptr"
 
 	"github.com/openchoreo/openchoreo/internal/occ/resources/client/mocks"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/api/gen"
@@ -3768,7 +3769,7 @@ func TestListReleaseBindingRevisions_TransportError(t *testing.T) {
 
 func TestRollbackReleaseBinding_Success(t *testing.T) {
 	m := mocks.NewMockClientWithResponsesInterface(t)
-	req := gen.RollbackRequest{Revision: 3}
+	req := gen.RollbackRequest{Revision: ptr.To(int64(3))}
 	m.EXPECT().RollbackReleaseBindingWithResponse(mock.Anything, "org-a", "api-dev", req).Return(&gen.RollbackReleaseBindingResp{
 		HTTPResponse: httpResp(http.StatusOK),
 		JSON200:      &gen.RollbackResponse{RevisionName: "api-dev-r6", Revision: 6, TargetRevision: 3},
@@ -3786,7 +3787,7 @@ func TestRollbackReleaseBinding_ConflictCarriesServerMessage(t *testing.T) {
 		Body:         []byte(`{"error":"release bound by the revision has been deleted: ComponentRelease \"api-6f9c2a\" bound by revision 3","code":"RELEASE_DELETED"}`),
 	}, nil)
 
-	_, err := newMockClient(m).RollbackReleaseBinding(context.Background(), "org-a", "api-dev", gen.RollbackRequest{Revision: 3})
+	_, err := newMockClient(m).RollbackReleaseBinding(context.Background(), "org-a", "api-dev", gen.RollbackRequest{Revision: ptr.To(int64(3))})
 	require.ErrorContains(t, err, `ComponentRelease "api-6f9c2a" bound by revision 3`)
 }
 
@@ -3794,7 +3795,7 @@ func TestRollbackReleaseBinding_TransportError(t *testing.T) {
 	m := mocks.NewMockClientWithResponsesInterface(t)
 	m.EXPECT().RollbackReleaseBindingWithResponse(mock.Anything, "org-a", "api-dev", mock.Anything).Return(nil, fmt.Errorf("connection refused"))
 
-	_, err := newMockClient(m).RollbackReleaseBinding(context.Background(), "org-a", "api-dev", gen.RollbackRequest{Revision: 3})
+	_, err := newMockClient(m).RollbackReleaseBinding(context.Background(), "org-a", "api-dev", gen.RollbackRequest{Revision: ptr.To(int64(3))})
 	require.ErrorContains(t, err, "failed to roll back release binding")
 }
 
@@ -3822,6 +3823,6 @@ func TestRollbackResourceReleaseBinding_APIError(t *testing.T) {
 		Body:         []byte(`{"error":"revision not found: revision 9 of resource release binding \"db-dev\"","code":"NOT_FOUND"}`),
 	}, nil)
 
-	_, err := newMockClient(m).RollbackResourceReleaseBinding(context.Background(), "org-a", "db-dev", gen.RollbackRequest{Revision: 9})
+	_, err := newMockClient(m).RollbackResourceReleaseBinding(context.Background(), "org-a", "db-dev", gen.RollbackRequest{Revision: ptr.To(int64(9))})
 	require.ErrorContains(t, err, "revision 9")
 }

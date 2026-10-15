@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/openchoreo/openchoreo/internal/occ/resources/client"
 	"github.com/openchoreo/openchoreo/internal/occ/resources/client/mocks"
 	"github.com/openchoreo/openchoreo/internal/occ/testutil"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/api/gen"
@@ -33,7 +34,7 @@ func rollbackResp(dryRun bool) *gen.RollbackResponse {
 
 func isDryRun(want bool) any {
 	return mock.MatchedBy(func(r gen.RollbackRequest) bool {
-		return r.Revision == 1 && r.DryRun != nil && *r.DryRun == want
+		return r.Revision != nil && *r.Revision == 1 && r.DryRun != nil && *r.DryRun == want
 	})
 }
 
@@ -128,4 +129,43 @@ func TestRollbackCmd(t *testing.T) {
 
 	noArg := newRollbackCmd(mockFactory(mc))
 	assert.Error(t, noArg.Args(noArg, nil), "the binding name is required")
+}
+
+func TestRollback_WithoutRevisionGoesToThePreviouslyActiveRevision(t *testing.T) {
+	mc := mocks.NewMockInterface(t)
+	implicitPreview := mock.MatchedBy(func(r gen.RollbackRequest) bool {
+		return r.Revision == nil && r.DryRun != nil && *r.DryRun
+	})
+	mc.EXPECT().RollbackReleaseBinding(mock.Anything, rollbackNS, rollbackBinding, implicitPreview).Return(rollbackResp(true), nil).Once()
+	mc.EXPECT().RollbackReleaseBinding(mock.Anything, rollbackNS, rollbackBinding, isDryRun(false)).Return(rollbackResp(false), nil).Once()
+
+	r := New(mc)
+	var question string
+	r.confirm = func(_ io.Writer, q string) (bool, error) { question = q; return true, nil }
+
+	out := testutil.CaptureStdout(t, func() {
+		require.NoError(t, r.Rollback(RollbackParams{Namespace: rollbackNS, ReleaseBindingName: rollbackBinding}))
+	})
+	assert.Contains(t, out, "the revision active before the current one (no --revision given)")
+	assert.Contains(t, question, `Roll back release binding "api-dev" to revision 1?`)
+	assert.Contains(t, out, "to revision 1: api-dev-r1 is active again")
+}
+
+func TestRollback_WithoutRevisionAndNoPreviousRevision(t *testing.T) {
+	mc := mocks.NewMockInterface(t)
+	mc.EXPECT().RollbackReleaseBinding(mock.Anything, rollbackNS, rollbackBinding, mock.Anything).
+		Return(nil, fmt.Errorf("No previous revision to roll back to: no revision was active before the current one")).Once()
+
+	r := New(mc)
+	r.confirm = func(io.Writer, string) (bool, error) { t.Fatal("must not ask"); return false, nil }
+	err := r.Rollback(RollbackParams{Namespace: rollbackNS, ReleaseBindingName: rollbackBinding})
+	require.ErrorContains(t, err, "No previous revision to roll back to")
+}
+
+func TestRollbackCmd_RevisionZeroIsRejected(t *testing.T) {
+	mc := mocks.NewMockInterface(t) // no API call is expected
+	cmd := newRollbackCmd(func() (client.Interface, error) { return mc, nil })
+	cmd.PreRunE = nil
+	require.NoError(t, cmd.Flags().Set("revision", "0"))
+	require.ErrorContains(t, cmd.RunE(cmd, []string{rollbackBinding}), "--revision must be at least 1")
 }

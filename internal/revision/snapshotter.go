@@ -48,6 +48,14 @@ const (
 	// activate anything.
 	AnnotationKeyBindingGeneration = "openchoreo.dev/binding-generation"
 
+	// AnnotationKeyPreviousRevision records, each time a revision becomes active,
+	// the number of the revision that was active just before it: "0" when there
+	// was none. It is rewritten with AnnotationKeyBindingGeneration, so on the
+	// current revision it names the revision a rollback without an explicit
+	// target returns to (see PreviousActive). Revision numbers are never reused,
+	// so it cannot name a different revision later.
+	AnnotationKeyPreviousRevision = "openchoreo.dev/previous-revision"
+
 	// maxLabelValueLength is the Kubernetes label value limit.
 	maxLabelValueLength = 63
 
@@ -201,7 +209,7 @@ func (s *Snapshotter[B, R]) Record(ctx context.Context, binding B) (Result, erro
 	if match, ok := s.matching(revs, hash); ok {
 		recorded = true
 		if s.Adapter.Number(match) != result.Number && fresh {
-			if err := s.markActivated(ctx, match, binding.GetGeneration()); err != nil {
+			if err := s.markActivated(ctx, match, binding.GetGeneration(), result.Number); err != nil {
 				return result, err
 			}
 			result.Number = s.Adapter.Number(match)
@@ -377,9 +385,10 @@ func (s *Snapshotter[B, R]) matching(revs []R, hash string) (R, bool) {
 }
 
 // markActivated records on the revision the binding generation it became
-// active at, making it the binding's current revision. Only metadata is
-// patched; the spec stays immutable.
-func (s *Snapshotter[B, R]) markActivated(ctx context.Context, rev R, generation int64) error {
+// active at, making it the binding's current revision, and the number of the
+// revision it replaces (0 for none). Only metadata is patched; the spec stays
+// immutable.
+func (s *Snapshotter[B, R]) markActivated(ctx context.Context, rev R, generation, previous int64) error {
 	patched, ok := rev.DeepCopyObject().(R)
 	if !ok {
 		return fmt.Errorf("copy revision %q", rev.GetName())
@@ -389,6 +398,7 @@ func (s *Snapshotter[B, R]) markActivated(ctx context.Context, rev R, generation
 		annotations[k] = v
 	}
 	annotations[AnnotationKeyBindingGeneration] = strconv.FormatInt(generation, 10)
+	annotations[AnnotationKeyPreviousRevision] = strconv.FormatInt(previous, 10)
 	patched.SetAnnotations(annotations)
 	if err := s.Client.Patch(ctx, patched, client.MergeFrom(rev)); err != nil {
 		return fmt.Errorf("activate revision %q: %w", rev.GetName(), err)
@@ -416,8 +426,13 @@ func (s *Snapshotter[B, R]) create(ctx context.Context, binding B, revs []R, cur
 	revLabels := s.Adapter.Labels(binding)
 	revLabels[LabelKeyBindingUID] = string(binding.GetUID())
 	built.SetLabels(revLabels)
+	previous := int64(0)
+	if hasCurrent {
+		previous = s.Adapter.Number(current)
+	}
 	built.SetAnnotations(map[string]string{
 		AnnotationKeyBindingGeneration: strconv.FormatInt(binding.GetGeneration(), 10),
+		AnnotationKeyPreviousRevision:  strconv.FormatInt(previous, 10),
 	})
 	if err := controllerutil.SetControllerReference(binding, built, s.Scheme); err != nil {
 		return number, rev, false, false, fmt.Errorf("set owner reference on revision %q: %w", built.GetName(), err)

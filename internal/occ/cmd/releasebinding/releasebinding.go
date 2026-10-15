@@ -515,8 +515,8 @@ func (r *ReleaseBinding) Rollback(params RollbackParams) error {
 		Yes:      params.Yes,
 		Out:      os.Stdout,
 		Confirm:  r.confirm,
-	}, func(ctx context.Context, dryRun bool) (*gen.RollbackResponse, error) {
+	}, func(ctx context.Context, revision *int64, dryRun bool) (*gen.RollbackResponse, error) {
 		return r.client.RollbackReleaseBinding(ctx, params.Namespace, params.ReleaseBindingName,
-			gen.RollbackRequest{Revision: params.Revision, DryRun: &dryRun})
+			gen.RollbackRequest{Revision: revision, DryRun: &dryRun})
 	})
 }

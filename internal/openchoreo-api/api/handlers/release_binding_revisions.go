@@ -89,12 +89,9 @@ func (h *Handler) RollbackReleaseBinding(
 	h.logger.Info("RollbackReleaseBinding called", "namespaceName", request.NamespaceName,
 		"releaseBindingName", request.ReleaseBindingName)
 
-	if request.Body == nil {
-		return gen.RollbackReleaseBinding400JSONResponse{BadRequestJSONResponse: badRequest("Request body is required")}, nil
-	}
-	req := bindingrevision.RollbackRequest{Revision: request.Body.Revision}
-	if request.Body.DryRun != nil {
-		req.DryRun = *request.Body.DryRun
+	req, invalid := toRollbackRequest(request.Body)
+	if invalid != "" {
+		return gen.RollbackReleaseBinding400JSONResponse{BadRequestJSONResponse: badRequest(invalid)}, nil
 	}
 	setDryRunAuditResource(ctx, request.NamespaceName, request.ReleaseBindingName, req.DryRun)
 
