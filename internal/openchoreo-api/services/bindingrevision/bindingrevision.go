@@ -37,6 +37,10 @@ var (
 	// ErrRevisionProtected is returned, as a *ProtectedError, when a revision may
 	// not be deleted.
 	ErrRevisionProtected = errors.New("revision is protected")
+	// ErrNoPreviousRevision is returned when a rollback names no revision and
+	// the revision active before the current one cannot be rolled back to: there
+	// was none, it was deleted, or the history cannot say which it was.
+	ErrNoPreviousRevision = errors.New("no previous revision to roll back to")
 )
 
 // ProtectedError explains why a revision may not be deleted.
@@ -166,7 +170,8 @@ func DeleteRevision(ctx context.Context, c client.Client, name string, revs []Ca
 
 // RollbackRequest asks to restore the binding spec of an earlier revision.
 type RollbackRequest struct {
-	// Revision is the number of the revision to roll back to.
+	// Revision is the number of the revision to roll back to, or 0 for the
+	// revision that was active before the current one (see PreviousRevision).
 	Revision int64
 	// DryRun runs every check and computes the result without writing anything.
 	DryRun bool
@@ -211,6 +216,10 @@ const (
 	WarningUnrecordedChange     WarningCode = "UnrecordedChange"
 	WarningProjectCellDrift     WarningCode = "ProjectCellDrift"
 	WarningSecretReferenceDrift WarningCode = "SecretReferenceDrift"
+	// WarningPreviousRevisionInferred is set when no revision was named and the
+	// previously active revision was inferred from activation order (see
+	// PreviousRevision).
+	WarningPreviousRevisionInferred WarningCode = "PreviousRevisionInferred"
 )
 
 // Warning is a pre-flight finding that does not block the rollback.
@@ -368,4 +377,36 @@ func ProjectCellDrift(ctx context.Context, c client.Reader, namespace, project, 
 		return nil, nil
 	}
 	return nil, nil
+}
+
+// PreviousRevision returns the number of the revision that was active before
+// the binding's current revision, for a rollback that names no revision. It
+// follows activation history (revision.PreviousActive), never revision-number
+// order, and never substitutes another revision for a recorded one that is
+// gone. When the current revision predates activation tracking and the history
+// has gaps, the target is inferred from activation order and returned with a
+// WarningPreviousRevisionInferred for the caller to show.
+//
+// It refuses while the binding's spec differs from its current revision's: the
+// controller has not recorded the latest change yet, so "previous" would be
+// measured from a revision that is about to stop being current.
+func PreviousRevision(revs []Candidate, highest int64, bindingSpecHash string) (int64, *Warning, error) {
+	activations := make([]revision.Activation, len(revs))
+	for i := range revs {
+		activations[i] = revision.Activation{Object: revs[i].Object, Number: revs[i].Number}
+	}
+	current, previous, inferred, err := revision.PreviousActive(activations, highest)
+	if err != nil {
+		return 0, nil, fmt.Errorf("%w: %w; name the revision to roll back to", ErrNoPreviousRevision, err)
+	}
+	for i := range revs {
+		if revs[i].Number == current.Number && revs[i].SnapshotHash != bindingSpecHash {
+			return 0, nil, fmt.Errorf("%w: the binding has a change the controller has not recorded yet",
+				ErrConcurrentModification)
+		}
+	}
+	if inferred != "" {
+		return previous.Number, &Warning{Code: WarningPreviousRevisionInferred, Message: inferred}, nil
+	}
+	return previous.Number, nil, nil
 }

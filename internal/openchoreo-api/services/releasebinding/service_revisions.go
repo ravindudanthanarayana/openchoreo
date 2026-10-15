@@ -90,10 +90,14 @@ func (s *releaseBindingService) GetReleaseBindingRevision(ctx context.Context, n
 // the controller makes the target active again under its own name and number
 // and points status.currentRevision at it. With DryRun it returns the same
 // result and writes nothing.
+//
+// A request without a revision (0) rolls back to the revision that was active
+// immediately before the current one (bindingrevision.PreviousRevision), and
+// leaves the binding unchanged when that revision is gone or unknown.
 func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, namespaceName, releaseBindingName string,
 	req bindingrevision.RollbackRequest) (*bindingrevision.RollbackResult, error) {
-	if req.Revision < 1 {
-		return nil, &services.ValidationError{Msg: "revision must be at least 1"}
+	if req.Revision < 0 {
+		return nil, &services.ValidationError{Msg: "revision must be at least 1, or omitted for the previously active revision"}
 	}
 
 	binding := &openchoreov1alpha1.ReleaseBinding{}
@@ -108,9 +112,26 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 	if err != nil {
 		return nil, err
 	}
+	targetRevision := req.Revision
+	var inferred *bindingrevision.Warning
+	if targetRevision == 0 {
+		specHash, err := revision.ReleaseBindingSpecHash(&binding.Spec)
+		if err != nil {
+			return nil, err
+		}
+		candidates := make([]bindingrevision.Candidate, len(revs))
+		for i := range revs {
+			candidates[i] = bindingrevision.Candidate{Object: &revs[i], Number: revs[i].Spec.Revision,
+				SnapshotHash: revs[i].Spec.SnapshotHash}
+		}
+		if targetRevision, inferred, err = bindingrevision.PreviousRevision(candidates, binding.Status.HighestRevision,
+			specHash); err != nil {
+			return nil, err
+		}
+	}
 	var target, active *openchoreov1alpha1.ReleaseBindingRevision
 	for i := range revs {
-		if revs[i].Spec.Revision == req.Revision {
+		if revs[i].Spec.Revision == targetRevision {
 			target = &revs[i]
 		}
 		if active == nil || revision.MoreRecentlyActive(&revs[i], revs[i].Spec.Revision, active, active.Spec.Revision) {
@@ -119,7 +140,7 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 	}
 	if target == nil {
 		return nil, fmt.Errorf("%w: revision %d of release binding %q has been deleted or never existed", bindingrevision.ErrRevisionNotFound,
-			req.Revision, releaseBindingName)
+			targetRevision, releaseBindingName)
 	}
 
 	componentRelease := &openchoreov1alpha1.ComponentRelease{}
@@ -127,7 +148,7 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 		componentRelease); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, fmt.Errorf("%w: ComponentRelease %q bound by revision %d", bindingrevision.ErrReleaseDeleted,
-				target.Spec.ComponentReleaseName, req.Revision)
+				target.Spec.ComponentReleaseName, targetRevision)
 		}
 		return nil, fmt.Errorf("failed to get component release: %w", err)
 	}
@@ -155,21 +176,24 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 		RevisionName: target.Name,
 		RevisionDisplayName: revision.DisplayName(target.Spec.ComponentReleaseName,
 			target.Spec.Revision),
-		Revision:       req.Revision,
-		TargetRevision: req.Revision,
+		Revision:       targetRevision,
+		TargetRevision: targetRevision,
 		RevertedFrom:   &revertedFrom,
 		DryRun:         req.DryRun,
 		Changes:        changes,
 	}
 
-	result.Warnings = bindingrevision.CommonWarnings(req.Revision, target.Status, noSpecChange,
+	result.Warnings = bindingrevision.CommonWarnings(targetRevision, target.Status, noSpecChange,
 		active.Spec.SnapshotHash != currentHash, binding.Spec.ReleasePin == openchoreov1alpha1.ReleasePinPinned)
+	if inferred != nil {
+		result.Warnings = append([]bindingrevision.Warning{*inferred}, result.Warnings...)
+	}
 	if restored.State == openchoreov1alpha1.ReleaseStateUndeploy {
 		result.Warnings = append(result.Warnings, bindingrevision.Warning{Code: bindingrevision.WarningTargetUndeploys,
-			Message: fmt.Sprintf("revision %d has state Undeploy; the rollback removes the deployment", req.Revision)})
+			Message: fmt.Sprintf("revision %d has state Undeploy; the rollback removes the deployment", targetRevision)})
 	}
 	cellDrift, err := bindingrevision.ProjectCellDrift(ctx, s.k8sClient, namespaceName, binding.Spec.Owner.ProjectName,
-		binding.Spec.Environment, req.Revision, target.CreationTimestamp)
+		binding.Spec.Environment, targetRevision, target.CreationTimestamp)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +228,7 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 	}
 
 	s.logger.Info("Rolled back release binding", "namespace", namespaceName, "releaseBinding", releaseBindingName,
-		"targetRevision", req.Revision, "revertedFrom", revertedFrom)
+		"targetRevision", targetRevision, "revertedFrom", revertedFrom)
 	return result, nil
 }
 

@@ -6,6 +6,7 @@ package releasebinding
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -262,8 +263,8 @@ func TestRollbackReleaseBinding_Errors(t *testing.T) {
 			wantErr: ErrReleaseBindingNotFound,
 		},
 		{
-			name:    "revision 0 is rejected",
-			req:     bindingrevision.RollbackRequest{Revision: 0},
+			name:    "a negative revision is rejected",
+			req:     bindingrevision.RollbackRequest{Revision: -1},
 			wantVal: true,
 		},
 	}
@@ -755,4 +756,151 @@ func TestRollbackReleaseBinding_ToADeletedRevisionIsNotFound(t *testing.T) {
 	assert.ErrorContains(t, err, "has been deleted or never existed")
 	assert.Equal(t, releaseC, getRB(t, c).Spec.ReleaseName, "the binding is not changed")
 	assert.NotContains(t, revisionVersions(t, c), f.revs[1].Name, "the deleted revision is not recreated")
+}
+
+// ─────────────────────────────────────────────────────────────
+// RollbackReleaseBinding without a revision
+// ─────────────────────────────────────────────────────────────
+
+// activated records on rev the binding generation it last became active at
+// and the revision it replaced then (-1 for none recorded, as before activation
+// tracking).
+func activated(rev *openchoreov1alpha1.ReleaseBindingRevision, generation, previous int64) {
+	rev.Annotations = map[string]string{revision.AnnotationKeyBindingGeneration: strconv.FormatInt(generation, 10)}
+	if previous >= 0 {
+		rev.Annotations[revision.AnnotationKeyPreviousRevision] = strconv.FormatInt(previous, 10)
+	}
+}
+
+// historyFixture is newFixture with its activation history: r1, then r2, then r3.
+func historyFixture(t *testing.T) *fixture {
+	t.Helper()
+	f := newFixture(t)
+	activated(f.revs[0], 1, 0)
+	activated(f.revs[1], 2, 1)
+	activated(f.revs[2], 3, 2)
+	f.binding.Status.HighestRevision = 3
+	return f
+}
+
+func TestRollbackReleaseBinding_WithoutRevision(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("previews and applies the previously active revision", func(t *testing.T) {
+		f := historyFixture(t)
+		c := f.client()
+		svc := NewService(c, testutil.TestLogger())
+
+		preview, err := svc.RollbackReleaseBinding(ctx, testNamespace, testRBName, bindingrevision.RollbackRequest{DryRun: true})
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), preview.TargetRevision)
+		assert.Equal(t, f.revs[1].Name, preview.RevisionName)
+		assert.Equal(t, releaseC, getRB(t, c).Spec.ReleaseName, "a dry run writes nothing")
+
+		applied, err := svc.RollbackReleaseBinding(ctx, testNamespace, testRBName, bindingrevision.RollbackRequest{})
+		require.NoError(t, err)
+		assert.Equal(t, preview.TargetRevision, applied.TargetRevision, "preview and rollback pick the same target")
+		rb := getRB(t, c)
+		assert.Equal(t, releaseB, rb.Spec.ReleaseName)
+		assert.Equal(t, openchoreov1alpha1.ReleasePinPinned, rb.Spec.ReleasePin, "the rollback pins, as with --revision")
+	})
+
+	t.Run("after a rollback to r1 the previous revision is r3, numbered above it", func(t *testing.T) {
+		f := historyFixture(t)
+		activated(f.revs[0], 4, 3)
+		f.revs[0].Status.Active, f.revs[2].Status.Active = true, false
+		f.binding.Spec = f.revs[0].Spec.BindingSpec
+
+		got, err := NewService(f.client(), testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, testRBName,
+			bindingrevision.RollbackRequest{DryRun: true})
+		require.NoError(t, err)
+		assert.Equal(t, int64(3), got.TargetRevision)
+		assert.Equal(t, int64(1), *got.RevertedFrom)
+	})
+
+	t.Run("an explicit revision is unaffected by the history", func(t *testing.T) {
+		got, err := NewService(historyFixture(t).client(), testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace,
+			testRBName, bindingrevision.RollbackRequest{Revision: 1, DryRun: true})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), got.TargetRevision)
+	})
+
+	refusals := []struct {
+		name    string
+		setup   func(f *fixture)
+		objects func(f *fixture) []client.Object
+		wantErr error
+		wantMsg string
+	}{
+		{name: "the previously active revision was deleted",
+			setup:   func(f *fixture) { f.revs = []*openchoreov1alpha1.ReleaseBindingRevision{f.revs[0], f.revs[2]} },
+			wantErr: bindingrevision.ErrNoPreviousRevision, wantMsg: "the previously active revision has been deleted: revision 2"},
+		{name: "the current revision was the first activation",
+			setup:   func(f *fixture) { activated(f.revs[2], 3, 0) },
+			wantErr: bindingrevision.ErrNoPreviousRevision, wantMsg: "was the binding's first"},
+		{name: "the previous revision's release was deleted",
+			objects: func(f *fixture) []client.Object {
+				var objs []client.Object
+				for _, o := range f.objects() {
+					if cr, ok := o.(*openchoreov1alpha1.ComponentRelease); ok && cr.Name == releaseB {
+						continue
+					}
+					objs = append(objs, o)
+				}
+				return objs
+			},
+			wantErr: bindingrevision.ErrReleaseDeleted},
+		{name: "the binding has a change the controller has not recorded",
+			setup:   func(f *fixture) { f.binding.Spec = specFor(releaseA, "9") },
+			wantErr: bindingrevision.ErrConcurrentModification, wantMsg: "has not recorded yet"},
+	}
+	for _, tt := range refusals {
+		t.Run("refused: "+tt.name, func(t *testing.T) {
+			f := historyFixture(t)
+			if tt.setup != nil {
+				tt.setup(f)
+			}
+			objs := f.objects()
+			if tt.objects != nil {
+				objs = tt.objects(f)
+			}
+			c := testutil.NewFakeClient(objs...)
+			before := getRB(t, c).ResourceVersion
+
+			_, err := NewService(c, testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, testRBName,
+				bindingrevision.RollbackRequest{})
+			require.ErrorIs(t, err, tt.wantErr)
+			if tt.wantMsg != "" {
+				assert.ErrorContains(t, err, tt.wantMsg)
+			}
+			assert.Equal(t, before, getRB(t, c).ResourceVersion, "the binding is unchanged")
+		})
+	}
+
+	t.Run("legacy history with a gap is inferred from activation order, with a warning", func(t *testing.T) {
+		f := historyFixture(t)
+		activated(f.revs[0], 1, -1)
+		activated(f.revs[2], 3, -1)
+		f.revs = []*openchoreov1alpha1.ReleaseBindingRevision{f.revs[0], f.revs[2]}
+		got, err := NewService(f.client(), testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, testRBName,
+			bindingrevision.RollbackRequest{DryRun: true})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), got.TargetRevision)
+		require.NotEmpty(t, got.Warnings)
+		assert.Equal(t, bindingrevision.WarningPreviousRevisionInferred, got.Warnings[0].Code)
+		assert.Contains(t, got.Warnings[0].Message, "a deleted revision may have been active in between")
+	})
+
+	t.Run("legacy history without gaps follows activation order", func(t *testing.T) {
+		f := historyFixture(t)
+		for i, r := range f.revs {
+			activated(r, int64(i+1), -1)
+		}
+		got, err := NewService(f.client(), testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, testRBName,
+			bindingrevision.RollbackRequest{DryRun: true})
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), got.TargetRevision)
+		assert.NotContains(t, warningCodes(got.Warnings), bindingrevision.WarningPreviousRevisionInferred,
+			"a history without gaps is certain")
+	})
 }

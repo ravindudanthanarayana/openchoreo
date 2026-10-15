@@ -994,3 +994,104 @@ func TestLabelValue(t *testing.T) {
 }
 
 func ptrTo[T any](v T) *T { return &v }
+
+// activationsOf lists the binding's revisions as PreviousActive takes them.
+func activationsOf(t *testing.T, c client.Client) []Activation {
+	t.Helper()
+	revs := listRBRs(t, c)
+	out := make([]Activation, len(revs))
+	for i := range revs {
+		out[i] = Activation{Object: &revs[i], Number: revs[i].Spec.Revision}
+	}
+	return out
+}
+
+func TestReleaseBindingSnapshotter_RecordsThePreviouslyActiveRevision(t *testing.T) {
+	ctx := context.Background()
+	binding := newBinding("frontend-development")
+	c := newTestClient(t, binding.DeepCopy())
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(binding), binding))
+	s := NewReleaseBindingSnapshotter(c, newTestScheme(t), Options{})
+	record := func() Result {
+		t.Helper()
+		res, err := s.Record(ctx, binding)
+		require.NoError(t, err)
+		binding.Status.HighestRevision = res.Highest
+		return res
+	}
+	previous := func() (int64, int64, error) {
+		t.Helper()
+		cur, prev, inferred, err := PreviousActive(activationsOf(t, c), binding.Status.HighestRevision)
+		assert.Empty(t, inferred, "recorded history is never inferred")
+		return cur.Number, prev.Number, err
+	}
+
+	record() // r1
+	_, _, err := previous()
+	require.ErrorIs(t, err, ErrNoPreviousRevision, "r1 was the first activation")
+	assert.Equal(t, "0", getRBR(t, c, "frontend-development-r1").Annotations[AnnotationKeyPreviousRevision])
+
+	bump(binding, newRelease)
+	record() // r2
+	bump(binding, newOverride)
+	record() // r3
+	cur, prev, err := previous()
+	require.NoError(t, err)
+	assert.Equal(t, [2]int64{3, 2}, [2]int64{cur, prev})
+
+	// Roll back to r1: r1 is active again and records r3 as its predecessor.
+	bump(binding, func(spec *openchoreov1alpha1.ReleaseBindingSpec) {
+		spec.ReleaseName = firstRelease
+		spec.ComponentTypeEnvironmentConfigs = nil
+	})
+	assert.True(t, record().Reactivated)
+	cur, prev, err = previous()
+	require.NoError(t, err)
+	assert.Equal(t, [2]int64{1, 3}, [2]int64{cur, prev}, "the previous revision is r3, not r2")
+
+	// Roll back again, to r2: its predecessor is r1, the revision active just before.
+	bump(binding, newRelease)
+	assert.True(t, record().Reactivated)
+
+	// A controller restart: a new Snapshotter reads the same history from the objects.
+	s = NewReleaseBindingSnapshotter(c, newTestScheme(t), Options{})
+	cur, prev, err = previous()
+	require.NoError(t, err)
+	assert.Equal(t, [2]int64{2, 1}, [2]int64{cur, prev})
+	res, err := s.Record(ctx, binding)
+	require.NoError(t, err)
+	assert.False(t, res.Created || res.Reactivated, "reconciling again changes nothing")
+	cur, prev, err = previous()
+	require.NoError(t, err)
+	assert.Equal(t, [2]int64{2, 1}, [2]int64{cur, prev})
+
+	// The previous revision is deleted: refused, not replaced by r3.
+	require.NoError(t, c.Delete(ctx, getRBR(t, c, "frontend-development-r1")))
+	_, _, err = previous()
+	require.ErrorIs(t, err, ErrPreviousRevisionDeleted)
+}
+
+func TestResourceReleaseBindingSnapshotter_RecordsThePreviouslyActiveRevision(t *testing.T) {
+	ctx := context.Background()
+	binding := newResourceBinding("db-development", "development", "db-def456")
+	c := newTestClient(t, binding.DeepCopy())
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(binding), binding))
+	s := NewResourceReleaseBindingSnapshotter(c, newTestScheme(t), Options{})
+
+	for _, release := range []string{"db-abc123", "db-def456", "db-abc123"} {
+		binding.Spec.ResourceRelease = release
+		binding.Generation++
+		_, err := s.Record(ctx, binding)
+		require.NoError(t, err)
+	}
+
+	var list openchoreov1alpha1.ResourceReleaseBindingRevisionList
+	require.NoError(t, c.List(ctx, &list, client.InNamespace("default")))
+	revs := make([]Activation, len(list.Items))
+	for i := range list.Items {
+		revs[i] = Activation{Object: &list.Items[i], Number: list.Items[i].Spec.Revision}
+	}
+	cur, prev, _, err := PreviousActive(revs, 2)
+	require.NoError(t, err)
+	assert.Equal(t, [2]int64{1, 2}, [2]int64{cur.Number, prev.Number}, "r1 is active again after r2")
+}

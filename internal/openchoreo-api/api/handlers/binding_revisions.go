@@ -42,11 +42,33 @@ func classifyRollbackError(err, bindingNotFound error) (rollbackOutcome, gen.Err
 	case errors.Is(err, bindingrevision.ErrConcurrentModification):
 		return rollbackConflict, gen.ErrorResponse{Code: gen.CONCURRENTMODIFICATION,
 			Error: err.Error() + "; retry the rollback"}, ""
+	case errors.Is(err, bindingrevision.ErrNoPreviousRevision):
+		return rollbackConflict, gen.ErrorResponse{Code: gen.NOPREVIOUSREVISION, Error: sentence(err.Error())}, ""
 	}
 	if validationErr, ok := errors.AsType[*services.ValidationError](err); ok {
 		return rollbackBadRequest, gen.ErrorResponse{}, validationErr.Msg
 	}
 	return rollbackInternalError, gen.ErrorResponse{}, ""
+}
+
+// toRollbackRequest converts a rollback request body. An omitted revision is 0,
+// the revision that was active before the current one; an explicit revision
+// must be at least 1. It returns a message for a 400 when the body is invalid.
+func toRollbackRequest(body *gen.RollbackRequest) (bindingrevision.RollbackRequest, string) {
+	if body == nil {
+		return bindingrevision.RollbackRequest{}, "Request body is required"
+	}
+	var req bindingrevision.RollbackRequest
+	if body.Revision != nil {
+		if *body.Revision < 1 {
+			return req, "revision must be at least 1, or omitted for the previously active revision"
+		}
+		req.Revision = *body.Revision
+	}
+	if body.DryRun != nil {
+		req.DryRun = *body.DryRun
+	}
+	return req, ""
 }
 
 // toRollbackResponse converts a service rollback result to the API response.

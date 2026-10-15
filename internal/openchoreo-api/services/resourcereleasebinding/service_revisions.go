@@ -81,10 +81,14 @@ func (s *resourceReleaseBindingService) GetResourceReleaseBindingRevision(ctx co
 // RollbackResourceReleaseBinding restores the binding spec recorded by an
 // earlier revision; see the ReleaseBinding service's RollbackReleaseBinding.
 // The release check is on the revision's ResourceRelease.
+//
+// A request without a revision (0) rolls back to the revision that was active
+// immediately before the current one (bindingrevision.PreviousRevision), and
+// leaves the binding unchanged when that revision is gone or unknown.
 func (s *resourceReleaseBindingService) RollbackResourceReleaseBinding(ctx context.Context, namespaceName,
 	bindingName string, req bindingrevision.RollbackRequest) (*bindingrevision.RollbackResult, error) {
-	if req.Revision < 1 {
-		return nil, &services.ValidationError{Msg: "revision must be at least 1"}
+	if req.Revision < 0 {
+		return nil, &services.ValidationError{Msg: "revision must be at least 1, or omitted for the previously active revision"}
 	}
 
 	binding := &openchoreov1alpha1.ResourceReleaseBinding{}
@@ -99,9 +103,26 @@ func (s *resourceReleaseBindingService) RollbackResourceReleaseBinding(ctx conte
 	if err != nil {
 		return nil, err
 	}
+	targetRevision := req.Revision
+	var inferred *bindingrevision.Warning
+	if targetRevision == 0 {
+		specHash, err := revision.ResourceReleaseBindingSpecHash(&binding.Spec)
+		if err != nil {
+			return nil, err
+		}
+		candidates := make([]bindingrevision.Candidate, len(revs))
+		for i := range revs {
+			candidates[i] = bindingrevision.Candidate{Object: &revs[i], Number: revs[i].Spec.Revision,
+				SnapshotHash: revs[i].Spec.SnapshotHash}
+		}
+		if targetRevision, inferred, err = bindingrevision.PreviousRevision(candidates, binding.Status.HighestRevision,
+			specHash); err != nil {
+			return nil, err
+		}
+	}
 	var target, active *openchoreov1alpha1.ResourceReleaseBindingRevision
 	for i := range revs {
-		if revs[i].Spec.Revision == req.Revision {
+		if revs[i].Spec.Revision == targetRevision {
 			target = &revs[i]
 		}
 		if active == nil || revision.MoreRecentlyActive(&revs[i], revs[i].Spec.Revision, active, active.Spec.Revision) {
@@ -110,14 +131,14 @@ func (s *resourceReleaseBindingService) RollbackResourceReleaseBinding(ctx conte
 	}
 	if target == nil {
 		return nil, fmt.Errorf("%w: revision %d of resource release binding %q has been deleted or never existed", bindingrevision.ErrRevisionNotFound,
-			req.Revision, bindingName)
+			targetRevision, bindingName)
 	}
 
 	if err := s.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: target.Spec.ResourceReleaseName},
 		&openchoreov1alpha1.ResourceRelease{}); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, fmt.Errorf("%w: ResourceRelease %q bound by revision %d", bindingrevision.ErrReleaseDeleted,
-				target.Spec.ResourceReleaseName, req.Revision)
+				target.Spec.ResourceReleaseName, targetRevision)
 		}
 		return nil, fmt.Errorf("failed to get resource release: %w", err)
 	}
@@ -145,17 +166,20 @@ func (s *resourceReleaseBindingService) RollbackResourceReleaseBinding(ctx conte
 		RevisionName: target.Name,
 		RevisionDisplayName: revision.DisplayName(target.Spec.ResourceReleaseName,
 			target.Spec.Revision),
-		Revision:       req.Revision,
-		TargetRevision: req.Revision,
+		Revision:       targetRevision,
+		TargetRevision: targetRevision,
 		RevertedFrom:   &revertedFrom,
 		DryRun:         req.DryRun,
 		Changes:        changes,
 	}
 
-	result.Warnings = bindingrevision.CommonWarnings(req.Revision, target.Status, noSpecChange,
+	result.Warnings = bindingrevision.CommonWarnings(targetRevision, target.Status, noSpecChange,
 		active.Spec.SnapshotHash != currentHash, binding.Spec.ReleasePin == openchoreov1alpha1.ReleasePinPinned)
+	if inferred != nil {
+		result.Warnings = append([]bindingrevision.Warning{*inferred}, result.Warnings...)
+	}
 	cellDrift, err := bindingrevision.ProjectCellDrift(ctx, s.k8sClient, namespaceName, binding.Spec.Owner.ProjectName,
-		binding.Spec.Environment, req.Revision, target.CreationTimestamp)
+		binding.Spec.Environment, targetRevision, target.CreationTimestamp)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +209,7 @@ func (s *resourceReleaseBindingService) RollbackResourceReleaseBinding(ctx conte
 	}
 
 	s.logger.Info("Rolled back resource release binding", "namespace", namespaceName, "resourceReleaseBinding", bindingName,
-		"targetRevision", req.Revision, "revertedFrom", revertedFrom)
+		"targetRevision", targetRevision, "revertedFrom", revertedFrom)
 	return result, nil
 }
 

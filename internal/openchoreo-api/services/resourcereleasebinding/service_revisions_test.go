@@ -316,3 +316,39 @@ func TestDeleteResourceReleaseBindingRevision_AuthzCheck(t *testing.T) {
 		require.ErrorIs(t, err, services.ErrForbidden)
 	})
 }
+
+func TestRollbackResourceReleaseBinding_WithoutRevision(t *testing.T) {
+	ctx := context.Background()
+	// rrbObjects: r1 (releaseA) then r2 (releaseB, current).
+	history := func(t *testing.T, keepR1 bool) client.Client {
+		objs := rrbObjects(t, true)
+		objs[0].(*openchoreov1alpha1.ResourceReleaseBinding).Status.HighestRevision = 2
+		r1 := objs[1].(*openchoreov1alpha1.ResourceReleaseBindingRevision)
+		r2 := objs[2].(*openchoreov1alpha1.ResourceReleaseBindingRevision)
+		r1.Annotations = map[string]string{revision.AnnotationKeyBindingGeneration: "1", revision.AnnotationKeyPreviousRevision: "0"}
+		r2.Annotations = map[string]string{revision.AnnotationKeyBindingGeneration: "2", revision.AnnotationKeyPreviousRevision: "1"}
+		if !keepR1 {
+			objs = append(objs[:1], objs[2:]...)
+		}
+		return testutil.NewFakeClient(objs...)
+	}
+
+	t.Run("rolls back to the previously active revision", func(t *testing.T) {
+		c := history(t, true)
+		got, err := NewService(c, testutil.TestLogger()).RollbackResourceReleaseBinding(ctx, testNamespace, testBindingName,
+			bindingrevision.RollbackRequest{})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), got.TargetRevision)
+		b := getRRB(t, c)
+		assert.Equal(t, rrReleaseA, b.Spec.ResourceRelease)
+		assert.Equal(t, openchoreov1alpha1.ReleasePinPinned, b.Spec.ReleasePin)
+	})
+
+	t.Run("refuses when the previously active revision was deleted", func(t *testing.T) {
+		c := history(t, false)
+		_, err := NewService(c, testutil.TestLogger()).RollbackResourceReleaseBinding(ctx, testNamespace, testBindingName,
+			bindingrevision.RollbackRequest{})
+		require.ErrorIs(t, err, bindingrevision.ErrNoPreviousRevision)
+		assert.Equal(t, rrReleaseB, getRRB(t, c).Spec.ResourceRelease, "the binding is unchanged")
+	})
+}

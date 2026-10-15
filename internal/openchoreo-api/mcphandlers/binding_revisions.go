@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
+	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services/bindingrevision"
 	"github.com/openchoreo/openchoreo/internal/revision"
 	"github.com/openchoreo/openchoreo/internal/server/middleware/audit"
@@ -54,6 +55,11 @@ func (h *MCPHandler) RollbackReleaseBinding(
 	// Every call is audited, dry runs (the default) included: dryRun tells a
 	// preview, which changes nothing, from an applied rollback. Set before the
 	// rollback runs so that a failed or denied call is marked too.
+	// The tools always name a revision: an implicit target (revision 0, the
+	// previously active revision) is not offered to agents.
+	if revision < 1 {
+		return nil, &services.ValidationError{Msg: "revision must be at least 1"}
+	}
 	audit.SetResource(ctx, &audit.Resource{
 		Namespace: namespaceName, Name: bindingName, Metadata: map[string]any{"dryRun": dryRun},
 	})
@@ -114,6 +120,11 @@ func (h *MCPHandler) RollbackResourceReleaseBinding(
 	// Every call is audited, dry runs (the default) included: dryRun tells a
 	// preview, which changes nothing, from an applied rollback. Set before the
 	// rollback runs so that a failed or denied call is marked too.
+	// The tools always name a revision: an implicit target (revision 0, the
+	// previously active revision) is not offered to agents.
+	if revision < 1 {
+		return nil, &services.ValidationError{Msg: "revision must be at least 1"}
+	}
 	audit.SetResource(ctx, &audit.Resource{
 		Namespace: namespaceName, Name: bindingName, Metadata: map[string]any{"dryRun": dryRun},
 	})

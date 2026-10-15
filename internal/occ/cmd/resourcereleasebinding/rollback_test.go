@@ -24,7 +24,9 @@ func TestRollback(t *testing.T) {
 			Warnings: []gen.RollbackWarning{{Code: gen.BindingWillBePinned, Message: "releasePin changes from Auto to Pinned"}}}
 	}
 	dry := func(want bool) any {
-		return mock.MatchedBy(func(r gen.RollbackRequest) bool { return r.Revision == 1 && r.DryRun != nil && *r.DryRun == want })
+		return mock.MatchedBy(func(r gen.RollbackRequest) bool {
+			return r.Revision != nil && *r.Revision == 1 && r.DryRun != nil && *r.DryRun == want
+		})
 	}
 
 	t.Run("confirmed", func(t *testing.T) {
@@ -72,5 +74,27 @@ func TestRollback(t *testing.T) {
 
 		out := testutil.CaptureStdout(t, func() { require.NoError(t, cmd.RunE(cmd, []string{binding})) })
 		assert.Contains(t, out, "db-dev-r1 is active again")
+	})
+
+	t.Run("without --revision via the command: the previously active revision", func(t *testing.T) {
+		mc := mocks.NewMockInterface(t)
+		mc.EXPECT().RollbackResourceReleaseBinding(mock.Anything, ns, binding, mock.MatchedBy(func(r gen.RollbackRequest) bool {
+			return r.Revision == nil && r.DryRun != nil && *r.DryRun
+		})).Return(resp(true), nil).Once()
+		cmd := newRollbackCmd(mockFactory(mc))
+		require.NoError(t, cmd.ParseFlags([]string{"-n", ns, "--dry-run"}))
+		out := testutil.CaptureStdout(t, func() { require.NoError(t, cmd.RunE(cmd, []string{binding})) })
+		assert.Contains(t, out, "the revision active before the current one (no --revision given)")
+	})
+
+	t.Run("without --revision and --yes: one request", func(t *testing.T) {
+		mc := mocks.NewMockInterface(t)
+		mc.EXPECT().RollbackResourceReleaseBinding(mock.Anything, ns, binding, mock.MatchedBy(func(r gen.RollbackRequest) bool {
+			return r.Revision == nil && r.DryRun != nil && !*r.DryRun
+		})).Return(resp(false), nil).Once()
+		cmd := newRollbackCmd(mockFactory(mc))
+		require.NoError(t, cmd.ParseFlags([]string{"-n", ns, "--yes"}))
+		out := testutil.CaptureStdout(t, func() { require.NoError(t, cmd.RunE(cmd, []string{binding})) })
+		assert.Contains(t, out, "Rolling back to revision 1, the previously active revision.")
 	})
 }

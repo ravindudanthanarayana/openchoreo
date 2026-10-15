@@ -92,14 +92,16 @@ func TestConfirm(t *testing.T) {
 
 // fakeAPI records the rollback calls it receives.
 type fakeAPI struct {
-	calls   []bool // the dryRun flag of each call
+	calls   []bool   // the dryRun flag of each call
+	targets []*int64 // the revision each call named; nil asks for the previous one
 	preview *gen.RollbackResponse
 	result  *gen.RollbackResponse
 	err     error
 }
 
-func (f *fakeAPI) rollback(_ context.Context, dryRun bool) (*gen.RollbackResponse, error) {
+func (f *fakeAPI) rollback(_ context.Context, revision *int64, dryRun bool) (*gen.RollbackResponse, error) {
 	f.calls = append(f.calls, dryRun)
+	f.targets = append(f.targets, revision)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -108,6 +110,13 @@ func (f *fakeAPI) rollback(_ context.Context, dryRun bool) (*gen.RollbackRespons
 	}
 	return f.result, nil
 }
+
+// testKind and testBindingName name the binding the rollback and delete flows
+// run against.
+const (
+	testKind        = "release binding"
+	testBindingName = "api-dev"
+)
 
 func newFakeAPI() *fakeAPI {
 	warnings := []gen.RollbackWarning{{Code: gen.BindingWillBePinned, Message: "releasePin changes from Auto to Pinned"}}
@@ -130,7 +139,7 @@ func answer(yes bool, err error) (Confirmer, *int) {
 func run(t *testing.T, api *fakeAPI, opts RollbackOptions) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	opts.Kind, opts.Binding, opts.Out = "release binding", "api-dev", &out
+	opts.Kind, opts.Binding, opts.Out = testKind, testBindingName, &out
 	if opts.Revision == 0 {
 		opts.Revision = 1
 	}
@@ -239,11 +248,131 @@ func TestDisplayName(t *testing.T) {
 	assert.Equal(t, "frontend-v7-r1", DisplayName("frontend-v7", 1))
 }
 
-func TestRunRollback_RevisionRequired(t *testing.T) {
+func TestRunRollback_NegativeRevisionRejected(t *testing.T) {
 	api := newFakeAPI()
-	err := RunRollback(context.Background(), RollbackOptions{Revision: 0, Out: io.Discard}, api.rollback)
-	require.ErrorContains(t, err, "--revision is required")
+	err := RunRollback(context.Background(), RollbackOptions{Revision: -1, Out: io.Discard}, api.rollback)
+	require.ErrorContains(t, err, "--revision must be at least 1")
 	assert.Empty(t, api.calls)
+}
+
+// runImplicit runs RunRollback without a revision.
+func runImplicit(t *testing.T, api *fakeAPI, opts RollbackOptions) (string, error) {
+	t.Helper()
+	var out bytes.Buffer
+	opts.Kind, opts.Binding, opts.Out = testKind, testBindingName, &out
+	err := RunRollback(context.Background(), opts, api.rollback)
+	return out.String(), err
+}
+
+func TestRunRollback_ImplicitPreviewsThenAppliesTheConfirmedTarget(t *testing.T) {
+	api := newFakeAPI()
+	confirmer, asked := answer(true, nil)
+	out, err := runImplicit(t, api, RollbackOptions{Confirm: confirmer})
+	require.NoError(t, err)
+
+	assert.Equal(t, []bool{true, false}, api.calls)
+	require.Len(t, api.targets, 2)
+	assert.Nil(t, api.targets[0], "the preview asks the server for the previous revision")
+	require.NotNil(t, api.targets[1])
+	assert.Equal(t, int64(1), *api.targets[1], "the rollback is applied to the previewed target by number")
+	assert.Equal(t, 1, *asked)
+	assert.Contains(t, out, `Rolling back release binding "api-dev" from revision 3 to revision 1.`)
+	assert.Contains(t, out, "Target: api-dev-r1, the revision active before the current one (no --revision given).")
+	assert.Contains(t, out, `Rolled back release binding "api-dev" to revision 1`)
+}
+
+func TestRunRollback_ImplicitDeclinedChangesNothing(t *testing.T) {
+	api := newFakeAPI()
+	confirmer, _ := answer(false, nil)
+	out, err := runImplicit(t, api, RollbackOptions{Confirm: confirmer})
+	require.NoError(t, err)
+	assert.Equal(t, []bool{true}, api.calls)
+	assert.Contains(t, out, "Rollback cancelled.")
+}
+
+func TestRunRollback_ImplicitDryRun(t *testing.T) {
+	api := newFakeAPI()
+	out, err := runImplicit(t, api, RollbackOptions{DryRun: true})
+	require.NoError(t, err)
+	assert.Equal(t, []bool{true}, api.calls)
+	assert.Nil(t, api.targets[0])
+	assert.Contains(t, out, "the revision active before the current one")
+	assert.Contains(t, out, "Dry run: nothing was changed.")
+}
+
+func TestRunRollback_ImplicitWithYesIsOneServerDecision(t *testing.T) {
+	api := newFakeAPI()
+	confirmer, asked := answer(false, nil)
+	out, err := runImplicit(t, api, RollbackOptions{Yes: true, Confirm: confirmer})
+	require.NoError(t, err)
+	assert.Equal(t, []bool{false}, api.calls)
+	assert.Nil(t, api.targets[0], "the server resolves and applies the previous revision in one request")
+	assert.Equal(t, 0, *asked)
+	assert.Contains(t, out, "Rolling back to revision 1, the previously active revision.")
+}
+
+func TestRunRollback_ImplicitWithoutPreviousRevisionFails(t *testing.T) {
+	api := newFakeAPI()
+	api.err = errors.New("No previous revision to roll back to: the previously active revision has been deleted")
+	confirmer, asked := answer(true, nil)
+	out, err := runImplicit(t, api, RollbackOptions{Confirm: confirmer})
+	require.ErrorContains(t, err, "No previous revision to roll back to")
+	assert.Equal(t, 0, *asked, "nothing is offered")
+	assert.Equal(t, []bool{true}, api.calls)
+	assert.NotContains(t, out, "Rolled back")
+}
+
+func TestRunRollback_ImplicitWithoutTerminalNeedsYes(t *testing.T) {
+	api := newFakeAPI()
+	confirmer, _ := answer(false, errors.New("stdin is not a terminal; pass --yes to proceed without confirmation"))
+	_, err := runImplicit(t, api, RollbackOptions{Confirm: confirmer})
+	require.ErrorContains(t, err, "pass --yes")
+	assert.Equal(t, []bool{true}, api.calls, "nothing is applied")
+}
+
+func TestRunRollback_NotesAnActiveRevisionThatChangedAfterThePreview(t *testing.T) {
+	api := newFakeAPI()
+	api.result.RevertedFrom = ptr(int64(5))
+	confirmer, _ := answer(true, nil)
+	out, err := runImplicit(t, api, RollbackOptions{Confirm: confirmer})
+	require.NoError(t, err)
+	assert.Contains(t, out, "Note: the active revision changed from 3 to 5 after the preview; "+
+		"the rollback went to revision 1 as confirmed.")
+}
+
+func TestRunRollback_ExplicitRevisionIsSentAsGiven(t *testing.T) {
+	api := newFakeAPI()
+	confirmer, _ := answer(true, nil)
+	_, err := run(t, api, RollbackOptions{Revision: 1, Confirm: confirmer})
+	require.NoError(t, err)
+	for _, target := range api.targets {
+		require.NotNil(t, target)
+		assert.Equal(t, int64(1), *target)
+	}
+}
+
+func TestGetRollbackRevision(t *testing.T) {
+	newCmd := func() *cobra.Command {
+		cmd := &cobra.Command{Use: "rollback"}
+		AddRollbackRevision(cmd)
+		return cmd
+	}
+
+	cmd := newCmd()
+	got, err := GetRollbackRevision(cmd)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), got, "no --revision: the previously active revision")
+
+	cmd = newCmd()
+	require.NoError(t, cmd.Flags().Set("revision", "3"))
+	got, err = GetRollbackRevision(cmd)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), got)
+
+	cmd = newCmd()
+	require.NoError(t, cmd.Flags().Set("revision", "0"))
+	_, err = GetRollbackRevision(cmd)
+	require.ErrorContains(t, err, "--revision must be at least 1", "--revision 0 is not a request for the previous revision")
 }
 
 func TestParseRevisionName(t *testing.T) {
@@ -321,7 +450,7 @@ func (d *deleteAPI) del(_ context.Context, dryRun bool) (*gen.DeleteBindingRevis
 func runDelete(t *testing.T, api *deleteAPI, opts DeleteOptions) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	opts.Kind, opts.Binding, opts.Revision, opts.Out = "release binding", "api-dev", 2, &out
+	opts.Kind, opts.Binding, opts.Revision, opts.Out = testKind, testBindingName, 2, &out
 	opts.Target = Row{Name: "api-v2-r2", Cause: "Deploy", Health: "Failed"}
 	err := RunDelete(context.Background(), opts, api.del)
 	return out.String(), err
