@@ -558,12 +558,21 @@ func (s *Snapshotter[B, R]) updateStatus(ctx context.Context, rev R,
 }
 
 // evict deletes the binding's oldest revisions beyond HistoryLimit, keeping the
-// active revision, the newest known-good revision and revisions annotated
-// openchoreo.dev/keep: "true" (see SelectEvictions). When those alone exceed
+// active revision, the revision active before it (the target of an undo), the
+// newest known-good revision and revisions annotated openchoreo.dev/keep:
+// "true" (see SelectEvictions). When those alone exceed
 // the limit it keeps them and records a warning event on the binding.
 func (s *Snapshotter[B, R]) evict(ctx context.Context, binding B, revs []R, active int64) error {
 	if s.HistoryLimit <= 0 {
 		return nil
+	}
+
+	// The revision active before the active one is the target of an undo.
+	undoTarget := int64(0)
+	for _, rev := range revs {
+		if s.Adapter.Number(rev) == active {
+			undoTarget, _ = strconv.ParseInt(rev.GetAnnotations()[AnnotationKeyPreviousRevision], 10, 64)
+		}
 	}
 
 	byName := make(map[string]R, len(revs))
@@ -571,11 +580,12 @@ func (s *Snapshotter[B, R]) evict(ctx context.Context, binding B, revs []R, acti
 	for _, rev := range revs {
 		byName[rev.GetName()] = rev
 		candidates = append(candidates, EvictionCandidate{
-			Name:      rev.GetName(),
-			Number:    s.Adapter.Number(rev),
-			Active:    s.Adapter.Number(rev) == active,
-			KnownGood: s.Adapter.Status(rev).KnownGood,
-			Keep:      rev.GetAnnotations()[openchoreov1alpha1.AnnotationKeyKeepRevision] == KeepRevisionValue,
+			Name:       rev.GetName(),
+			Number:     s.Adapter.Number(rev),
+			Active:     s.Adapter.Number(rev) == active,
+			KnownGood:  s.Adapter.Status(rev).KnownGood,
+			Keep:       rev.GetAnnotations()[openchoreov1alpha1.AnnotationKeyKeepRevision] == KeepRevisionValue,
+			UndoTarget: undoTarget > 0 && s.Adapter.Number(rev) == undoTarget,
 		})
 	}
 
@@ -589,8 +599,8 @@ func (s *Snapshotter[B, R]) evict(ctx context.Context, binding B, revs []R, acti
 	}
 	if overLimit && s.Recorder != nil {
 		s.Recorder.Eventf(binding, corev1.EventTypeWarning, EventReasonRevisionHistoryLimitExceeded,
-			"%d revisions are kept, above the history limit of %d: the active revision, the newest known-good "+
-				"revision and revisions annotated %s=%s are never deleted",
+			"%d revisions are kept, above the history limit of %d: the active revision, the revision active "+
+				"before it, the newest known-good revision and revisions annotated %s=%s are never deleted",
 			len(revs)-len(evict), s.HistoryLimit, openchoreov1alpha1.AnnotationKeyKeepRevision, KeepRevisionValue)
 	}
 	return kerrors.NewAggregate(errs)

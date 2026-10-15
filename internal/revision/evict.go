@@ -13,14 +13,20 @@ type EvictionCandidate struct {
 	KnownGood bool
 	// Keep is true when the revision is annotated openchoreo.dev/keep: "true".
 	Keep bool
+	// UndoTarget is true for the revision that was active before the active one
+	// (AnnotationKeyPreviousRevision on the active revision): the target of a
+	// rollback that names no revision. Only the history limit spares it; it may
+	// still be deleted by hand.
+	UndoTarget bool
 }
 
 // SelectEvictions returns the revisions to delete so that at most limit remain,
 // oldest by spec.revision first. A limit of zero or less means unlimited.
 //
-// Three kinds of revision are never selected: the active revision, the newest
-// known-good revision (the rollback target of last resort), and revisions marked
-// Keep. When those alone outnumber the limit, every unprotected revision is
+// Four kinds of revision are never selected: the active revision, the newest
+// known-good revision (the rollback target of last resort), revisions marked
+// Keep, and the UndoTarget -- otherwise a rollback to an old revision followed
+// by a new deploy would evict the very revision an undo returns to. When those alone outnumber the limit, every unprotected revision is
 // selected, the protected ones stay, and overLimit reports that the history is
 // still above the limit.
 func SelectEvictions(candidates []EvictionCandidate, limit int) (evict []EvictionCandidate, overLimit bool) {
@@ -37,7 +43,7 @@ func SelectEvictions(candidates []EvictionCandidate, limit int) (evict []Evictio
 		if excess == 0 {
 			break
 		}
-		if c.Active || c.Keep || c.Number == newestKnownGood {
+		if c.Active || c.Keep || c.UndoTarget || c.Number == newestKnownGood {
 			continue
 		}
 		evict = append(evict, c)
@@ -60,8 +66,10 @@ const (
 )
 
 // Protected returns why target may not be deleted, or "" when it may. These are
-// the revisions SelectEvictions never selects, so deleting a revision by hand
-// is held to the same rules as the history limit. candidates are all of the
+// the revisions SelectEvictions never selects, except the UndoTarget, so
+// deleting a revision by hand is held to the same rules as the history limit.
+// The UndoTarget is left deletable on purpose: it is often the failed revision
+// a user just rolled back from and wants gone. candidates are all of the
 // binding's revisions, target among them.
 func Protected(candidates []EvictionCandidate, target EvictionCandidate) Protection {
 	switch {
