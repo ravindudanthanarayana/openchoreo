@@ -1095,3 +1095,164 @@ func TestResourceReleaseBindingSnapshotter_RecordsThePreviouslyActiveRevision(t 
 	require.NoError(t, err)
 	assert.Equal(t, [2]int64{1, 2}, [2]int64{cur.Number, prev.Number}, "r1 is active again after r2")
 }
+
+// rollbackTo makes the binding's spec the one revision n records, as the
+// rollback API does, pinning the binding.
+func rollbackTo(t *testing.T, c client.Client, binding *openchoreov1alpha1.ReleaseBinding, n int64) {
+	t.Helper()
+	rev := getRBR(t, c, "frontend-development-r"+strconv.FormatInt(n, 10))
+	bump(binding, func(spec *openchoreov1alpha1.ReleaseBindingSpec) {
+		*spec = *rev.Spec.BindingSpec.DeepCopy()
+		spec.ReleasePin = openchoreov1alpha1.ReleasePinPinned
+	})
+}
+
+// TestReleaseBindingSnapshotter_UndoFollowsActivationHistory is the r1..r5
+// scenario: after an explicit rollback from r5 to r3, an undo returns to r5,
+// and the next undo to r3 again.
+func TestReleaseBindingSnapshotter_UndoFollowsActivationHistory(t *testing.T) {
+	ctx := context.Background()
+	binding := newBinding("frontend-development")
+	c := newTestClient(t, binding.DeepCopy())
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(binding), binding))
+	s := NewReleaseBindingSnapshotter(c, newTestScheme(t), Options{HistoryLimit: DefaultHistoryLimit})
+	record := func() {
+		t.Helper()
+		res, err := s.Record(ctx, binding)
+		require.NoError(t, err)
+		binding.Status.HighestRevision = res.Highest
+	}
+	undoTarget := func() int64 {
+		t.Helper()
+		_, prev, inferred, err := PreviousActive(activationsOf(t, c), binding.Status.HighestRevision)
+		require.NoError(t, err)
+		require.Empty(t, inferred)
+		return prev.Number
+	}
+	previousAnnotation := func(n int64) string {
+		return getRBR(t, c, "frontend-development-r"+strconv.FormatInt(n, 10)).Annotations[AnnotationKeyPreviousRevision]
+	}
+
+	record() // r1
+	for i := 2; i <= 5; i++ {
+		bump(binding, func(spec *openchoreov1alpha1.ReleaseBindingSpec) {
+			spec.ComponentTypeEnvironmentConfigs = &runtime.RawExtension{Raw: []byte(`{"replicas":` + strconv.Itoa(i) + `}`)}
+		})
+		record()
+	}
+	require.Equal(t, "4", previousAnnotation(5))
+	require.Equal(t, int64(4), undoTarget())
+
+	// occ rb rollback frontend-development --revision 3
+	rollbackTo(t, c, binding, 3)
+	record()
+	assert.Equal(t, "5", previousAnnotation(3), "r3 records r5, the revision it replaced")
+	assert.Equal(t, int64(5), undoTarget(), "undo returns to r5, not r2 or r4")
+
+	// Reconciling again records no new activation.
+	before := getRBR(t, c, "frontend-development-r3").ResourceVersion
+	record()
+	record()
+	assert.Equal(t, before, getRBR(t, c, "frontend-development-r3").ResourceVersion, "no rewrite without an activation")
+
+	// occ rb rollback frontend-development (undo) -> r5
+	rollbackTo(t, c, binding, undoTarget())
+	record()
+	assert.Equal(t, "3", previousAnnotation(5))
+	assert.Equal(t, int64(3), undoTarget(), "the next undo returns to r3")
+
+	// A controller restart rebuilds nothing; the objects carry the history.
+	s = NewReleaseBindingSnapshotter(c, newTestScheme(t), Options{HistoryLimit: DefaultHistoryLimit})
+	record()
+	assert.Equal(t, int64(3), undoTarget())
+
+	// A stale binding read (the cache still holds the rollback to r3) changes nothing.
+	stale := binding.DeepCopy()
+	stale.Generation--
+	stale.Spec = *getRBR(t, c, "frontend-development-r3").Spec.BindingSpec.DeepCopy()
+	_, err := s.Record(ctx, stale)
+	require.NoError(t, err)
+	assert.True(t, getRBR(t, c, "frontend-development-r5").Status.Active)
+	assert.Equal(t, int64(3), undoTarget())
+
+	// Undo again -> r3; numbering never moved.
+	rollbackTo(t, c, binding, undoTarget())
+	record()
+	assert.Equal(t, int64(5), undoTarget())
+	assert.Len(t, listRBRs(t, c), 5, "rollbacks create no revisions")
+}
+
+// TestReleaseBindingSnapshotter_HistoryLimitKeepsTheUndoTarget: a rollback to
+// the oldest revision followed by a new deploy must not evict the revision an
+// undo returns to.
+func TestReleaseBindingSnapshotter_HistoryLimitKeepsTheUndoTarget(t *testing.T) {
+	ctx := context.Background()
+	binding := newBinding("frontend-development")
+	c := newTestClient(t, binding.DeepCopy())
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(binding), binding))
+	s := NewReleaseBindingSnapshotter(c, newTestScheme(t), Options{HistoryLimit: 3})
+	record := func() {
+		t.Helper()
+		res, err := s.Record(ctx, binding)
+		require.NoError(t, err)
+		binding.Status.HighestRevision = res.Highest
+	}
+	record() // r1
+	for i := 2; i <= 3; i++ {
+		bump(binding, func(spec *openchoreov1alpha1.ReleaseBindingSpec) {
+			spec.ComponentTypeEnvironmentConfigs = &runtime.RawExtension{Raw: []byte(`{"replicas":` + strconv.Itoa(i) + `}`)}
+		})
+		record()
+	}
+	rollbackTo(t, c, binding, 1)
+	record()
+	bump(binding, func(spec *openchoreov1alpha1.ReleaseBindingSpec) { spec.ReleaseName = secondRelease })
+	record() // r4 replaces r1; the limit of 3 evicts one revision
+
+	_, prev, _, err := PreviousActive(activationsOf(t, c), binding.Status.HighestRevision)
+	require.NoError(t, err, "the undo target was not evicted")
+	assert.Equal(t, int64(1), prev.Number)
+	stored := listRBRs(t, c)
+	numbers := make([]int64, 0, len(stored))
+	for _, r := range stored {
+		numbers = append(numbers, r.Spec.Revision)
+	}
+	assert.ElementsMatch(t, []int64{1, 3, 4}, numbers, "r2, the oldest revision that is not protected, went")
+}
+
+func TestResourceReleaseBindingSnapshotter_UndoFollowsActivationHistory(t *testing.T) {
+	ctx := context.Background()
+	binding := newResourceBinding("db-development", "development", "db-r1")
+	c := newTestClient(t, binding.DeepCopy())
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(binding), binding))
+	s := NewResourceReleaseBindingSnapshotter(c, newTestScheme(t), Options{})
+	var highest int64
+	deploy := func(release string) {
+		t.Helper()
+		binding.Spec.ResourceRelease = release
+		binding.Generation++
+		res, err := s.Record(ctx, binding)
+		require.NoError(t, err)
+		highest = res.Highest
+	}
+	undoTarget := func() int64 {
+		t.Helper()
+		var list openchoreov1alpha1.ResourceReleaseBindingRevisionList
+		require.NoError(t, c.List(ctx, &list, client.InNamespace("default")))
+		acts := make([]Activation, len(list.Items))
+		for i := range list.Items {
+			acts[i] = Activation{Object: &list.Items[i], Number: list.Items[i].Spec.Revision}
+		}
+		_, prev, _, err := PreviousActive(acts, highest)
+		require.NoError(t, err)
+		return prev.Number
+	}
+
+	for i := 1; i <= 5; i++ {
+		deploy("db-r" + strconv.Itoa(i))
+	}
+	deploy("db-r3") // rollback to r3
+	assert.Equal(t, int64(5), undoTarget())
+	deploy("db-r5") // undo
+	assert.Equal(t, int64(3), undoTarget())
+}

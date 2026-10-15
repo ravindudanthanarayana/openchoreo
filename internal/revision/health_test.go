@@ -450,5 +450,7 @@ func TestRecord_KeepAnnotationProtects(t *testing.T) {
 	for _, rev := range stored {
 		numbers = append(numbers, rev.Spec.Revision)
 	}
-	assert.ElementsMatch(t, []int64{1, 4}, numbers)
+	// r1 is kept by its annotation, r4 is active and r3, the revision active
+	// before r4, is the target of an undo; r2 is the only one the limit may take.
+	assert.ElementsMatch(t, []int64{1, 3, 4}, numbers)
 }

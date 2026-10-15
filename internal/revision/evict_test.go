@@ -203,3 +203,23 @@ func TestProtectedMatchesSelectEvictions(t *testing.T) {
 		assert.Equal(t, evictable[c.Name], Protected(candidates, c) == "", c.Name)
 	}
 }
+
+func TestSelectEvictions_SparesTheUndoTarget(t *testing.T) {
+	// r1 is the revision active before r4 (a rollback to r1, then a new deploy):
+	// the oldest, but the target of an undo.
+	candidates := with(with(revs(4), 4, func(c *EvictionCandidate) { c.Active = true }),
+		1, func(c *EvictionCandidate) { c.UndoTarget = true })
+	evicted, _ := SelectEvictions(candidates, 3)
+	assert.Equal(t, []string{"b-r2"}, names(evicted), "the oldest revision that is not the undo target goes")
+
+	// The undo target stays deletable by hand.
+	assert.Equal(t, Protection(""), Protected(candidates, candidates[0]))
+}
+
+func names(cs []EvictionCandidate) []string {
+	out := make([]string, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, c.Name)
+	}
+	return out
+}
