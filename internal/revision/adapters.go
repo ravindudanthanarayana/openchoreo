@@ -58,6 +58,10 @@ func (releaseBindingAdapter) Number(rev *openchoreov1alpha1.ReleaseBindingRevisi
 	return rev.Spec.Revision
 }
 
+func (releaseBindingAdapter) HighestRevision(binding *openchoreov1alpha1.ReleaseBinding) int64 {
+	return binding.Status.HighestRevision
+}
+
 func (releaseBindingAdapter) SnapshotHash(rev *openchoreov1alpha1.ReleaseBindingRevision) string {
 	return rev.Spec.SnapshotHash
 }
@@ -170,6 +174,10 @@ func (resourceReleaseBindingAdapter) Items(list client.ObjectList) []*openchoreo
 
 func (resourceReleaseBindingAdapter) Number(rev *openchoreov1alpha1.ResourceReleaseBindingRevision) int64 {
 	return rev.Spec.Revision
+}
+
+func (resourceReleaseBindingAdapter) HighestRevision(binding *openchoreov1alpha1.ResourceReleaseBinding) int64 {
+	return binding.Status.HighestRevision
 }
 
 func (resourceReleaseBindingAdapter) SnapshotHash(rev *openchoreov1alpha1.ResourceReleaseBindingRevision) string {

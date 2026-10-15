@@ -8,6 +8,7 @@ import (
 
 	"github.com/openchoreo/openchoreo/internal/occ/auth"
 	"github.com/openchoreo/openchoreo/internal/occ/cmd/bindingrevision"
+	"github.com/openchoreo/openchoreo/internal/occ/cmd/config"
 	"github.com/openchoreo/openchoreo/internal/occ/flags"
 	"github.com/openchoreo/openchoreo/internal/occ/resources/client"
 )
@@ -17,12 +18,12 @@ func NewReleaseBindingRevisionCmd(f client.NewClientFunc) *cobra.Command {
 		Use:     "releasebindingrevision",
 		Aliases: []string{"releasebindingrevisions", "rbr"},
 		Short:   "Manage release binding revisions",
-		Long:    "Commands for listing release binding revisions and rolling a release binding back to one.",
+		Long:    "Commands for listing, showing and deleting release binding revisions. To roll back, use occ releasebinding rollback.",
 	}
 	cmd.AddCommand(
 		newListCmd(f),
 		newGetCmd(f),
-		newRollbackCmd(f),
+		newDeleteCmd(f),
 	)
 	return cmd
 }
@@ -31,33 +32,65 @@ func newListCmd(f client.NewClientFunc) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List release binding revisions",
-		Long:  `List the revisions of a release binding, newest first.`,
-		Example: `  # List the revisions of a release binding
+		Long: `List revisions, newest first. With --binding, the revisions of that one
+binding. Without it, the revisions of every release binding in the namespace, with
+the project, binding and environment of each; narrow them with --project,
+--component and --environment.`,
+		Example: `  # List the revisions of every release binding in the namespace
+  occ releasebindingrevision list --namespace acme-corp
+
+  # Every binding in one project
+  occ releasebindingrevision list --namespace acme-corp --project online-store
+
+  # Every environment of one component
+  occ releasebindingrevision list --namespace acme-corp --component product-catalog
+
+  # Every component in one environment
+  occ releasebindingrevision list --namespace acme-corp --environment production
+
+  # One binding
   occ releasebindingrevision list --namespace acme-corp --binding product-catalog-development`,
-		PreRunE: auth.RequireLogin(),
+		// --project, --component and --resource are filters here: filling them
+		// from the current context would silently narrow the list, so context
+		// defaults are skipped and only the namespace is taken from the context.
+		Annotations: map[string]string{config.SkipContextDefaultsAnnotation: ""},
+		PreRunE:     auth.RequireLogin(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cl, err := f()
 			if err != nil {
 				return err
 			}
 			return New(cl).List(ListParams{
-				Namespace: flags.GetNamespace(cmd),
-				Binding:   bindingrevision.GetBinding(cmd),
+				Namespace:   bindingrevision.NamespaceOrContext(cmd),
+				Binding:     bindingrevision.GetBinding(cmd),
+				Project:     flags.GetProject(cmd),
+				Component:   flags.GetComponent(cmd),
+				Environment: bindingrevision.GetEnvironment(cmd),
 			})
 		},
 	}
 	flags.AddNamespace(cmd)
 	bindingrevision.AddBinding(cmd, "release binding")
+	flags.AddProject(cmd)
+	flags.AddComponent(cmd)
+	bindingrevision.AddEnvironment(cmd)
 	return cmd
 }
 
 func newGetCmd(f client.NewClientFunc) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "get",
+		Use:   "get [REVISION_NAME]",
 		Short: "Get a release binding revision",
-		Long:  `Get one revision of a release binding, as a table row or in full as YAML.`,
+		Long: `Get one revision of a release binding, as a table row or in full as YAML.
+
+Name the revision with REVISION_NAME (its name, for example
+product-catalog-development-r3 or the display name shown by list, or r3) or with --revision.`,
+		Args: cobra.MaximumNArgs(1),
 		Example: `  # Show revision 3 of a release binding
   occ releasebindingrevision get --namespace acme-corp --binding product-catalog-development --revision 3
+
+  # The same revision, by name
+  occ releasebindingrevision get product-catalog-development-r3 --namespace acme-corp --binding product-catalog-development
 
   # Show the full revision, including the binding spec it recorded
   occ releasebindingrevision get --namespace acme-corp --binding product-catalog-development --revision 3 -o yaml`,
@@ -67,10 +100,14 @@ func newGetCmd(f client.NewClientFunc) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			revisionNumber, err := bindingrevision.RevisionFromArgs(cmd, args)
+			if err != nil {
+				return err
+			}
 			return New(cl).Get(GetParams{
 				Namespace: flags.GetNamespace(cmd),
 				Binding:   bindingrevision.GetBinding(cmd),
-				Revision:  bindingrevision.GetRevision(cmd),
+				Revision:  revisionNumber,
 				Output:    bindingrevision.GetOutput(cmd),
 			})
 		},
@@ -82,35 +119,41 @@ func newGetCmd(f client.NewClientFunc) *cobra.Command {
 	return cmd
 }
 
-func newRollbackCmd(f client.NewClientFunc) *cobra.Command {
+func newDeleteCmd(f client.NewClientFunc) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "rollback",
-		Short: "Roll a release binding back to a revision",
-		Long: `Restore the binding spec recorded by an earlier revision.
+		Use:   "delete [REVISION_NAME]",
+		Short: "Delete a release binding revision",
+		Long: `Delete one revision from a release binding's history. It can no longer be
+rolled back to. The other revisions keep their numbers, and the deleted number is
+never given to a new revision.
 
-The rollback is previewed first: the spec fields it changes and any pre-flight
-warnings are printed, and you are asked to confirm. The binding is pinned to the
-restored release so auto-deploy does not move it forward again. No revision is
-created: the controller makes the target revision active again, under its own
-name and number.`,
-		Example: `  # Preview a rollback to revision 3 without changing anything
-  occ releasebindingrevision rollback --namespace acme-corp --binding product-catalog-development --revision 3 --dry-run
+Name the revision with REVISION_NAME (its name, its display name, or r3) or with
+--revision. The revision is shown and you are asked to confirm. The server refuses
+to delete the active revision, the newest known-good revision, and revisions
+annotated openchoreo.dev/keep: "true".`,
+		Args: cobra.MaximumNArgs(1),
+		Example: `  # Check that revision 2 can be deleted, without deleting it
+  occ releasebindingrevision delete --namespace acme-corp --binding product-catalog-development --revision 2 --dry-run
 
-  # Roll back to revision 3, confirming interactively
-  occ releasebindingrevision rollback --namespace acme-corp --binding product-catalog-development --revision 3
+  # Delete revision 2, confirming interactively
+  occ releasebindingrevision delete r2 --namespace acme-corp --binding product-catalog-development
 
-  # Roll back without a prompt (for scripts)
-  occ releasebindingrevision rollback --namespace acme-corp --binding product-catalog-development --revision 3 --yes`,
+  # Delete without a prompt (for scripts)
+  occ releasebindingrevision delete --namespace acme-corp --binding product-catalog-development --revision 2 --yes`,
 		PreRunE: auth.RequireLogin(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cl, err := f()
 			if err != nil {
 				return err
 			}
-			return New(cl).Rollback(RollbackParams{
+			revisionNumber, err := bindingrevision.RevisionFromArgs(cmd, args)
+			if err != nil {
+				return err
+			}
+			return New(cl).Delete(DeleteParams{
 				Namespace: flags.GetNamespace(cmd),
 				Binding:   bindingrevision.GetBinding(cmd),
-				Revision:  bindingrevision.GetRevision(cmd),
+				Revision:  revisionNumber,
 				DryRun:    bindingrevision.GetDryRun(cmd),
 				Yes:       bindingrevision.GetYes(cmd),
 			})
@@ -119,7 +162,7 @@ name and number.`,
 	flags.AddNamespace(cmd)
 	bindingrevision.AddBinding(cmd, "release binding")
 	bindingrevision.AddRevision(cmd)
-	bindingrevision.AddDryRun(cmd)
-	bindingrevision.AddYes(cmd)
+	bindingrevision.AddDryRun(cmd, "Check that the revision can be deleted without deleting it")
+	bindingrevision.AddYes(cmd, "Delete without asking for confirmation")
 	return cmd
 }

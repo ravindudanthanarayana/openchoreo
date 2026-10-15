@@ -22,6 +22,7 @@ import (
 	"golang.org/x/term"
 	"sigs.k8s.io/yaml"
 
+	"github.com/openchoreo/openchoreo/internal/occ/cmd/config"
 	"github.com/openchoreo/openchoreo/internal/occ/cmd/utils"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/api/gen"
 )
@@ -45,6 +46,16 @@ func GetBinding(cmd *cobra.Command) string {
 	return v
 }
 
+// AddEnvironment adds --environment, which narrows a list to one environment.
+func AddEnvironment(cmd *cobra.Command) {
+	cmd.Flags().String("environment", "", "Only list revisions of bindings in this environment (e.g., production)")
+}
+
+func GetEnvironment(cmd *cobra.Command) string {
+	v, _ := cmd.Flags().GetString("environment")
+	return v
+}
+
 func AddRevision(cmd *cobra.Command) {
 	cmd.Flags().Int64("revision", 0, "Revision number")
 }
@@ -54,8 +65,76 @@ func GetRevision(cmd *cobra.Command) int64 {
 	return v
 }
 
-func AddDryRun(cmd *cobra.Command) {
-	cmd.Flags().Bool("dry-run", false, "Show the changes and warnings the rollback would produce without applying it")
+// NamespaceOrContext returns --namespace, or the current context's namespace
+// when the flag is not given. For commands that skip context defaults because
+// their other flags are filters (config.SkipContextDefaultsAnnotation).
+func NamespaceOrContext(cmd *cobra.Command) string {
+	if ns, _ := cmd.Flags().GetString("namespace"); ns != "" {
+		return ns
+	}
+	if ctx, err := config.GetCurrentContext(); err == nil && ctx != nil {
+		return ctx.Namespace
+	}
+	return ""
+}
+
+// RevisionFromArgs returns the revision number a get command names: the
+// optional REVISION_NAME argument, or else --revision. REVISION_NAME may be the
+// revision's object name ({binding}-r{N}), its display name ({release}-r{N}),
+// "r{N}" or "{N}". Naming the revision both ways is allowed when they agree.
+func RevisionFromArgs(cmd *cobra.Command, args []string) (int64, error) {
+	flag := GetRevision(cmd)
+	if len(args) == 0 {
+		return flag, nil
+	}
+	n, err := ParseRevisionName(args[0])
+	if err != nil {
+		return 0, err
+	}
+	if flag != 0 && flag != n {
+		return 0, fmt.Errorf("revision name %q is revision %d, but --revision is %d", args[0], n, flag)
+	}
+	return n, nil
+}
+
+// ParseRevisionName returns the revision number in name: "{N}", "r{N}", or a
+// name ending in "-r{N}" such as an object name or display name.
+func ParseRevisionName(name string) (int64, error) {
+	s := strings.TrimSpace(name)
+	digits := strings.TrimPrefix(s, "r")
+	if !isRevisionNumber(digits) {
+		idx := strings.LastIndex(s, "-r")
+		if idx <= 0 {
+			return 0, fmt.Errorf("revision name %q must be a revision name ending in -r<N>, r<N> or <N>", name)
+		}
+		digits = s[idx+len("-r"):]
+	}
+	if !isRevisionNumber(digits) {
+		return 0, fmt.Errorf("revision name %q must be a revision name ending in -r<N>, r<N> or <N>", name)
+	}
+	n, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("revision name %q: %w", name, err)
+	}
+	return n, nil
+}
+
+// isRevisionNumber reports whether s is a revision number: digits, at least 1,
+// without a leading zero.
+func isRevisionNumber(s string) bool {
+	if s == "" || s[0] == '0' {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func AddDryRun(cmd *cobra.Command, usage string) {
+	cmd.Flags().Bool("dry-run", false, usage)
 }
 
 func GetDryRun(cmd *cobra.Command) bool {
@@ -63,8 +142,8 @@ func GetDryRun(cmd *cobra.Command) bool {
 	return v
 }
 
-func AddYes(cmd *cobra.Command) {
-	cmd.Flags().BoolP("yes", "y", false, "Roll back without asking for confirmation")
+func AddYes(cmd *cobra.Command, usage string) {
+	cmd.Flags().BoolP("yes", "y", false, usage)
 }
 
 func GetYes(cmd *cobra.Command) bool {
@@ -95,16 +174,18 @@ func ValidateOutput(format string) error {
 // ─────────────────────────────────────────────────────────────
 
 // Row is one revision as the table shows it. Name is its display name,
-// {release}-r{N} (see DisplayName); Revision and Release are what it is made of.
+// {release}-r{N} (see DisplayName).
 type Row struct {
-	Name      string
-	Revision  int64
-	Release   string
-	Cause     string
-	Health    string
-	Active    bool
-	KnownGood bool
-	CreatedAt *time.Time
+	// Project, Binding and Environment are only shown by PrintBindingTable.
+	Project     string
+	Binding     string
+	Environment string
+	Name        string
+	Cause       string
+	Health      string
+	Active      bool
+	KnownGood   bool
+	CreatedAt   *time.Time
 }
 
 // StatusRow fills a Row's status columns from a revision's status.
@@ -120,22 +201,55 @@ func StatusRow(row Row, status *gen.BindingRevisionStatus) Row {
 	return row
 }
 
+// revisionColumns are the columns every revision table ends with; revisionCells
+// returns a row's values for them.
+const revisionColumns = "NAME\tCAUSE\tHEALTH\tACTIVE\tKNOWN-GOOD\tAGE"
+
+func revisionCells(r Row) string {
+	age := ""
+	if r.CreatedAt != nil {
+		age = utils.FormatAge(*r.CreatedAt)
+	}
+	return fmt.Sprintf("%s\t%s\t%s\t%t\t%t\t%s", r.Name, r.Cause, r.Health, r.Active, r.KnownGood, age)
+}
+
+// printNoRevisions writes the message an empty revision list shows.
+func printNoRevisions(w io.Writer) error {
+	_, err := fmt.Fprintln(w, "No revisions found")
+	return err
+}
+
 // PrintTable writes revisions in the order given, under the columns every
 // revision list uses.
 func PrintTable(w io.Writer, rows []Row) error {
 	if len(rows) == 0 {
-		_, err := fmt.Fprintln(w, "No revisions found")
-		return err
+		return printNoRevisions(w)
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tCAUSE\tHEALTH\tACTIVE\tKNOWN-GOOD\tAGE")
+	fmt.Fprintln(tw, revisionColumns)
 	for _, r := range rows {
-		age := ""
-		if r.CreatedAt != nil {
-			age = utils.FormatAge(*r.CreatedAt)
+		fmt.Fprintln(tw, revisionCells(r))
+	}
+	return tw.Flush()
+}
+
+// PrintBindingTable writes the revisions of several bindings in the order
+// given, with the binding and environment each revision belongs to, and its
+// project when showProject is set (the list was not narrowed to one project).
+func PrintBindingTable(w io.Writer, rows []Row, showProject bool) error {
+	if len(rows) == 0 {
+		return printNoRevisions(w)
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+	if showProject {
+		fmt.Fprint(tw, "PROJECT\t")
+	}
+	fmt.Fprintln(tw, "BINDING\tENVIRONMENT\t"+revisionColumns)
+	for _, r := range rows {
+		if showProject {
+			fmt.Fprintf(tw, "%s\t", r.Project)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%t\t%s\n",
-			r.Name, r.Cause, r.Health, r.Active, r.KnownGood, age)
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Binding, r.Environment, revisionCells(r))
 	}
 	return tw.Flush()
 }
@@ -158,10 +272,11 @@ func PrintYAML(w io.Writer, v any) error {
 type Confirmer func(out io.Writer, question string) (bool, error)
 
 // ConfirmOnTerminal reads the answer from stdin. It refuses rather than blocks
-// when stdin is not a terminal: a piped rollback must say --yes explicitly.
+// when stdin is not a terminal: a piped rollback or deletion must say --yes
+// explicitly.
 func ConfirmOnTerminal(out io.Writer, question string) (bool, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return false, fmt.Errorf("stdin is not a terminal; pass --yes to roll back without confirmation")
+		return false, fmt.Errorf("stdin is not a terminal; pass --yes to proceed without confirmation")
 	}
 	return confirm(os.Stdin, out, question)
 }
@@ -315,4 +430,77 @@ func formatValue(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(data)
+}
+
+// ─────────────────────────────────────────────────────────────
+// Delete
+// ─────────────────────────────────────────────────────────────
+
+// DeleteFunc calls the revision delete API, as a dry run or for real.
+type DeleteFunc func(ctx context.Context, dryRun bool) (*gen.DeleteBindingRevisionResponse, error)
+
+// DeleteOptions configures RunDelete.
+type DeleteOptions struct {
+	// Kind names the binding kind in messages, e.g. "release binding".
+	Kind    string
+	Binding string
+	// Target is the revision to delete, as list shows it.
+	Target   Row
+	Revision int64
+	DryRun   bool
+	Yes      bool
+	Out      io.Writer
+	Confirm  Confirmer
+}
+
+// RunDelete runs the revision deletion flow:
+//   - show the revision to delete, then ask the server whether it may be
+//     deleted (a dry run), so a protected revision is refused before any prompt;
+//   - --dry-run: stop there;
+//   - default: ask for confirmation, then delete it;
+//   - --yes: delete it without asking.
+//
+// Success is only reported once the server has deleted the revision, and the
+// server repeats every check then.
+func RunDelete(ctx context.Context, opts DeleteOptions, del DeleteFunc) error {
+	t := opts.Target
+	status := "Inactive"
+	if t.Active {
+		status = "Active"
+	}
+	fmt.Fprintf(opts.Out, "Revision:    %s (revision %d of %s %q)\n", t.Name, opts.Revision, opts.Kind, opts.Binding)
+	fmt.Fprintf(opts.Out, "Status:      %s\n", status)
+	fmt.Fprintf(opts.Out, "Health:      %s\n", t.Health)
+	fmt.Fprintf(opts.Out, "Known-good:  %t\n", t.KnownGood)
+	fmt.Fprintf(opts.Out, "Cause:       %s\n", t.Cause)
+
+	if _, err := del(ctx, true); err != nil {
+		return err
+	}
+	fmt.Fprintln(opts.Out, "\nDeleting it removes it from the rollback history. The other revisions keep their numbers.")
+	if opts.DryRun {
+		fmt.Fprintln(opts.Out, "Dry run: the revision can be deleted; nothing was changed.")
+		return nil
+	}
+	if !opts.Yes {
+		ok, err := opts.Confirm(opts.Out, "\nDelete this revision?")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			fmt.Fprintln(opts.Out, "Deletion cancelled.")
+			return nil
+		}
+	}
+
+	result, err := del(ctx, false)
+	if err != nil {
+		return err
+	}
+	name := t.Name
+	if result.RevisionDisplayName != nil {
+		name = *result.RevisionDisplayName
+	}
+	fmt.Fprintf(opts.Out, "Successfully deleted revision %d: %s\n", result.Revision, name)
+	return nil
 }

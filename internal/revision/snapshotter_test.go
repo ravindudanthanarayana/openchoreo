@@ -173,7 +173,7 @@ func TestReleaseBindingSnapshotter_FirstRevision(t *testing.T) {
 
 	res, err := s.Record(ctx, binding)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy}, res)
+	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy, Highest: 1}, res)
 
 	rev := getRBR(t, c, "frontend-development-r1")
 	assert.Equal(t, "frontend-development-r1", rev.Name, "a revision object is named {binding}-r{N}")
@@ -273,13 +273,13 @@ func TestReleaseBindingSnapshotter_SpecChanges(t *testing.T) {
 			assert.Equal(t, r1Before.Spec, r1.Spec, "an existing revision's spec must never change")
 
 			if !tt.wantNew {
-				assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name}, res)
+				assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Highest: 1}, res)
 				assert.Len(t, listRBRs(t, c), 1)
 				assert.True(t, r1.Status.Active)
 				return
 			}
 
-			assert.Equal(t, Result{Number: 2, Name: getRBR(t, c, "frontend-development-r2").Name, Created: true, Cause: tt.wantCause}, res)
+			assert.Equal(t, Result{Number: 2, Name: getRBR(t, c, "frontend-development-r2").Name, Created: true, Cause: tt.wantCause, Highest: 2}, res)
 			r2 := getRBR(t, c, "frontend-development-r2")
 			assert.Equal(t, tt.wantCause, r2.Spec.Cause)
 			assert.Equal(t, tt.wantRelease, r2.Spec.ComponentReleaseName)
@@ -434,14 +434,14 @@ func TestReleaseBindingSnapshotter_CauseAnnotationsRetriedAfterPatchFailure(t *t
 
 	res, err := s.Record(ctx, binding)
 	require.ErrorContains(t, err, "injected patch failure")
-	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Created: true, Cause: openchoreov1alpha1.RevisionCausePromote}, res,
+	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Created: true, Cause: openchoreov1alpha1.RevisionCausePromote, Highest: 1}, res,
 		"the revision is written even when removing the annotation fails")
 
 	// The retry finds the spec recorded: it creates nothing and only removes the annotation.
 	failPatch = false
 	res, err = s.Record(ctx, binding)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name}, res)
+	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Highest: 1}, res)
 	assert.Len(t, listRBRs(t, c), 1)
 
 	stored := &openchoreov1alpha1.ReleaseBinding{}
@@ -486,7 +486,7 @@ func TestReleaseBindingSnapshotter_StaleBindingRecordsNothing(t *testing.T) {
 	// A reconcile working from the generation-1 object seen through a lagging cache.
 	res, err := s.Record(ctx, stale)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name}, res)
+	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Highest: 1}, res)
 	assert.Len(t, listRBRs(t, c), 1)
 }
 
@@ -502,7 +502,7 @@ func TestReleaseBindingSnapshotter_AlreadyExistsIsSuccess(t *testing.T) {
 
 	res, err := s.Record(ctx, binding)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Created: false, Cause: openchoreov1alpha1.RevisionCauseDeploy}, res)
+	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Created: false, Cause: openchoreov1alpha1.RevisionCauseDeploy, Highest: 1}, res)
 
 	rev := getRBR(t, c, "frontend-development-r1")
 	assert.Equal(t, "from-earlier-attempt", rev.Spec.SnapshotHash, "the stored revision must not be overwritten")
@@ -530,7 +530,7 @@ func TestReleaseBindingSnapshotter_NameHeldByDeletedBindingsRevision(t *testing.
 	require.NoError(t, c.Delete(ctx, rev))
 	res, err := s.Record(ctx, binding)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy}, res)
+	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy, Highest: 1}, res)
 }
 
 // earlierRevision returns an r1 for binding that an earlier write created, owned
@@ -577,7 +577,7 @@ func TestReleaseBindingSnapshotter_ProjectionKeepsHealthAndIsIdempotent(t *testi
 	for range 3 {
 		res, err := s.Record(ctx, binding)
 		require.NoError(t, err)
-		assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name}, res)
+		assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Highest: 1}, res)
 	}
 	after := getRBR(t, c, "frontend-development-r1")
 	assert.Equal(t, rv, after.ResourceVersion, "a no-op reconcile must not write")
@@ -636,7 +636,7 @@ func TestReleaseBindingSnapshotter_IgnoresOtherBindingsRevisions(t *testing.T) {
 
 	res, err := s.Record(ctx, binding)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 1, Name: "frontend-development-r1", Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy}, res)
+	assert.Equal(t, Result{Number: 1, Name: "frontend-development-r1", Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy, Highest: 1}, res)
 	assert.True(t, getRBR(t, c, "leftover").Status.Active, "another binding's revision must not be touched")
 }
 
@@ -659,12 +659,12 @@ func TestReleaseBindingSnapshotter_EachEnvironmentCountsFromOne(t *testing.T) {
 	// the object name is per binding, so it does not collide with development's.
 	res, err = s.Record(ctx, staging)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 1, Name: "frontend-staging-r1", Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy}, res)
+	assert.Equal(t, Result{Number: 1, Name: "frontend-staging-r1", Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy, Highest: 1}, res)
 
 	bump(dev, newRelease)
 	res, err = s.Record(ctx, dev)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 2, Name: "frontend-development-r2", Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy}, res)
+	assert.Equal(t, Result{Number: 2, Name: "frontend-development-r2", Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy, Highest: 2}, res)
 }
 
 func TestDisplayName(t *testing.T) {
@@ -749,7 +749,7 @@ func TestReleaseBindingSnapshotter_RollbackReactivatesTheTarget(t *testing.T) {
 	})
 	res, err := s.Record(ctx, binding)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Reactivated: true}, res)
+	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Reactivated: true, Highest: 2}, res)
 
 	assert.Len(t, listRBRs(t, c), 2, "no revision is created")
 	r1 := getRBR(t, c, "frontend-development-r1")
@@ -768,7 +768,7 @@ func TestReleaseBindingSnapshotter_RollbackReactivatesTheTarget(t *testing.T) {
 	// Reconciling the same binding again changes nothing.
 	res, err = s.Record(ctx, binding)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name}, res)
+	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Highest: 2}, res)
 
 	// Health is observed on r1, the active revision, not on r2, the newest.
 	_, err = s.ObserveHealth(ctx, binding, openchoreov1alpha1.RevisionHealthHealthy)
@@ -790,7 +790,7 @@ func TestReleaseBindingSnapshotter_ChangeAfterReactivationIsNumberedAboveTheHigh
 	res, err := s.Record(ctx, binding)
 	require.NoError(t, err)
 	assert.Equal(t, Result{Number: 3, Name: getRBR(t, c, "frontend-development-r3").Name, Created: true,
-		Cause: openchoreov1alpha1.RevisionCauseOverride}, res)
+		Cause: openchoreov1alpha1.RevisionCauseOverride, Highest: 3}, res)
 	assert.True(t, getRBR(t, c, "frontend-development-r3").Status.Active)
 	assert.False(t, getRBR(t, c, "frontend-development-r1").Status.Active)
 
@@ -801,7 +801,7 @@ func TestReleaseBindingSnapshotter_ChangeAfterReactivationIsNumberedAboveTheHigh
 	})
 	res, err = s.Record(ctx, binding)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 2, Name: getRBR(t, c, "frontend-development-r2").Name, Reactivated: true}, res)
+	assert.Equal(t, Result{Number: 2, Name: getRBR(t, c, "frontend-development-r2").Name, Reactivated: true, Highest: 3}, res)
 	assert.Len(t, listRBRs(t, c), 3)
 }
 
@@ -817,9 +817,78 @@ func TestReleaseBindingSnapshotter_StaleReadDoesNotReactivate(t *testing.T) {
 	// A lagging cache hands back generation 2, whose spec r2 records.
 	res, err := s.Record(ctx, stale)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name}, res)
+	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Highest: 2}, res)
 	assert.True(t, getRBR(t, c, "frontend-development-r1").Status.Active)
 	assert.False(t, getRBR(t, c, "frontend-development-r2").Status.Active)
+}
+
+func TestReleaseBindingSnapshotter_DeletedRevisionIsNotRecreatedOrRenumbered(t *testing.T) {
+	ctx := context.Background()
+	s, binding, c, _ := reactivationFixture(t)
+
+	// A rollback to r1 leaves r2, the highest revision, inactive. The controller
+	// persists Result.Highest as status.highestRevision.
+	bump(binding, func(spec *openchoreov1alpha1.ReleaseBindingSpec) {
+		spec.ReleaseName = firstRelease
+		spec.ReleasePin = openchoreov1alpha1.ReleasePinPinned
+	})
+	res, err := s.Record(ctx, binding)
+	require.NoError(t, err)
+	binding.Status.HighestRevision = res.Highest
+	require.Equal(t, int64(2), binding.Status.HighestRevision)
+
+	require.NoError(t, c.Delete(ctx, getRBR(t, c, "frontend-development-r2")))
+
+	// Reconciling the unchanged binding recreates nothing; r1 stays active.
+	res, err = s.Record(ctx, binding)
+	require.NoError(t, err)
+	assert.Equal(t, Result{Number: 1, Name: getRBR(t, c, "frontend-development-r1").Name, Highest: 2}, res)
+	require.Len(t, listRBRs(t, c), 1)
+	assert.True(t, getRBR(t, c, "frontend-development-r1").Status.Active)
+
+	// Deploying the deleted revision's spec again records a new revision,
+	// numbered above the deleted one: number 2 is not reused.
+	bump(binding, func(spec *openchoreov1alpha1.ReleaseBindingSpec) { spec.ReleaseName = secondRelease })
+	res, err = s.Record(ctx, binding)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), res.Number)
+	assert.True(t, res.Created)
+	assert.Equal(t, int64(3), res.Highest)
+	revs := listRBRs(t, c)
+	numbers := make([]int64, 0, len(revs))
+	for _, rev := range revs {
+		numbers = append(numbers, rev.Spec.Revision)
+	}
+	assert.ElementsMatch(t, []int64{1, 3}, numbers, "the gap left by r2 stays")
+	assert.False(t, getRBR(t, c, "frontend-development-r1").Status.Active)
+	assert.True(t, getRBR(t, c, "frontend-development-r3").Status.Active)
+}
+
+func TestReleaseBindingSnapshotter_NumbersAboveStatusHighestRevision(t *testing.T) {
+	ctx := context.Background()
+	binding := newBinding("frontend-development")
+	binding.Status.HighestRevision = 7 // r1..r7 were recorded and later deleted
+	c := newTestClient(t, binding.DeepCopy())
+	s := NewReleaseBindingSnapshotter(c, newTestScheme(t), Options{})
+
+	res, err := s.Record(ctx, binding)
+	require.NoError(t, err)
+	assert.Equal(t, Result{Number: 8, Name: "frontend-development-r8", Created: true,
+		Cause: openchoreov1alpha1.RevisionCauseDeploy, Highest: 8}, res)
+}
+
+func TestResourceReleaseBindingSnapshotter_NumbersAboveStatusHighestRevision(t *testing.T) {
+	ctx := context.Background()
+	binding := newResourceBinding("db-development", "development", "db-abc123")
+	binding.Status.HighestRevision = 4
+	c := newTestClient(t, binding.DeepCopy())
+	s := NewResourceReleaseBindingSnapshotter(c, newTestScheme(t), Options{})
+
+	res, err := s.Record(ctx, binding)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), res.Number)
+	assert.Equal(t, int64(5), res.Highest)
+	assert.Equal(t, "db-development-r5", res.Name)
 }
 
 func TestResourceReleaseBindingSnapshotter(t *testing.T) {
@@ -836,7 +905,7 @@ func TestResourceReleaseBindingSnapshotter(t *testing.T) {
 
 	res, err := s.Record(ctx, dev)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 1, Name: "db-development-r1", Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy}, res)
+	assert.Equal(t, Result{Number: 1, Name: "db-development-r1", Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy, Highest: 1}, res)
 
 	r1 := getRRBR("db-development-r1")
 	assert.Equal(t, "db-abc123", r1.Spec.ResourceReleaseName)
@@ -858,7 +927,7 @@ func TestResourceReleaseBindingSnapshotter(t *testing.T) {
 	require.NoError(t, c.Create(ctx, staging))
 	res, err = s.Record(ctx, staging)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 1, Name: "db-staging-r1", Created: true, Cause: openchoreov1alpha1.RevisionCausePromote}, res)
+	assert.Equal(t, Result{Number: 1, Name: "db-staging-r1", Created: true, Cause: openchoreov1alpha1.RevisionCausePromote, Highest: 1}, res)
 	assert.NotContains(t, staging.Annotations, openchoreov1alpha1.AnnotationKeyRevisionCause)
 
 	// Advancing the pinned release is a Deploy.
@@ -866,14 +935,14 @@ func TestResourceReleaseBindingSnapshotter(t *testing.T) {
 	dev.Generation++
 	res, err = s.Record(ctx, dev)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 2, Name: "db-development-r2", Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy}, res)
+	assert.Equal(t, Result{Number: 2, Name: "db-development-r2", Created: true, Cause: openchoreov1alpha1.RevisionCauseDeploy, Highest: 2}, res)
 
 	// A retain policy change keeps the release: an Override.
 	dev.Spec.RetainPolicy = openchoreov1alpha1.ResourceRetainPolicyRetain
 	dev.Generation++
 	res, err = s.Record(ctx, dev)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 3, Name: "db-development-r3", Created: true, Cause: openchoreov1alpha1.RevisionCauseOverride}, res)
+	assert.Equal(t, Result{Number: 3, Name: "db-development-r3", Created: true, Cause: openchoreov1alpha1.RevisionCauseOverride, Highest: 3}, res)
 	assert.False(t, getRRBR("db-development-r2").Status.Active)
 	assert.True(t, getRRBR("db-development-r3").Status.Active)
 
@@ -882,14 +951,14 @@ func TestResourceReleaseBindingSnapshotter(t *testing.T) {
 	dev.Generation++
 	res, err = s.Record(ctx, dev)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 3, Name: "db-development-r3"}, res)
+	assert.Equal(t, Result{Number: 3, Name: "db-development-r3", Highest: 3}, res)
 
 	// Rolling back to r2's spec makes r2 active again; nothing is created.
 	dev.Spec.RetainPolicy = r1.Spec.BindingSpec.RetainPolicy
 	dev.Generation++
 	res, err = s.Record(ctx, dev)
 	require.NoError(t, err)
-	assert.Equal(t, Result{Number: 2, Name: "db-development-r2", Reactivated: true}, res)
+	assert.Equal(t, Result{Number: 2, Name: "db-development-r2", Reactivated: true, Highest: 3}, res)
 	assert.True(t, getRRBR("db-development-r2").Status.Active)
 	assert.False(t, getRRBR("db-development-r3").Status.Active)
 }

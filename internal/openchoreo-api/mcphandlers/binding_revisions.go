@@ -11,6 +11,7 @@ import (
 	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services/bindingrevision"
 	"github.com/openchoreo/openchoreo/internal/revision"
+	"github.com/openchoreo/openchoreo/internal/server/middleware/audit"
 	"github.com/openchoreo/openchoreo/pkg/mcp/tools"
 )
 
@@ -50,13 +51,16 @@ func (h *MCPHandler) GetReleaseBindingRevision(
 func (h *MCPHandler) RollbackReleaseBinding(
 	ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool,
 ) (any, error) {
+	// Every call is audited, dry runs (the default) included: dryRun tells a
+	// preview, which changes nothing, from an applied rollback. Set before the
+	// rollback runs so that a failed or denied call is marked too.
+	audit.SetResource(ctx, &audit.Resource{
+		Namespace: namespaceName, Name: bindingName, Metadata: map[string]any{"dryRun": dryRun},
+	})
 	result, err := h.services.ReleaseBindingService.RollbackReleaseBinding(ctx, namespaceName, bindingName,
 		bindingrevision.RollbackRequest{Revision: revision, DryRun: dryRun})
 	if err != nil {
 		return nil, err
-	}
-	if !dryRun {
-		setAuditResource(ctx, &metav1.ObjectMeta{Namespace: namespaceName, Name: bindingName})
 	}
 	return rollbackResult(bindingName, result), nil
 }
@@ -107,13 +111,16 @@ func (h *MCPHandler) GetResourceReleaseBindingRevision(
 func (h *MCPHandler) RollbackResourceReleaseBinding(
 	ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool,
 ) (any, error) {
+	// Every call is audited, dry runs (the default) included: dryRun tells a
+	// preview, which changes nothing, from an applied rollback. Set before the
+	// rollback runs so that a failed or denied call is marked too.
+	audit.SetResource(ctx, &audit.Resource{
+		Namespace: namespaceName, Name: bindingName, Metadata: map[string]any{"dryRun": dryRun},
+	})
 	result, err := h.services.ResourceReleaseBindingService.RollbackResourceReleaseBinding(ctx, namespaceName,
 		bindingName, bindingrevision.RollbackRequest{Revision: revision, DryRun: dryRun})
 	if err != nil {
 		return nil, err
-	}
-	if !dryRun {
-		setAuditResource(ctx, &metav1.ObjectMeta{Namespace: namespaceName, Name: bindingName})
 	}
 	return rollbackResult(bindingName, result), nil
 }

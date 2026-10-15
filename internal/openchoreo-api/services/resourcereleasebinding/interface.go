@@ -22,4 +22,5 @@ type Service interface {
 	ListResourceReleaseBindingRevisions(ctx context.Context, namespaceName, resourceName, environment string, opts services.ListOptions) (*services.ListResult[openchoreov1alpha1.ResourceReleaseBindingRevision], error)
 	GetResourceReleaseBindingRevision(ctx context.Context, namespaceName, revisionName string) (*openchoreov1alpha1.ResourceReleaseBindingRevision, error)
 	RollbackResourceReleaseBinding(ctx context.Context, namespaceName, bindingName string, req bindingrevision.RollbackRequest) (*bindingrevision.RollbackResult, error)
+	DeleteResourceReleaseBindingRevision(ctx context.Context, namespaceName, revisionName string, req bindingrevision.DeleteRequest) (*bindingrevision.DeleteResult, error)
 }

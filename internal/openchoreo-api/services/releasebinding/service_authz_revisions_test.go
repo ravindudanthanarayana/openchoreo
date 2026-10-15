@@ -134,3 +134,37 @@ func TestListReleaseBindingRevisions_AuthzCheck(t *testing.T) {
 		require.Empty(t, result.Items)
 	})
 }
+
+// --- DeleteReleaseBindingRevision ---
+
+func TestDeleteReleaseBindingRevision_AuthzCheck(t *testing.T) {
+	rev := testRevision("my-rb-r2", "dev")
+	req := bindingrevision.DeleteRequest{Binding: "my-rb"}
+
+	t.Run("allowed: checks releasebinding:delete-revision on the binding", func(t *testing.T) {
+		pdp := testutil.AllowPDP()
+		mockSvc := mocks.NewMockService(t)
+		mockSvc.On("GetReleaseBindingRevision", mock.Anything, "ns-1", "my-rb-r2").Return(rev, nil)
+		want := &bindingrevision.DeleteResult{RevisionName: "my-rb-r2", Revision: 2}
+		mockSvc.On("DeleteReleaseBindingRevision", mock.Anything, "ns-1", "my-rb-r2", req).Return(want, nil)
+		svc := &releaseBindingServiceWithAuthz{internal: mockSvc, authz: testutil.NewTestAuthzChecker(pdp)}
+
+		got, err := svc.DeleteReleaseBindingRevision(testutil.AuthzContext(), "ns-1", "my-rb-r2", req)
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+		require.Len(t, pdp.Captured, 1)
+		testutil.RequireEvalRequest(t, pdp.Captured[0], "releasebinding:delete-revision", "releasebinding", "my-rb-r2", rbHierarchy)
+		require.Equal(t, "ns-1/dev", pdp.Captured[0].Context.Resource.Environment)
+	})
+
+	t.Run("denied: nothing is deleted", func(t *testing.T) {
+		pdp := testutil.DenyPDP()
+		mockSvc := mocks.NewMockService(t)
+		mockSvc.On("GetReleaseBindingRevision", mock.Anything, "ns-1", "my-rb-r2").Return(rev, nil)
+		svc := &releaseBindingServiceWithAuthz{internal: mockSvc, authz: testutil.NewTestAuthzChecker(pdp)}
+
+		_, err := svc.DeleteReleaseBindingRevision(testutil.AuthzContext(), "ns-1", "my-rb-r2", req)
+		require.ErrorIs(t, err, services.ErrForbidden)
+		mockSvc.AssertNotCalled(t, "DeleteReleaseBindingRevision", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	})
+}

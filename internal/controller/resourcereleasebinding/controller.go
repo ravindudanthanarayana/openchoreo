@@ -226,11 +226,13 @@ func (r *Reconciler) reconcile(ctx context.Context, old, binding *openchoreov1al
 		Recorder:        r.Recorder,
 	})
 	revResult, revErr := snapshotter.Record(ctx, binding)
-	// Point the binding at its active revision; persisted with the rest of the
-	// status by the deferred update.
+	// Point the binding at its active revision and record the highest revision
+	// number it has used; persisted with the rest of the status by the deferred
+	// update.
 	if revResult.Name != "" {
 		binding.Status.CurrentRevision = revResult.Name
 	}
+	binding.Status.HighestRevision = max(binding.Status.HighestRevision, revResult.Highest)
 	if revErr != nil {
 		logger.Error(revErr, "Failed to record ResourceReleaseBinding revision")
 		defer func() {

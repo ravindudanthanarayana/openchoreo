@@ -135,6 +135,67 @@ func (_c *MockService_DeleteReleaseBinding_Call) RunAndReturn(run func(context.C
 	return _c
 }
 
+// DeleteReleaseBindingRevision provides a mock function with given fields: ctx, namespaceName, revisionName, req
+func (_m *MockService) DeleteReleaseBindingRevision(ctx context.Context, namespaceName string, revisionName string, req bindingrevision.DeleteRequest) (*bindingrevision.DeleteResult, error) {
+	ret := _m.Called(ctx, namespaceName, revisionName, req)
+
+	if len(ret) == 0 {
+		panic("no return value specified for DeleteReleaseBindingRevision")
+	}
+
+	var r0 *bindingrevision.DeleteResult
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, bindingrevision.DeleteRequest) (*bindingrevision.DeleteResult, error)); ok {
+		return rf(ctx, namespaceName, revisionName, req)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, bindingrevision.DeleteRequest) *bindingrevision.DeleteResult); ok {
+		r0 = rf(ctx, namespaceName, revisionName, req)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*bindingrevision.DeleteResult)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string, string, bindingrevision.DeleteRequest) error); ok {
+		r1 = rf(ctx, namespaceName, revisionName, req)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockService_DeleteReleaseBindingRevision_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'DeleteReleaseBindingRevision'
+type MockService_DeleteReleaseBindingRevision_Call struct {
+	*mock.Call
+}
+
+// DeleteReleaseBindingRevision is a helper method to define mock.On call
+//   - ctx context.Context
+//   - namespaceName string
+//   - revisionName string
+//   - req bindingrevision.DeleteRequest
+func (_e *MockService_Expecter) DeleteReleaseBindingRevision(ctx interface{}, namespaceName interface{}, revisionName interface{}, req interface{}) *MockService_DeleteReleaseBindingRevision_Call {
+	return &MockService_DeleteReleaseBindingRevision_Call{Call: _e.mock.On("DeleteReleaseBindingRevision", ctx, namespaceName, revisionName, req)}
+}
+
+func (_c *MockService_DeleteReleaseBindingRevision_Call) Run(run func(ctx context.Context, namespaceName string, revisionName string, req bindingrevision.DeleteRequest)) *MockService_DeleteReleaseBindingRevision_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(string), args[2].(string), args[3].(bindingrevision.DeleteRequest))
+	})
+	return _c
+}
+
+func (_c *MockService_DeleteReleaseBindingRevision_Call) Return(_a0 *bindingrevision.DeleteResult, _a1 error) *MockService_DeleteReleaseBindingRevision_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockService_DeleteReleaseBindingRevision_Call) RunAndReturn(run func(context.Context, string, string, bindingrevision.DeleteRequest) (*bindingrevision.DeleteResult, error)) *MockService_DeleteReleaseBindingRevision_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // GetReleaseBinding provides a mock function with given fields: ctx, namespaceName, releaseBindingName
 func (_m *MockService) GetReleaseBinding(ctx context.Context, namespaceName string, releaseBindingName string) (*v1alpha1.ReleaseBinding, error) {
 	ret := _m.Called(ctx, namespaceName, releaseBindingName)

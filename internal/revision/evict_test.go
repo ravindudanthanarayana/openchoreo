@@ -152,3 +152,54 @@ func TestSelectEvictions(t *testing.T) {
 		})
 	}
 }
+
+func TestProtected(t *testing.T) {
+	keep := func(c *EvictionCandidate) { c.Keep = true }
+	knownGood := func(c *EvictionCandidate) { c.KnownGood = true }
+	active := func(c *EvictionCandidate) { c.Active = true }
+
+	tests := []struct {
+		name       string
+		candidates []EvictionCandidate
+		target     int64
+		want       Protection
+	}{
+		{"an inactive revision may be deleted", with(revs(4), 4, active), 2, ""},
+		{"the active revision is protected", with(revs(4), 4, active), 4, ProtectionActive},
+		{"a kept revision is protected", with(with(revs(4), 4, active), 2, keep), 2, ProtectionKeep},
+		{"the newest known-good revision is protected",
+			with(with(with(revs(4), 4, active), 1, knownGood), 3, knownGood), 3, ProtectionNewestKnownGood},
+		{"an older known-good revision may be deleted",
+			with(with(with(revs(4), 4, active), 1, knownGood), 3, knownGood), 1, ""},
+		{"an active known-good revision is the newest known-good",
+			with(with(with(revs(4), 4, active), 4, knownGood), 3, knownGood), 3, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var target EvictionCandidate
+			for _, c := range tt.candidates {
+				if c.Number == tt.target {
+					target = c
+				}
+			}
+			assert.Equal(t, tt.want, Protected(tt.candidates, target))
+		})
+	}
+}
+
+// TestProtectedMatchesSelectEvictions checks that a revision deleted by hand is
+// protected exactly when the history limit would never delete it.
+func TestProtectedMatchesSelectEvictions(t *testing.T) {
+	candidates := with(with(with(with(revs(6), 6, func(c *EvictionCandidate) { c.Active = true }),
+		2, func(c *EvictionCandidate) { c.KnownGood = true }),
+		4, func(c *EvictionCandidate) { c.KnownGood = true }),
+		3, func(c *EvictionCandidate) { c.Keep = true })
+	evicted, _ := SelectEvictions(candidates, 1)
+	evictable := map[string]bool{}
+	for _, c := range evicted {
+		evictable[c.Name] = true
+	}
+	for _, c := range candidates {
+		assert.Equal(t, evictable[c.Name], Protected(candidates, c) == "", c.Name)
+	}
+}

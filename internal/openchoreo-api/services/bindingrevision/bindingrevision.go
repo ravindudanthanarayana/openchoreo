@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package bindingrevision holds what the ReleaseBinding and ResourceReleaseBinding
-// services share for revision history and rollback: request and result types,
-// errors, the spec diff and sorted-list pagination.
+// services share for revision history, rollback and revision deletion: request
+// and result types, errors, the spec diff, the deletion checks and sorted-list
+// pagination.
 package bindingrevision
 
 import (
@@ -33,7 +34,135 @@ var (
 	// ErrConcurrentModification is returned when the binding changed between being
 	// read and being written.
 	ErrConcurrentModification = errors.New("binding was modified concurrently")
+	// ErrRevisionProtected is returned, as a *ProtectedError, when a revision may
+	// not be deleted.
+	ErrRevisionProtected = errors.New("revision is protected")
 )
+
+// ProtectedError explains why a revision may not be deleted.
+type ProtectedError struct {
+	Revision int64
+	// Reason completes "cannot delete revision N because ...".
+	Reason string
+}
+
+func (e *ProtectedError) Error() string {
+	return fmt.Sprintf("cannot delete revision %d because %s", e.Revision, e.Reason)
+}
+
+// Is makes errors.Is(err, ErrRevisionProtected) match.
+func (e *ProtectedError) Is(target error) bool { return target == ErrRevisionProtected }
+
+// DeleteRequest asks to delete one revision of a binding.
+type DeleteRequest struct {
+	// Binding, when set, is the binding the caller expects the revision to
+	// belong to; a revision of any other binding is reported as not found.
+	Binding string
+	// DryRun runs every check without deleting anything.
+	DryRun bool
+}
+
+// DeleteResult describes a revision deletion, applied or dry-run.
+type DeleteResult struct {
+	RevisionName string
+	// RevisionDisplayName is how the revision is shown to people, {release}-r{N}.
+	RevisionDisplayName string
+	Revision            int64
+	Binding             string
+	Environment         string
+	DryRun              bool
+}
+
+// Candidate is one of a binding's revisions, as the deletion checks see it.
+type Candidate struct {
+	Object       client.Object
+	Number       int64
+	SnapshotHash string
+	Status       openchoreov1alpha1.BindingRevisionStatus
+}
+
+// BindingState is what the deletion checks need from the binding.
+type BindingState struct {
+	Name            string
+	CurrentRevision string
+	HighestRevision int64
+	// SpecHash is the snapshot hash of the binding's current spec.
+	SpecHash string
+}
+
+// DeleteRevision deletes the revision named name, one of the binding's revisions
+// revs, unless one of these holds:
+//   - it is protected as the history limit protects it (revision.Protected):
+//     it is active, the newest known-good revision, or annotated openchoreo.dev/keep;
+//   - the binding's spec matches it, so the controller is about to make it
+//     active again (a rollback to it is being applied);
+//   - its number is above the binding's status.highestRevision, which the
+//     controller has not written yet; deleting it then could let its number be
+//     given to a later revision.
+//
+// The delete is conditional on the revision's UID and resourceVersion as
+// listed, so a revision made active after the checks (the controller patches
+// it when it does) is not deleted: ErrConcurrentModification. With dryRun only
+// the checks run. Revisions are owned by their binding, never the other way
+// round, so deleting one deletes nothing else.
+func DeleteRevision(ctx context.Context, c client.Client, name string, revs []Candidate,
+	binding BindingState, dryRun bool) (*Candidate, error) {
+	var target *Candidate
+	active := -1
+	for i := range revs {
+		if revs[i].Object.GetName() == name {
+			target = &revs[i]
+		}
+		if active < 0 || revision.MoreRecentlyActive(revs[i].Object, revs[i].Number, revs[active].Object, revs[active].Number) {
+			active = i
+		}
+	}
+	if target == nil {
+		return nil, fmt.Errorf("%w: %q is not a revision of binding %q", ErrRevisionNotFound, name, binding.Name)
+	}
+
+	candidates := make([]revision.EvictionCandidate, len(revs))
+	var targetCandidate revision.EvictionCandidate
+	for i, r := range revs {
+		candidates[i] = revision.EvictionCandidate{
+			Name:      r.Object.GetName(),
+			Number:    r.Number,
+			Active:    i == active || r.Status.Active || r.Object.GetName() == binding.CurrentRevision,
+			KnownGood: r.Status.KnownGood,
+			Keep:      r.Object.GetAnnotations()[openchoreov1alpha1.AnnotationKeyKeepRevision] == revision.KeepRevisionValue,
+		}
+		if &revs[i] == target {
+			targetCandidate = candidates[i]
+		}
+	}
+	if p := revision.Protected(candidates, targetCandidate); p != "" {
+		return nil, &ProtectedError{Revision: target.Number, Reason: string(p)}
+	}
+	if target.SnapshotHash == binding.SpecHash {
+		return nil, &ProtectedError{Revision: target.Number,
+			Reason: "the binding's spec matches it: a rollback to it is being applied"}
+	}
+	if target.Number > binding.HighestRevision {
+		return nil, &ProtectedError{Revision: target.Number,
+			Reason: "the controller has not finished recording it; retry shortly"}
+	}
+	if dryRun {
+		return target, nil
+	}
+
+	uid, resourceVersion := target.Object.GetUID(), target.Object.GetResourceVersion()
+	if err := c.Delete(ctx, target.Object,
+		client.Preconditions{UID: &uid, ResourceVersion: &resourceVersion}); err != nil {
+		switch {
+		case apierrors.IsConflict(err):
+			return nil, fmt.Errorf("%w: revision %q changed while it was being deleted; retry", ErrConcurrentModification, name)
+		case apierrors.IsNotFound(err):
+			return nil, fmt.Errorf("%w: revision %q has already been deleted", ErrRevisionNotFound, name)
+		}
+		return nil, fmt.Errorf("failed to delete revision %q: %w", name, err)
+	}
+	return target, nil
+}
 
 // RollbackRequest asks to restore the binding spec of an earlier revision.
 type RollbackRequest struct {

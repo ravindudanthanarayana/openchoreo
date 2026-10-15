@@ -31,13 +31,7 @@ func SelectEvictions(candidates []EvictionCandidate, limit int) (evict []Evictio
 	sorted := append([]EvictionCandidate(nil), candidates...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Number < sorted[j].Number })
 
-	newestKnownGood := int64(-1)
-	for _, c := range sorted {
-		if c.KnownGood {
-			newestKnownGood = c.Number
-		}
-	}
-
+	newestKnownGood := newestKnownGood(sorted)
 	excess := len(sorted) - limit
 	for _, c := range sorted {
 		if excess == 0 {
@@ -50,4 +44,45 @@ func SelectEvictions(candidates []EvictionCandidate, limit int) (evict []Evictio
 		excess--
 	}
 	return evict, excess > 0
+}
+
+// Protection is why a revision may not be deleted, by the history limit or by
+// hand. It reads as the end of "cannot delete revision N because ...".
+type Protection string
+
+const (
+	// ProtectionActive is the revision the binding runs.
+	ProtectionActive Protection = "it is currently active"
+	// ProtectionNewestKnownGood is the binding's rollback target of last resort.
+	ProtectionNewestKnownGood Protection = "it is the newest known-good revision, kept as the rollback target of last resort"
+	// ProtectionKeep is a revision annotated openchoreo.dev/keep: "true".
+	ProtectionKeep Protection = `it is annotated openchoreo.dev/keep: "true"; remove the annotation to delete it`
+)
+
+// Protected returns why target may not be deleted, or "" when it may. These are
+// the revisions SelectEvictions never selects, so deleting a revision by hand
+// is held to the same rules as the history limit. candidates are all of the
+// binding's revisions, target among them.
+func Protected(candidates []EvictionCandidate, target EvictionCandidate) Protection {
+	switch {
+	case target.Active:
+		return ProtectionActive
+	case target.Keep:
+		return ProtectionKeep
+	case target.KnownGood && target.Number == newestKnownGood(candidates):
+		return ProtectionNewestKnownGood
+	}
+	return ""
+}
+
+// newestKnownGood returns the highest number among the known-good candidates,
+// or -1 when none is known good.
+func newestKnownGood(candidates []EvictionCandidate) int64 {
+	newest := int64(-1)
+	for _, c := range candidates {
+		if c.KnownGood && c.Number > newest {
+			newest = c.Number
+		}
+	}
+	return newest
 }

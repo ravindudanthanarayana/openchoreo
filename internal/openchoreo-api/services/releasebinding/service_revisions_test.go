@@ -597,3 +597,162 @@ func TestGetReleaseBindingRevision(t *testing.T) {
 	_, err = svc.GetReleaseBindingRevision(ctx, testNamespace, "test-rb-r9")
 	assert.ErrorIs(t, err, bindingrevision.ErrRevisionNotFound)
 }
+
+// ─────────────────────────────────────────────────────────────
+// DeleteReleaseBindingRevision
+// ─────────────────────────────────────────────────────────────
+
+// deleteFixture is newFixture with the binding's status as the controller
+// leaves it: r3 current and 3 the highest revision recorded.
+func deleteFixture(t *testing.T) *fixture {
+	t.Helper()
+	f := newFixture(t)
+	f.binding.Status.CurrentRevision = f.revs[2].Name
+	f.binding.Status.HighestRevision = 3
+	return f
+}
+
+func TestDeleteReleaseBindingRevision_DeletesAnInactiveRevision(t *testing.T) {
+	ctx := context.Background()
+	f := deleteFixture(t)
+	c := f.client()
+	before := revisionVersions(t, c)
+	bindingVersion := getRB(t, c).ResourceVersion
+
+	got, err := NewService(c, testutil.TestLogger()).DeleteReleaseBindingRevision(ctx, testNamespace,
+		f.revs[1].Name, bindingrevision.DeleteRequest{Binding: testRBName})
+	require.NoError(t, err)
+	assert.Equal(t, &bindingrevision.DeleteResult{
+		RevisionName: f.revs[1].Name, RevisionDisplayName: releaseB + "-r2", Revision: 2,
+		Binding: testRBName, Environment: testEnvironmentName,
+	}, got)
+
+	after := revisionVersions(t, c)
+	assert.NotContains(t, after, f.revs[1].Name)
+	assert.Equal(t, before[f.revs[0].Name], after[f.revs[0].Name], "r1 is untouched and keeps its number")
+	assert.Equal(t, before[f.revs[2].Name], after[f.revs[2].Name], "r3 is untouched and keeps its number")
+	rb := getRB(t, c)
+	assert.Equal(t, bindingVersion, rb.ResourceVersion, "the binding is not written")
+	assert.Equal(t, f.revs[2].Name, rb.Status.CurrentRevision)
+}
+
+func TestDeleteReleaseBindingRevision_DryRunDeletesNothing(t *testing.T) {
+	f := deleteFixture(t)
+	c := f.client()
+	before := revisionVersions(t, c)
+
+	got, err := NewService(c, testutil.TestLogger()).DeleteReleaseBindingRevision(context.Background(), testNamespace,
+		f.revs[1].Name, bindingrevision.DeleteRequest{DryRun: true})
+	require.NoError(t, err)
+	assert.True(t, got.DryRun)
+	assert.Equal(t, before, revisionVersions(t, c))
+}
+
+func TestDeleteReleaseBindingRevision_Refused(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(f *fixture)
+		target  func(f *fixture) string
+		req     bindingrevision.DeleteRequest
+		wantErr error
+		wantMsg string
+	}{
+		{name: "the active revision", target: func(f *fixture) string { return f.revs[2].Name },
+			wantErr: bindingrevision.ErrRevisionProtected,
+			wantMsg: "cannot delete revision 3 because it is currently active"},
+		{name: "the revision status.currentRevision names",
+			mutate:  func(f *fixture) { f.binding.Status.CurrentRevision = f.revs[1].Name },
+			target:  func(f *fixture) string { return f.revs[1].Name },
+			wantErr: bindingrevision.ErrRevisionProtected, wantMsg: "currently active"},
+		{name: "the newest known-good revision", target: func(f *fixture) string { return f.revs[0].Name },
+			wantErr: bindingrevision.ErrRevisionProtected, wantMsg: "newest known-good revision"},
+		{name: "a kept revision",
+			mutate: func(f *fixture) {
+				f.revs[1].Annotations = map[string]string{openchoreov1alpha1.AnnotationKeyKeepRevision: "true"}
+			},
+			target:  func(f *fixture) string { return f.revs[1].Name },
+			wantErr: bindingrevision.ErrRevisionProtected, wantMsg: "openchoreo.dev/keep"},
+		{name: "a revision a rollback is restoring",
+			mutate:  func(f *fixture) { f.binding.Spec = f.revs[1].Spec.BindingSpec },
+			target:  func(f *fixture) string { return f.revs[1].Name },
+			wantErr: bindingrevision.ErrRevisionProtected, wantMsg: "a rollback to it is being applied"},
+		{name: "a revision the controller has not finished recording",
+			mutate:  func(f *fixture) { f.binding.Status.HighestRevision = 1 },
+			target:  func(f *fixture) string { return f.revs[1].Name },
+			wantErr: bindingrevision.ErrRevisionProtected, wantMsg: "has not finished recording"},
+		{name: "an unknown revision", target: func(*fixture) string { return testRBName + "-r9" },
+			wantErr: bindingrevision.ErrRevisionNotFound},
+		{name: "a revision of another binding", target: func(f *fixture) string { return f.revs[1].Name },
+			req: bindingrevision.DeleteRequest{Binding: "other-binding"}, wantErr: bindingrevision.ErrRevisionNotFound,
+			wantMsg: `is not a revision of release binding "other-binding"`},
+		{name: "a revision whose binding is gone",
+			mutate:  func(f *fixture) { f.binding.UID = "uid-recreated" },
+			target:  func(f *fixture) string { return f.revs[1].Name },
+			wantErr: ErrReleaseBindingNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := deleteFixture(t)
+			if tt.mutate != nil {
+				tt.mutate(f)
+			}
+			c := f.client()
+			before := revisionVersions(t, c)
+
+			_, err := NewService(c, testutil.TestLogger()).DeleteReleaseBindingRevision(context.Background(),
+				testNamespace, tt.target(f), tt.req)
+			require.ErrorIs(t, err, tt.wantErr)
+			if tt.wantMsg != "" {
+				assert.ErrorContains(t, err, tt.wantMsg)
+			}
+			assert.Equal(t, before, revisionVersions(t, c), "nothing is deleted")
+		})
+	}
+}
+
+func TestDeleteReleaseBindingRevision_ActivatedMeanwhileIsConflict(t *testing.T) {
+	ctx := context.Background()
+	f := deleteFixture(t)
+
+	// The controller makes r2 active again between the checks and the delete:
+	// it patches r2's metadata, changing its resourceVersion.
+	c := fake.NewClientBuilder().
+		WithScheme(testutil.NewScheme()).
+		WithObjects(f.objects()...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				rev := &openchoreov1alpha1.ReleaseBindingRevision{}
+				if err := cl.Get(ctx, client.ObjectKeyFromObject(obj), rev); err != nil {
+					return err
+				}
+				rev.Annotations = map[string]string{revision.AnnotationKeyBindingGeneration: "9"}
+				if err := cl.Update(ctx, rev); err != nil {
+					return err
+				}
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	_, err := NewService(c, testutil.TestLogger()).DeleteReleaseBindingRevision(ctx, testNamespace,
+		f.revs[1].Name, bindingrevision.DeleteRequest{})
+	require.ErrorIs(t, err, bindingrevision.ErrConcurrentModification)
+	assert.Contains(t, revisionVersions(t, c), f.revs[1].Name, "the revision made active is not deleted")
+}
+
+func TestRollbackReleaseBinding_ToADeletedRevisionIsNotFound(t *testing.T) {
+	ctx := context.Background()
+	f := deleteFixture(t)
+	c := f.client()
+	svc := NewService(c, testutil.TestLogger())
+
+	_, err := svc.DeleteReleaseBindingRevision(ctx, testNamespace, f.revs[1].Name, bindingrevision.DeleteRequest{})
+	require.NoError(t, err)
+
+	_, err = svc.RollbackReleaseBinding(ctx, testNamespace, testRBName, bindingrevision.RollbackRequest{Revision: 2})
+	require.ErrorIs(t, err, bindingrevision.ErrRevisionNotFound)
+	assert.ErrorContains(t, err, "revision 2 of release binding")
+	assert.ErrorContains(t, err, "has been deleted or never existed")
+	assert.Equal(t, releaseC, getRB(t, c).Spec.ReleaseName, "the binding is not changed")
+	assert.NotContains(t, revisionVersions(t, c), f.revs[1].Name, "the deleted revision is not recreated")
+}

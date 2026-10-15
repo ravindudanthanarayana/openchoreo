@@ -18,7 +18,7 @@ import (
 func TestGetOperations(t *testing.T) {
 	ops := GetOperations()
 
-	const want = 124
+	const want = 126
 	if len(ops) != want {
 		t.Fatalf("len(GetOperations()) = %d, want %d", len(ops), want)
 	}
@@ -55,8 +55,8 @@ func TestGetOperations(t *testing.T) {
 	}
 
 	// access: GetSecret, ListSecrets and the two live log reads.
-	if mgmt != 108 || authz != 12 || access != 4 {
-		t.Errorf("category split = %d management / %d authorization / %d access, want 108/12/4",
+	if mgmt != 110 || authz != 12 || access != 4 {
+		t.Errorf("category split = %d management / %d authorization / %d access, want 110/12/4",
 			mgmt, authz, access)
 	}
 	if notInSpec != 2 {
