@@ -41,6 +41,9 @@ var (
 	// the revision active before the current one cannot be rolled back to: there
 	// was none, it was deleted, or the history cannot say which it was.
 	ErrNoPreviousRevision = errors.New("no previous revision to roll back to")
+	// ErrAutoDeployEnabled is returned when a rollback is refused because the
+	// component's auto-deploy would undo it (see AutoDeployBlocksRollback).
+	ErrAutoDeployEnabled = errors.New("rollback blocked: auto-deploy is enabled")
 )
 
 // ProtectedError explains why a revision may not be deleted.
@@ -212,7 +215,6 @@ const (
 	WarningTargetUnhealthy      WarningCode = "TargetUnhealthy"
 	WarningTargetUndeploys      WarningCode = "TargetUndeploys"
 	WarningNoSpecChange         WarningCode = "NoSpecChange"
-	WarningBindingWillBePinned  WarningCode = "BindingWillBePinned"
 	WarningUnrecordedChange     WarningCode = "UnrecordedChange"
 	WarningProjectCellDrift     WarningCode = "ProjectCellDrift"
 	WarningSecretReferenceDrift WarningCode = "SecretReferenceDrift"
@@ -322,7 +324,7 @@ func Paginate[T any](items []T, opts services.ListOptions) (*services.ListResult
 // from the target revision's status and how the target compares with the
 // binding's current spec.
 func CommonWarnings(target int64, status openchoreov1alpha1.BindingRevisionStatus,
-	noSpecChange, unrecordedChange, pinned bool) []Warning {
+	noSpecChange, unrecordedChange bool) []Warning {
 	var warnings []Warning
 	if !status.KnownGood {
 		warnings = append(warnings, Warning{Code: WarningTargetNotKnownGood,
@@ -340,11 +342,53 @@ func CommonWarnings(target int64, status openchoreov1alpha1.BindingRevisionStatu
 		warnings = append(warnings, Warning{Code: WarningUnrecordedChange,
 			Message: "the binding has a spec change that is not recorded as a revision yet; the rollback discards it"})
 	}
-	if !pinned {
-		warnings = append(warnings, Warning{Code: WarningBindingWillBePinned,
-			Message: "releasePin changes from Auto to Pinned; auto-deploy will no longer move this binding"})
-	}
 	return warnings
+}
+
+// AutoDeployBlocksRollback reports whether a rollback of the component's
+// binding in environment must be refused because auto-deploy would undo it.
+// It mirrors the component controller: with spec.autoDeploy true, every
+// reconcile sets the release of the binding in the deployment pipeline's root
+// (first) environment to the component's latest release, and the controller
+// reconciles as soon as that binding changes. Bindings in any other
+// environment, and components without autoDeploy, are never moved. When the
+// project or pipeline cannot be resolved the controller does not auto-deploy
+// either, so that does not block.
+func AutoDeployBlocksRollback(ctx context.Context, c client.Client, namespace, componentName,
+	environment string) (bool, error) {
+	comp := &openchoreov1alpha1.Component{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: componentName}, comp); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to get component: %w", err)
+	}
+	if !comp.Spec.AutoDeploy {
+		return false, nil
+	}
+	project := &openchoreov1alpha1.Project{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: comp.Spec.Owner.ProjectName}, project); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to get project: %w", err)
+	}
+	if project.Spec.DeploymentPipelineRef.Name == "" {
+		return false, nil
+	}
+	pipeline := &openchoreov1alpha1.DeploymentPipeline{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: project.Spec.DeploymentPipelineRef.Name},
+		pipeline); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to get deployment pipeline: %w", err)
+	}
+	root, err := pipeline.RootEnvironment()
+	if err != nil {
+		return false, nil //nolint:nilerr // an invalid pipeline means no auto-deploy, as in the controller
+	}
+	return environment == root, nil
 }
 
 // ProjectCellDrift reports when the project's cell in the environment -- its

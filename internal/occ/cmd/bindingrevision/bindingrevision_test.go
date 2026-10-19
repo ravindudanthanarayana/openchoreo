@@ -119,7 +119,7 @@ const (
 )
 
 func newFakeAPI() *fakeAPI {
-	warnings := []gen.RollbackWarning{{Code: gen.BindingWillBePinned, Message: "releasePin changes from Auto to Pinned"}}
+	warnings := []gen.RollbackWarning{{Code: gen.TargetNotKnownGood, Message: "revision 1 never stayed Healthy for the known-good window"}}
 	changes := []gen.RollbackSpecChange{{Field: "releaseName", Current: "api-ccc", Target: "api-aaa"}}
 	resp := func(dryRun bool) *gen.RollbackResponse {
 		return &gen.RollbackResponse{RevisionName: "api-dev-r1", Revision: 1, TargetRevision: 1, RevertedFrom: ptr(int64(3)),
@@ -158,7 +158,7 @@ func TestRunRollback_DryRunPreviewsOnly(t *testing.T) {
 	assert.Contains(t, out, `Rolling back release binding "api-dev" from revision 3 to revision 1.`)
 	assert.Contains(t, out, "No revision is created: api-dev-r1 becomes active again.")
 	assert.Contains(t, out, `releaseName: "api-ccc" -> "api-aaa"`)
-	assert.Contains(t, out, "! BindingWillBePinned: releasePin changes from Auto to Pinned")
+	assert.Contains(t, out, "! TargetNotKnownGood: revision 1 never stayed Healthy for the known-good window")
 	assert.Contains(t, out, "Dry run: nothing was changed.")
 }
 
@@ -170,7 +170,7 @@ func TestRunRollback_ConfirmedApplies(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []bool{true, false}, api.calls, "preview, then apply")
 	assert.Equal(t, 1, *asked)
-	assert.Equal(t, 1, strings.Count(out, "! BindingWillBePinned"), "warnings are shown once, before the prompt")
+	assert.Equal(t, 1, strings.Count(out, "! TargetNotKnownGood"), "warnings are shown once, before the prompt")
 	assert.Contains(t, out, `Rolled back release binding "api-dev" to revision 1: api-dev-r1 is active again.`)
 }
 
@@ -192,7 +192,7 @@ func TestRunRollback_YesSkipsPromptAndPrintsWarnings(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []bool{false}, api.calls, "applied directly")
 	assert.Zero(t, *asked)
-	assert.Contains(t, out, "! BindingWillBePinned")
+	assert.Contains(t, out, "! TargetNotKnownGood")
 	assert.Contains(t, out, "api-dev-r1 is active again")
 }
 

@@ -80,16 +80,13 @@ func (releaseBindingAdapter) KnownGoodEligible(rev *openchoreov1alpha1.ReleaseBi
 	return rev.Spec.BindingSpec.State != openchoreov1alpha1.ReleaseStateUndeploy
 }
 
-// HashInput leaves out releasePin: it governs whether future releases are taken
-// up, not what is deployed, so changing it alone records no revision.
+// HashInput is the whole binding spec: every field of it decides what is deployed.
 func (releaseBindingAdapter) HashInput(binding *openchoreov1alpha1.ReleaseBinding) any {
 	return releaseBindingHashInput(&binding.Spec)
 }
 
 func releaseBindingHashInput(spec *openchoreov1alpha1.ReleaseBindingSpec) any {
-	s := spec.DeepCopy()
-	s.ReleasePin = ""
-	return s
+	return spec
 }
 
 // ReleaseBindingSpecHash returns the snapshotHash a ReleaseBindingRevision of
@@ -197,15 +194,13 @@ func (resourceReleaseBindingAdapter) KnownGoodEligible(*openchoreov1alpha1.Resou
 	return true
 }
 
-// HashInput leaves out releasePin; see releaseBindingAdapter.HashInput.
+// HashInput is the whole binding spec; see releaseBindingAdapter.HashInput.
 func (resourceReleaseBindingAdapter) HashInput(binding *openchoreov1alpha1.ResourceReleaseBinding) any {
 	return resourceReleaseBindingHashInput(&binding.Spec)
 }
 
 func resourceReleaseBindingHashInput(spec *openchoreov1alpha1.ResourceReleaseBindingSpec) any {
-	s := spec.DeepCopy()
-	s.ReleasePin = ""
-	return s
+	return spec
 }
 
 // ResourceReleaseBindingSpecHash returns the snapshotHash a

@@ -197,10 +197,12 @@ history cannot say which it was, nothing is changed; name a revision instead.
 List the revisions with "occ releasebindingrevision list --binding <name>".
 
 The rollback is previewed first: the spec fields it changes and any pre-flight
-warnings are printed, and you are asked to confirm. The binding is pinned to the
-restored release so auto-deploy does not move it forward again. No revision is
-created: the controller makes the target revision active again, under its own
-name and number.`,
+warnings are printed, and you are asked to confirm. No revision is created: the
+controller makes the target revision active again, under its own name and number.
+
+A rollback in the first environment of a component with auto-deploy enabled is
+refused: auto-deploy would move the binding straight back to the latest release.
+Turn off auto-deploy for the component first.`,
 		Example: `  # Roll back to the previously active revision, confirming interactively
   occ releasebinding rollback product-catalog-development --namespace acme-corp
 

@@ -68,18 +68,6 @@ const (
 	ReleaseStateUndeploy ReleaseState = "Undeploy"
 )
 
-// ReleasePin controls whether a binding's release reference may be advanced automatically.
-// +kubebuilder:validation:Enum=Auto;Pinned
-type ReleasePin string
-
-const (
-	// ReleasePinAuto lets the release reference follow new releases.
-	ReleasePinAuto ReleasePin = "Auto"
-
-	// ReleasePinPinned holds the release reference at its current value until changed explicitly.
-	ReleasePinPinned ReleasePin = "Pinned"
-)
-
 const (
 	// AnnotationKeyRevisionCause is set on a ReleaseBinding or ResourceReleaseBinding by the
 	// client that makes a change, to state its cause when it cannot be told from the spec.

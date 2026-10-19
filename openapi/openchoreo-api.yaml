@@ -4352,11 +4352,17 @@ paths:
       description: >-
         Restores the binding spec recorded by an earlier ReleaseBindingRevision. The binding is
         written once, conditional on the resourceVersion read at the start of the request:
-        spec is replaced with the target revision's bindingSpec and spec.releasePin is set to
-        Pinned so auto-deploy does not move the binding forward again. No revision is created:
+        spec is replaced with the target revision's bindingSpec. No revision is created:
         the restored spec is the one the target records, so the controller makes the target
         revision active again under its own name and number, sets the binding's
         status.currentRevision to it, and restarts its health at Progressing.
+
+
+        If the component has autoDeploy enabled and the binding is in the first environment of
+        its deployment pipeline, auto-deploy would move the binding back to the component's
+        latest release right after the rollback, so the rollback (dry runs included) is refused
+        with 409 AUTO_DEPLOY_ENABLED and nothing is changed. Turn off auto-deploy for the
+        component to roll back that environment. Other environments are not affected.
 
 
         Without a revision, the target is the revision that was active immediately before the
@@ -5952,8 +5958,7 @@ paths:
       description: >-
         Restores the binding spec recorded by an earlier ResourceReleaseBindingRevision. The binding is
         written once, conditional on the resourceVersion read at the start of the request:
-        spec is replaced with the target revision's bindingSpec and spec.releasePin is set to
-        Pinned so auto-deploy does not move the binding forward again. No revision is created:
+        spec is replaced with the target revision's bindingSpec. No revision is created:
         the restored spec is the one the target records, so the controller makes the target
         revision active again under its own name and number, sets the binding's
         status.currentRevision to it, and restarts its health at Progressing.
@@ -7194,6 +7199,11 @@ components:
               value:
                 error: "Release binding 'api-service-dev' was modified concurrently; retry the rollback"
                 code: CONCURRENT_MODIFICATION
+            autoDeployEnabled:
+              summary: Auto-deploy would undo a rollback in the component's first environment
+              value:
+                error: "Rollback blocked: auto-deploy is enabled for component \"api-service\", and \"development\" is the first environment of its deployment pipeline, so auto-deploy would move release binding \"api-service-development\" back to the latest release right after the rollback. Turn off auto-deploy for the component, then roll back again"
+                code: AUTO_DEPLOY_ENABLED
             noPreviousRevision:
               summary: No revision was named and the previously active one cannot be rolled back to
               value:
@@ -7301,6 +7311,7 @@ components:
             - CONCURRENT_MODIFICATION
             - REVISION_PROTECTED
             - NO_PREVIOUS_REVISION
+            - AUTO_DEPLOY_ENABLED
           example: NOT_FOUND
         details:
           type: array
@@ -10378,7 +10389,7 @@ components:
           example: api-service-6f9c2a
         snapshotHash:
           type: string
-          description: SHA-256 of the canonical binding spec, excluding releasePin
+          description: SHA-256 of the canonical binding spec
           example: 9f2c4e7a1b3d5f60718293a4b5c6d7e8f9012a3b4c5d6e7f8091a2b3c4d5e6f7
         bindingSpec:
           $ref: '#/components/schemas/ReleaseBindingSpec'
@@ -10456,14 +10467,6 @@ components:
           enum: [Active, Undeploy]
           default: Active
           example: Active
-        releasePin:
-          type: string
-          description: >-
-            Whether releaseName may be advanced automatically. Auto follows new ComponentReleases;
-            Pinned holds the current release until changed explicitly. A rollback sets Pinned.
-          enum: [Auto, Pinned]
-          default: Auto
-          example: Auto
 
     ReleaseBindingStatus:
       type: object
@@ -11524,7 +11527,7 @@ components:
           example: analytics-shared-db-abc123
         snapshotHash:
           type: string
-          description: SHA-256 of the canonical binding spec, excluding releasePin
+          description: SHA-256 of the canonical binding spec
           example: 9f2c4e7a1b3d5f60718293a4b5c6d7e8f9012a3b4c5d6e7f8091a2b3c4d5e6f7
         bindingSpec:
           $ref: '#/components/schemas/ResourceReleaseBindingSpec'
@@ -11602,14 +11605,6 @@ components:
           type: object
           description: Per-environment values for ResourceType.spec.environmentConfigs.
           additionalProperties: true
-        releasePin:
-          type: string
-          description: >-
-            Whether resourceRelease may be advanced automatically. Auto follows new ResourceReleases;
-            Pinned holds the current release until changed explicitly. A rollback sets Pinned.
-          enum: [Auto, Pinned]
-          default: Auto
-          example: Auto
 
     ResolvedResourceOutput:
       type: object
@@ -12206,7 +12201,6 @@ components:
             TargetUnhealthy: the target was Degraded or Failed when it stopped being active.
             TargetUndeploys: the target revision has state Undeploy, so the rollback removes the deployment.
             NoSpecChange: the target spec equals the current one; no revision will be recorded.
-            BindingWillBePinned: releasePin changes from Auto to Pinned, stopping auto-deploy for this binding.
             UnrecordedChange: the binding has a spec change the controller has not recorded yet; the rollback discards it.
             ProjectCellDrift: the project's cell in this environment is bound to a ProjectRelease created after the
             target revision, so the restored spec will run in a cell it was never deployed with.
@@ -12220,16 +12214,15 @@ components:
             - TargetUnhealthy
             - TargetUndeploys
             - NoSpecChange
-            - BindingWillBePinned
             - UnrecordedChange
             - ProjectCellDrift
             - SecretReferenceDrift
             - PreviousRevisionInferred
-          example: BindingWillBePinned
+          example: TargetNotKnownGood
         message:
           type: string
           description: Human-readable explanation
-          example: "releasePin changes from Auto to Pinned; auto-deploy will no longer move this binding"
+          example: "revision 3 never stayed Healthy for the known-good window"
 
     CronJobTriggerResponse:
       type: object

@@ -296,7 +296,6 @@ var _ = Describe("ResourceReleaseBinding controller — revisions", func() {
 			{"roll back to r2's spec, pinned", func(b *openchoreov1alpha1.ResourceReleaseBinding) {
 				b.Spec.ResourceRelease = releaseA
 				b.Spec.RetainPolicy = ""
-				b.Spec.ReleasePin = openchoreov1alpha1.ReleasePinPinned
 			}, 2, 4, ""},
 		}
 

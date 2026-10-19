@@ -215,6 +215,7 @@ const (
 
 // Defines values for ErrorResponseCode.
 const (
+	AUTODEPLOYENABLED      ErrorResponseCode = "AUTO_DEPLOY_ENABLED"
 	BADREQUEST             ErrorResponseCode = "BAD_REQUEST"
 	CONCURRENTMODIFICATION ErrorResponseCode = "CONCURRENT_MODIFICATION"
 	CONFLICT               ErrorResponseCode = "CONFLICT"
@@ -287,12 +288,6 @@ const (
 	PromotionPathSourceEnvironmentRefKindEnvironment PromotionPathSourceEnvironmentRefKind = "Environment"
 )
 
-// Defines values for ReleaseBindingSpecReleasePin.
-const (
-	ReleaseBindingSpecReleasePinAuto   ReleaseBindingSpecReleasePin = "Auto"
-	ReleaseBindingSpecReleasePinPinned ReleaseBindingSpecReleasePin = "Pinned"
-)
-
 // Defines values for ReleaseBindingSpecState.
 const (
 	ReleaseBindingSpecStateActive   ReleaseBindingSpecState = "Active"
@@ -326,12 +321,6 @@ const (
 	ResolvedConnectionVisibilityInternal  ResolvedConnectionVisibility = "internal"
 	ResolvedConnectionVisibilityNamespace ResolvedConnectionVisibility = "namespace"
 	ResolvedConnectionVisibilityProject   ResolvedConnectionVisibility = "project"
-)
-
-// Defines values for ResourceReleaseBindingSpecReleasePin.
-const (
-	ResourceReleaseBindingSpecReleasePinAuto   ResourceReleaseBindingSpecReleasePin = "Auto"
-	ResourceReleaseBindingSpecReleasePinPinned ResourceReleaseBindingSpecReleasePin = "Pinned"
 )
 
 // Defines values for ResourceReleaseBindingSpecRetainPolicy.
@@ -369,7 +358,6 @@ const (
 
 // Defines values for RollbackWarningCode.
 const (
-	BindingWillBePinned      RollbackWarningCode = "BindingWillBePinned"
 	NoSpecChange             RollbackWarningCode = "NoSpecChange"
 	PreviousRevisionInferred RollbackWarningCode = "PreviousRevisionInferred"
 	ProjectCellDrift         RollbackWarningCode = "ProjectCellDrift"
@@ -3196,7 +3184,7 @@ type ReleaseBindingRevisionSpec struct {
 	// Revision Sequence number of this revision within its binding
 	Revision int64 `json:"revision"`
 
-	// SnapshotHash SHA-256 of the canonical binding spec, excluding releasePin
+	// SnapshotHash SHA-256 of the canonical binding spec
 	SnapshotHash string `json:"snapshotHash"`
 }
 
@@ -3220,9 +3208,6 @@ type ReleaseBindingSpec struct {
 	// ReleaseName Reference to component release
 	ReleaseName *string `json:"releaseName,omitempty"`
 
-	// ReleasePin Whether releaseName may be advanced automatically. Auto follows new ComponentReleases; Pinned holds the current release until changed explicitly. A rollback sets Pinned.
-	ReleasePin *ReleaseBindingSpecReleasePin `json:"releasePin,omitempty"`
-
 	// State Controls the state of the Release created by this binding
 	State *ReleaseBindingSpecState `json:"state,omitempty"`
 
@@ -3232,9 +3217,6 @@ type ReleaseBindingSpec struct {
 	// WorkloadOverrides Environment-specific workload overrides
 	WorkloadOverrides *WorkloadOverrides `json:"workloadOverrides,omitempty"`
 }
-
-// ReleaseBindingSpecReleasePin Whether releaseName may be advanced automatically. Auto follows new ComponentReleases; Pinned holds the current release until changed explicitly. A rollback sets Pinned.
-type ReleaseBindingSpecReleasePin string
 
 // ReleaseBindingSpecState Controls the state of the Release created by this binding
 type ReleaseBindingSpecState string
@@ -3740,7 +3722,7 @@ type ResourceReleaseBindingRevisionSpec struct {
 	// Revision Sequence number of this revision within its binding
 	Revision int64 `json:"revision"`
 
-	// SnapshotHash SHA-256 of the canonical binding spec, excluding releasePin
+	// SnapshotHash SHA-256 of the canonical binding spec
 	SnapshotHash string `json:"snapshotHash"`
 }
 
@@ -3760,9 +3742,6 @@ type ResourceReleaseBindingSpec struct {
 		ResourceName string `json:"resourceName"`
 	} `json:"owner"`
 
-	// ReleasePin Whether resourceRelease may be advanced automatically. Auto follows new ResourceReleases; Pinned holds the current release until changed explicitly. A rollback sets Pinned.
-	ReleasePin *ResourceReleaseBindingSpecReleasePin `json:"releasePin,omitempty"`
-
 	// ResourceRelease Pinned ResourceRelease name. Advanced manually (e.g. via `occ resource promote`).
 	ResourceRelease *string `json:"resourceRelease,omitempty"`
 
@@ -3772,9 +3751,6 @@ type ResourceReleaseBindingSpec struct {
 	// RetainPolicy Per-env override for retention. Falls back to ResourceType.spec.retainPolicy when unset.
 	RetainPolicy *ResourceReleaseBindingSpecRetainPolicy `json:"retainPolicy,omitempty"`
 }
-
-// ResourceReleaseBindingSpecReleasePin Whether resourceRelease may be advanced automatically. Auto follows new ResourceReleases; Pinned holds the current release until changed explicitly. A rollback sets Pinned.
-type ResourceReleaseBindingSpecReleasePin string
 
 // ResourceReleaseBindingSpecRetainPolicy Per-env override for retention. Falls back to ResourceType.spec.retainPolicy when unset.
 type ResourceReleaseBindingSpecRetainPolicy string
@@ -3990,14 +3966,14 @@ type RollbackSpecChange struct {
 
 // RollbackWarning A pre-flight finding that does not block the rollback
 type RollbackWarning struct {
-	// Code TargetNotKnownGood: the target never stayed Healthy for the known-good window. TargetUnhealthy: the target was Degraded or Failed when it stopped being active. TargetUndeploys: the target revision has state Undeploy, so the rollback removes the deployment. NoSpecChange: the target spec equals the current one; no revision will be recorded. BindingWillBePinned: releasePin changes from Auto to Pinned, stopping auto-deploy for this binding. UnrecordedChange: the binding has a spec change the controller has not recorded yet; the rollback discards it. ProjectCellDrift: the project's cell in this environment is bound to a ProjectRelease created after the target revision, so the restored spec will run in a cell it was never deployed with. SecretReferenceDrift: a SecretReference the target revision uses is missing, lacks a referenced key, or was recreated after the target revision. PreviousRevisionInferred: no revision was named and the current revision predates activation tracking, so the target is the revision activated just before it; a revision deleted since may have been active in between.
+	// Code TargetNotKnownGood: the target never stayed Healthy for the known-good window. TargetUnhealthy: the target was Degraded or Failed when it stopped being active. TargetUndeploys: the target revision has state Undeploy, so the rollback removes the deployment. NoSpecChange: the target spec equals the current one; no revision will be recorded. UnrecordedChange: the binding has a spec change the controller has not recorded yet; the rollback discards it. ProjectCellDrift: the project's cell in this environment is bound to a ProjectRelease created after the target revision, so the restored spec will run in a cell it was never deployed with. SecretReferenceDrift: a SecretReference the target revision uses is missing, lacks a referenced key, or was recreated after the target revision. PreviousRevisionInferred: no revision was named and the current revision predates activation tracking, so the target is the revision activated just before it; a revision deleted since may have been active in between.
 	Code RollbackWarningCode `json:"code"`
 
 	// Message Human-readable explanation
 	Message string `json:"message"`
 }
 
-// RollbackWarningCode TargetNotKnownGood: the target never stayed Healthy for the known-good window. TargetUnhealthy: the target was Degraded or Failed when it stopped being active. TargetUndeploys: the target revision has state Undeploy, so the rollback removes the deployment. NoSpecChange: the target spec equals the current one; no revision will be recorded. BindingWillBePinned: releasePin changes from Auto to Pinned, stopping auto-deploy for this binding. UnrecordedChange: the binding has a spec change the controller has not recorded yet; the rollback discards it. ProjectCellDrift: the project's cell in this environment is bound to a ProjectRelease created after the target revision, so the restored spec will run in a cell it was never deployed with. SecretReferenceDrift: a SecretReference the target revision uses is missing, lacks a referenced key, or was recreated after the target revision. PreviousRevisionInferred: no revision was named and the current revision predates activation tracking, so the target is the revision activated just before it; a revision deleted since may have been active in between.
+// RollbackWarningCode TargetNotKnownGood: the target never stayed Healthy for the known-good window. TargetUnhealthy: the target was Degraded or Failed when it stopped being active. TargetUndeploys: the target revision has state Undeploy, so the rollback removes the deployment. NoSpecChange: the target spec equals the current one; no revision will be recorded. UnrecordedChange: the binding has a spec change the controller has not recorded yet; the rollback discards it. ProjectCellDrift: the project's cell in this environment is bound to a ProjectRelease created after the target revision, so the restored spec will run in a cell it was never deployed with. SecretReferenceDrift: a SecretReference the target revision uses is missing, lacks a referenced key, or was recreated after the target revision. PreviousRevisionInferred: no revision was named and the current revision predates activation tracking, so the target is the revision activated just before it; a revision deleted since may have been active in between.
 type RollbackWarningCode string
 
 // SchemaResponse JSON Schema response for component types, traits, or workflows

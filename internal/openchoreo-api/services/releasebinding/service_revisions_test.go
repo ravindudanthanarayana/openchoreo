@@ -53,7 +53,6 @@ func specFor(release string, replicas string) openchoreov1alpha1.ReleaseBindingS
 		Environment: testEnvironmentName,
 		ReleaseName: release,
 		State:       openchoreov1alpha1.ReleaseStateActive,
-		ReleasePin:  openchoreov1alpha1.ReleasePinAuto,
 	}
 	if replicas != "" {
 		spec.ComponentTypeEnvironmentConfigs = &runtime.RawExtension{Raw: []byte(`{"replicas":` + replicas + `}`)}
@@ -171,9 +170,7 @@ func TestRollbackReleaseBinding_Applies(t *testing.T) {
 	assert.False(t, result.DryRun)
 
 	rb := getRB(t, c)
-	want := specFor(releaseA, "")
-	want.ReleasePin = openchoreov1alpha1.ReleasePinPinned
-	assert.Equal(t, want, rb.Spec, "spec is r1's bindingSpec with releasePin Pinned")
+	assert.Equal(t, specFor(releaseA, ""), rb.Spec, "spec is r1's bindingSpec")
 	assert.NotContains(t, rb.Annotations, openchoreov1alpha1.AnnotationKeyRevisionCause,
 		"a rollback needs no cause marker: the controller matches the spec to r1")
 
@@ -217,14 +214,11 @@ func TestRollbackReleaseBinding_DryRunChangesNothing(t *testing.T) {
 	for _, ch := range result.Changes {
 		fields[ch.Field] = ch
 	}
-	assert.Len(t, result.Changes, 3, "releaseName, the override, and releasePin change: %+v", result.Changes)
+	assert.Len(t, result.Changes, 2, "releaseName and the override change: %+v", result.Changes)
 	assert.Equal(t, releaseC, fields["releaseName"].Current)
 	assert.Equal(t, releaseA, fields["releaseName"].Target)
 	assert.Equal(t, map[string]any{"replicas": float64(3)}, fields["componentTypeEnvironmentConfigs"].Current)
 	assert.Nil(t, fields["componentTypeEnvironmentConfigs"].Target, "the rollback unsets the override")
-	assert.Equal(t, "Auto", fields["releasePin"].Current)
-	assert.Equal(t, "Pinned", fields["releasePin"].Target)
-	assert.Contains(t, warningCodes(result.Warnings), bindingrevision.WarningBindingWillBePinned)
 
 	after := getRB(t, c)
 	assert.Equal(t, before.ResourceVersion, after.ResourceVersion, "dry run writes nothing")
@@ -364,15 +358,9 @@ func TestRollbackReleaseBinding_Warnings(t *testing.T) {
 		wantNot []bindingrevision.WarningCode
 	}{
 		{
-			name:   "rolling back to a known-good, healthy revision only warns about the pin",
-			target: 1,
-			want:   []bindingrevision.WarningCode{bindingrevision.WarningBindingWillBePinned},
-		},
-		{
-			name:    "already pinned: no pin warning",
-			setup:   func(_ *testing.T, f *fixture) { f.binding.Spec.ReleasePin = openchoreov1alpha1.ReleasePinPinned },
+			name:    "rolling back to a known-good, healthy revision warns about nothing",
 			target:  1,
-			wantNot: []bindingrevision.WarningCode{bindingrevision.WarningBindingWillBePinned},
+			wantNot: []bindingrevision.WarningCode{bindingrevision.WarningTargetNotKnownGood, bindingrevision.WarningTargetUnhealthy},
 		},
 		{
 			name:   "target never became known-good",
@@ -802,7 +790,6 @@ func TestRollbackReleaseBinding_WithoutRevision(t *testing.T) {
 		assert.Equal(t, preview.TargetRevision, applied.TargetRevision, "preview and rollback pick the same target")
 		rb := getRB(t, c)
 		assert.Equal(t, releaseB, rb.Spec.ReleaseName)
-		assert.Equal(t, openchoreov1alpha1.ReleasePinPinned, rb.Spec.ReleasePin, "the rollback pins, as with --revision")
 	})
 
 	t.Run("after a rollback to r1 the previous revision is r3, numbered above it", func(t *testing.T) {
@@ -902,5 +889,98 @@ func TestRollbackReleaseBinding_WithoutRevision(t *testing.T) {
 		assert.Equal(t, int64(2), got.TargetRevision)
 		assert.NotContains(t, warningCodes(got.Warnings), bindingrevision.WarningPreviousRevisionInferred,
 			"a history without gaps is certain")
+	})
+}
+
+// ─────────────────────────────────────────────────────────────
+// RollbackReleaseBinding and the component's auto-deploy
+// ─────────────────────────────────────────────────────────────
+
+// autoDeployObjects is the fixture with a project and pipeline (dev -> prod, so
+// dev, the binding's environment, is the root) and a component whose autoDeploy
+// is as given.
+func autoDeployObjects(f *fixture, autoDeploy bool) []client.Object {
+	objs := make([]client.Object, 0, len(f.objects())+2)
+	for _, o := range f.objects() {
+		if _, ok := o.(*openchoreov1alpha1.Component); ok {
+			continue
+		}
+		objs = append(objs, o)
+	}
+	comp := testutil.NewComponent(testNamespace, testProjectName, testComponentName)
+	comp.Spec.AutoDeploy = autoDeploy
+	return append(objs, comp,
+		testutil.NewProject(testNamespace, testProjectName),
+		testutil.NewDeploymentPipeline(testNamespace, "default"))
+}
+
+func componentAutoDeploy(t *testing.T, c client.Client) bool {
+	t.Helper()
+	comp := &openchoreov1alpha1.Component{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: testComponentName}, comp))
+	return comp.Spec.AutoDeploy
+}
+
+func TestRollbackReleaseBinding_AutoDeploy(t *testing.T) {
+	ctx := context.Background()
+	rollback := func(c client.Client, dryRun bool) (*bindingrevision.RollbackResult, error) {
+		return NewService(c, testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, testRBName,
+			bindingrevision.RollbackRequest{Revision: 1, DryRun: dryRun})
+	}
+
+	t.Run("first environment, auto-deploy on: refused, dry run included, nothing changes", func(t *testing.T) {
+		c := testutil.NewFakeClient(autoDeployObjects(newFixture(t), true)...)
+		before := getRB(t, c).ResourceVersion
+		for _, dryRun := range []bool{true, false} {
+			_, err := rollback(c, dryRun)
+			require.ErrorIs(t, err, bindingrevision.ErrAutoDeployEnabled, "dryRun=%t", dryRun)
+			assert.ErrorContains(t, err, `auto-deploy is enabled for component "`+testComponentName+`", and "`+
+				testEnvironmentName+`" is the first environment of its deployment pipeline`)
+			assert.ErrorContains(t, err, "Turn off auto-deploy for the component, then roll back again")
+		}
+		assert.Equal(t, before, getRB(t, c).ResourceVersion, "the binding is unchanged")
+		assert.True(t, componentAutoDeploy(t, c), "auto-deploy is not touched")
+	})
+
+	t.Run("first environment, auto-deploy off: rolls back normally", func(t *testing.T) {
+		c := testutil.NewFakeClient(autoDeployObjects(newFixture(t), false)...)
+		got, err := rollback(c, false)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), got.TargetRevision)
+		assert.Equal(t, releaseA, getRB(t, c).Spec.ReleaseName)
+		assert.False(t, componentAutoDeploy(t, c))
+	})
+
+	t.Run("another environment, auto-deploy on: rolls back normally", func(t *testing.T) {
+		objs := autoDeployObjects(newFixture(t), true)
+		for _, o := range objs {
+			if p, ok := o.(*openchoreov1alpha1.DeploymentPipeline); ok {
+				// The root is qa; the binding's environment is its target.
+				p.Spec.PromotionPaths = []openchoreov1alpha1.PromotionPath{{
+					SourceEnvironmentRef:  openchoreov1alpha1.EnvironmentRef{Name: "qa"},
+					TargetEnvironmentRefs: []openchoreov1alpha1.TargetEnvironmentRef{{Name: testEnvironmentName}},
+				}}
+			}
+		}
+		c := testutil.NewFakeClient(objs...)
+		_, err := rollback(c, false)
+		require.NoError(t, err)
+		assert.Equal(t, releaseA, getRB(t, c).Spec.ReleaseName)
+		assert.True(t, componentAutoDeploy(t, c), "auto-deploy is not touched")
+	})
+
+	t.Run("the first environment comes from the pipeline, not the environment's name", func(t *testing.T) {
+		objs := autoDeployObjects(newFixture(t), true)
+		for _, o := range objs {
+			if p, ok := o.(*openchoreov1alpha1.DeploymentPipeline); ok {
+				// dev is not first here: staging is, and promotes to dev.
+				p.Spec.PromotionPaths = []openchoreov1alpha1.PromotionPath{{
+					SourceEnvironmentRef:  openchoreov1alpha1.EnvironmentRef{Name: "staging"},
+					TargetEnvironmentRefs: []openchoreov1alpha1.TargetEnvironmentRef{{Name: testEnvironmentName}},
+				}}
+			}
+		}
+		_, err := rollback(testutil.NewFakeClient(objs...), true)
+		require.NoError(t, err)
 	})
 }

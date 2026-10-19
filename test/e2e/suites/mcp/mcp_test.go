@@ -391,17 +391,9 @@ var _ = Describe("MCP Server", Ordered, Label("tier2"), func() {
 			for _, c := range preview.Changes {
 				changed = append(changed, c.Field)
 			}
-			Expect(changed).To(ContainElements("componentTypeEnvironmentConfigs", "releasePin"))
-			codes := make([]string, 0, len(preview.Warnings))
-			for _, w := range preview.Warnings {
-				codes = append(codes, w.Code)
-			}
-			Expect(codes).To(ContainElement("BindingWillBePinned"))
+			Expect(changed).To(ContainElement("componentTypeEnvironmentConfigs"))
 
 			By("verifying the dry run changed nothing")
-			pin, err := framework.KubectlGetJsonpath(kubeContext, mcpNs, "releasebinding", rbName, "{.spec.releasePin}")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pin).To(Equal("Auto"))
 			Consistently(func(g Gomega) {
 				g.Expect(listRevisions(g)).To(HaveLen(2))
 			}, 3*time.Second, time.Second).Should(Succeed())
@@ -417,12 +409,8 @@ var _ = Describe("MCP Server", Ordered, Label("tier2"), func() {
 			Expect(applied.Applied).To(BeTrue())
 			Expect(applied.RevisionName).To(Equal(r1Name))
 
-			By("verifying the binding is pinned and r1 is active again, with no revision created")
+			By("verifying r1 is active again, with no revision created")
 			Eventually(func(g Gomega) {
-				pin, err := framework.KubectlGetJsonpath(kubeContext, mcpNs, "releasebinding", rbName, "{.spec.releasePin}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(pin).To(Equal("Pinned"))
-
 				current, err := framework.KubectlGetJsonpath(kubeContext, mcpNs, "releasebinding", rbName,
 					"{.status.currentRevision}")
 				g.Expect(err).NotTo(HaveOccurred())

@@ -176,10 +176,10 @@ function currentRevision(): string {
   );
 }
 
-function releasePin(): string {
+function autoDeploy(): boolean {
   return (
-    kGetJSON<{ spec?: { releasePin?: string } }>('releasebinding', BINDING_NAME, NS)
-      .spec?.releasePin ?? ''
+    kGetJSON<{ spec?: { autoDeploy?: boolean } }>('component', COMPONENT_NAME, NS)
+      .spec?.autoDeploy ?? false
   );
 }
 
@@ -250,12 +250,28 @@ test.describe('release binding revisions through the Deploy tab', () => {
     await revs.expectDiffShows(`componentReleaseName: ${r2.release}`);
     await revs.closeBrowser();
 
-    // ── Roll back to r1: dry run first, then confirm ──
+    // ── Development is the first environment and the component auto-deploys:
+    // the rollback is blocked with a clear message, and nothing changes ──
+    await revs.openTimeline();
+    await revs.row(1).click();
+    await page.getByRole('button', { name: 'Roll back to r1', exact: true }).click();
+    const blockedDialog = page.getByRole('dialog');
+    await expect(
+      blockedDialog.getByText(/^Rollback blocked: auto deploy is enabled for this component/),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      blockedDialog.getByRole('button', { name: 'Roll back', exact: true }),
+    ).toBeDisabled();
+    await blockedDialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(blockedDialog).toBeHidden();
+    expect(autoDeploy()).toBe(true);
+    expect(currentRevision()).toBe(`${BINDING_NAME}-r2`);
+
+    // ── Turn auto deploy off, as the Set Up tab does, then roll back ──
+    kubectl(['patch', 'component', COMPONENT_NAME, '-n', NS, '--type', 'merge',
+      '-p', '{"spec":{"autoDeploy":false}}']);
     const warnings = await revs.startRollback(1);
-    // Rolling back an Auto binding always pins it; the dry run must say so
-    // before anything is applied.
-    expect(warnings.join('\n')).toContain('BindingWillBePinned');
-    expect(releasePin()).toBe('Auto');
+    expect(warnings.join('\n')).not.toContain('auto deploy');
     expect(revisionSummary()).toHaveLength(2);
 
     await revs.confirmRollback(1);
@@ -291,6 +307,6 @@ test.describe('release binding revisions through the Deploy tab', () => {
     // The object is {binding}-r{N}; it is shown as {release}-r{N}.
     expect(currentRevision()).toBe(`${BINDING_NAME}-r1`);
     expect(r1.name).toBe(`${r1.release}-r1`);
-    expect(releasePin()).toBe('Pinned');
+    expect(autoDeploy()).toBe(false);
   });
 });

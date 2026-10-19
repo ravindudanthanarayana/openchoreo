@@ -83,13 +83,17 @@ func (s *releaseBindingService) GetReleaseBindingRevision(ctx context.Context, n
 }
 
 // RollbackReleaseBinding restores the binding spec recorded by an earlier
-// revision. It writes only the binding -- the target's spec and releasePin:
-// Pinned -- conditional on the resourceVersion it read, so a concurrent edit
+// revision. It writes the binding -- the target's spec -- conditional on the
+// resourceVersion it read, so a concurrent edit
 // fails with ErrConcurrentModification. It never writes a revision and no new
 // revision is created: the restored spec is the one the target records, so
 // the controller makes the target active again under its own name and number
 // and points status.currentRevision at it. With DryRun it returns the same
 // result and writes nothing.
+//
+// A binding in the first environment of a component with autoDeploy enabled is
+// refused with ErrAutoDeployEnabled, dry runs included: auto-deploy would move
+// it straight back to the latest release.
 //
 // A request without a revision (0) rolls back to the revision that was active
 // immediately before the current one (bindingrevision.PreviousRevision), and
@@ -106,6 +110,21 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 			return nil, ErrReleaseBindingNotFound
 		}
 		return nil, fmt.Errorf("failed to get release binding: %w", err)
+	}
+
+	// Auto-deploy keeps the first environment's binding on the component's
+	// latest release, so it would undo the rollback within seconds: refuse it,
+	// dry runs included, and change nothing.
+	blocked, err := bindingrevision.AutoDeployBlocksRollback(ctx, s.k8sClient, namespaceName,
+		binding.Spec.Owner.ComponentName, binding.Spec.Environment)
+	if err != nil {
+		return nil, err
+	}
+	if blocked {
+		return nil, fmt.Errorf("%w for component %q, and %q is the first environment of its deployment pipeline, "+
+			"so auto-deploy would move release binding %q back to the latest release right after the rollback. "+
+			"Turn off auto-deploy for the component, then roll back again", bindingrevision.ErrAutoDeployEnabled,
+			binding.Spec.Owner.ComponentName, binding.Spec.Environment, releaseBindingName)
 	}
 
 	revs, err := s.bindingRevisions(ctx, binding)
@@ -154,7 +173,6 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 	}
 
 	restored := *target.Spec.BindingSpec.DeepCopy()
-	restored.ReleasePin = openchoreov1alpha1.ReleasePinPinned
 
 	currentHash, err := revision.ReleaseBindingSpecHash(&binding.Spec)
 	if err != nil {
@@ -184,7 +202,7 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 	}
 
 	result.Warnings = bindingrevision.CommonWarnings(targetRevision, target.Status, noSpecChange,
-		active.Spec.SnapshotHash != currentHash, binding.Spec.ReleasePin == openchoreov1alpha1.ReleasePinPinned)
+		active.Spec.SnapshotHash != currentHash)
 	if inferred != nil {
 		result.Warnings = append([]bindingrevision.Warning{*inferred}, result.Warnings...)
 	}
@@ -210,26 +228,34 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 		return result, nil
 	}
 
-	base := binding.DeepCopy()
-	binding.Spec = restored
-
-	if err := s.k8sClient.Patch(ctx, binding,
-		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-		switch {
-		case apierrors.IsConflict(err):
-			return nil, fmt.Errorf("%w: release binding %q", bindingrevision.ErrConcurrentModification, releaseBindingName)
-		case apierrors.IsNotFound(err):
-			return nil, ErrReleaseBindingNotFound
-		}
-		if vErr := services.ExtractValidationError(err); vErr != nil {
-			return nil, vErr
-		}
-		return nil, fmt.Errorf("failed to roll back release binding: %w", err)
+	if err := s.patchBindingSpec(ctx, binding, restored, releaseBindingName); err != nil {
+		return nil, err
 	}
 
 	s.logger.Info("Rolled back release binding", "namespace", namespaceName, "releaseBinding", releaseBindingName,
 		"targetRevision", targetRevision, "revertedFrom", revertedFrom)
 	return result, nil
+}
+
+// patchBindingSpec writes spec to the binding, conditional on the
+// resourceVersion it was read at.
+func (s *releaseBindingService) patchBindingSpec(ctx context.Context, binding *openchoreov1alpha1.ReleaseBinding,
+	spec openchoreov1alpha1.ReleaseBindingSpec, releaseBindingName string) error {
+	base := binding.DeepCopy()
+	binding.Spec = spec
+	err := s.k8sClient.Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	switch {
+	case err == nil:
+		return nil
+	case apierrors.IsConflict(err):
+		return fmt.Errorf("%w: release binding %q", bindingrevision.ErrConcurrentModification, releaseBindingName)
+	case apierrors.IsNotFound(err):
+		return ErrReleaseBindingNotFound
+	}
+	if vErr := services.ExtractValidationError(err); vErr != nil {
+		return vErr
+	}
+	return fmt.Errorf("failed to roll back release binding: %w", err)
 }
 
 // DeleteReleaseBindingRevision deletes one revision of a release binding, unless it is

@@ -89,16 +89,6 @@ spec:
                   ReleaseName is the name of the ComponentRelease to bind
                   When ComponentSpec.AutoDeploy is enabled, this field will be handled by the controller
                 type: string
-              releasePin:
-                default: Auto
-                description: |-
-                  ReleasePin controls whether releaseName may be advanced automatically.
-                  Auto: releaseName follows new ComponentReleases
-                  Pinned: releaseName is held at its current value until changed explicitly
-                enum:
-                - Auto
-                - Pinned
-                type: string
               state:
                 default: Active
                 description: |-

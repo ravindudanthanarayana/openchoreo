@@ -544,40 +544,10 @@ func (r *Reconciler) fetchAllTraits(ctx context.Context, ct *openchoreov1alpha1.
 	return traits, clusterTraits, nil
 }
 
-// findRootEnvironment finds the root environment in a deployment pipeline.
-// The root environment is the source environment that never appears as a target,
-// representing the initial environment where components are first deployed.
-// This is a pure function for easier testing.
+// findRootEnvironment finds the root environment in a deployment pipeline: the
+// environment components are first deployed to. See DeploymentPipeline.RootEnvironment.
 func findRootEnvironment(pipeline *openchoreov1alpha1.DeploymentPipeline) (string, error) {
-	if len(pipeline.Spec.PromotionPaths) == 0 {
-		return "", fmt.Errorf("deployment pipeline %s has no promotion paths defined", pipeline.Name)
-	}
-
-	// Build a set of all target environments
-	targets := make(map[string]bool)
-	for _, path := range pipeline.Spec.PromotionPaths {
-		for _, target := range path.TargetEnvironmentRefs {
-			targets[target.Name] = true
-		}
-	}
-
-	// Find source environment that's never a target (the root)
-	var rootEnv string
-	for _, path := range pipeline.Spec.PromotionPaths {
-		if path.SourceEnvironmentRef.Name == "" {
-			continue
-		}
-		if !targets[path.SourceEnvironmentRef.Name] {
-			rootEnv = path.SourceEnvironmentRef.Name
-			break
-		}
-	}
-
-	if rootEnv == "" {
-		return "", fmt.Errorf("deployment pipeline %s has no root environment (all sources are also targets)", pipeline.Name)
-	}
-
-	return rootEnv, nil
+	return pipeline.RootEnvironment()
 }
 
 // handleAutoDeploy handles automatic deployment when autoDeploy is enabled.
@@ -793,18 +763,6 @@ func (r *Reconciler) ensureReleaseBinding(
 	}
 
 	releaseBinding := releaseBindingList.Items[0]
-
-	// A pinned binding holds its release until someone changes it explicitly, for
-	// example after a rollback, so auto-deploy must not move it to the latest one.
-	if releaseBinding.Spec.ReleasePin == openchoreov1alpha1.ReleasePinPinned {
-		if releaseBinding.Spec.ReleaseName != releaseName {
-			logger.Info("ReleaseBinding is pinned, not moving it to the latest release",
-				"binding", releaseBinding.Name,
-				"pinnedRelease", releaseBinding.Spec.ReleaseName,
-				"latestRelease", releaseName)
-		}
-		return nil
-	}
 
 	// ReleaseBinding exists, patch the release name if different
 	if releaseBinding.Spec.ReleaseName != releaseName {

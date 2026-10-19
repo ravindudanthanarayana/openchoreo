@@ -21,7 +21,7 @@ func TestRollback(t *testing.T) {
 	resp := func(dryRun bool) *gen.RollbackResponse {
 		return &gen.RollbackResponse{RevisionName: "db-dev-r1", Revision: 1, TargetRevision: 1, DryRun: dryRun,
 			Changes:  []gen.RollbackSpecChange{{Field: "resourceRelease", Current: "db-bbb", Target: "db-aaa"}},
-			Warnings: []gen.RollbackWarning{{Code: gen.BindingWillBePinned, Message: "releasePin changes from Auto to Pinned"}}}
+			Warnings: []gen.RollbackWarning{{Code: gen.TargetNotKnownGood, Message: "revision 1 never stayed Healthy for the known-good window"}}}
 	}
 	dry := func(want bool) any {
 		return mock.MatchedBy(func(r gen.RollbackRequest) bool {
@@ -62,7 +62,7 @@ func TestRollback(t *testing.T) {
 		require.NoError(t, cmd.ParseFlags([]string{"-n", ns, "--revision", "1", "--dry-run"}))
 
 		out := testutil.CaptureStdout(t, func() { require.NoError(t, cmd.RunE(cmd, []string{binding})) })
-		assert.Contains(t, out, "! BindingWillBePinned")
+		assert.Contains(t, out, "! TargetNotKnownGood")
 		assert.Contains(t, out, "Dry run: nothing was changed.")
 	})
 

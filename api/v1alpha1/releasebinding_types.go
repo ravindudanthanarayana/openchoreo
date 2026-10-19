@@ -195,13 +195,6 @@ type ReleaseBindingSpec struct {
 	// +kubebuilder:validation:Enum=Active;Undeploy
 	// +optional
 	State ReleaseState `json:"state,omitempty"`
-
-	// ReleasePin controls whether releaseName may be advanced automatically.
-	// Auto: releaseName follows new ComponentReleases
-	// Pinned: releaseName is held at its current value until changed explicitly
-	// +kubebuilder:default=Auto
-	// +optional
-	ReleasePin ReleasePin `json:"releasePin,omitempty"`
 }
 
 // ReleaseBindingOwner identifies the component this ReleaseBinding belongs to
