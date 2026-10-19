@@ -30,11 +30,13 @@ const rollbackProcedure = "Procedure — follow it every time: " +
 	"verbatim, then ask the user to confirm. " +
 	"(4) Only after the user confirms, call again with the same revision and dry_run=false. " +
 	"Never skip the dry run or the confirmation, and never set dry_run=false on the first call. " +
-	"The rollback restores the target's spec and pins the binding (releasePin=Pinned). No revision is created: " +
+	"The rollback restores the target's spec. No revision is created: " +
 	"the target revision becomes active again under its own name and number, the binding's " +
 	"status.currentRevision names it, and its health restarts at Progressing. " +
 	"Errors: not found (unknown binding or revision); conflict when the release the revision binds was " +
-	"deleted or the binding changed concurrently (re-run the dry run before retrying)."
+	"deleted, the binding changed concurrently (re-run the dry run before retrying), or the component has " +
+	"auto-deploy enabled and the binding is in its first environment (auto-deploy would undo the rollback: " +
+	"tell the user to turn auto-deploy off for the component first)."
 
 //nolint:dupl // paginated list handlers share similar structure
 func (t *Toolsets) RegisterListReleaseBindingRevisions(s *mcp.Server, perms map[string]ToolPermission) {

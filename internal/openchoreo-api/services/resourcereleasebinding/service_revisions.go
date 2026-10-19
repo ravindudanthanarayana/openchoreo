@@ -144,7 +144,6 @@ func (s *resourceReleaseBindingService) RollbackResourceReleaseBinding(ctx conte
 	}
 
 	restored := *target.Spec.BindingSpec.DeepCopy()
-	restored.ReleasePin = openchoreov1alpha1.ReleasePinPinned
 
 	currentHash, err := revision.ResourceReleaseBindingSpecHash(&binding.Spec)
 	if err != nil {
@@ -174,7 +173,7 @@ func (s *resourceReleaseBindingService) RollbackResourceReleaseBinding(ctx conte
 	}
 
 	result.Warnings = bindingrevision.CommonWarnings(targetRevision, target.Status, noSpecChange,
-		active.Spec.SnapshotHash != currentHash, binding.Spec.ReleasePin == openchoreov1alpha1.ReleasePinPinned)
+		active.Spec.SnapshotHash != currentHash)
 	if inferred != nil {
 		result.Warnings = append([]bindingrevision.Warning{*inferred}, result.Warnings...)
 	}

@@ -115,7 +115,7 @@ var _ = Describe("ReleaseBinding Controller — revisions", func() {
 		Expect(active).To(Equal(1), "exactly one revision must be active")
 
 		// Each distinct spec is recorded once, and the active revision records
-		// the current one (releasePin aside, which no revision records).
+		// the current one.
 		hashes := map[string]string{}
 		var current *openchoreov1alpha1.ReleaseBindingRevision
 		for i := range revs {
@@ -281,7 +281,6 @@ var _ = Describe("ReleaseBinding Controller — revisions", func() {
 			{"roll back to r2's spec, pinned", func(rb *openchoreov1alpha1.ReleaseBinding) {
 				rb.Spec.ReleaseName = crA
 				rb.Spec.ComponentTypeEnvironmentConfigs = replicasOverride("2")
-				rb.Spec.ReleasePin = openchoreov1alpha1.ReleasePinPinned
 			}, 2, 4, ""},
 			{"undeploy", func(rb *openchoreov1alpha1.ReleaseBinding) {
 				rb.Spec.State = openchoreov1alpha1.ReleaseStateUndeploy

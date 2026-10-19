@@ -43,6 +43,8 @@ func TestClassifyRollbackError(t *testing.T) {
 			wantOutcome: rollbackConflict, wantCode: gen.CONCURRENTMODIFICATION},
 		{name: "no previous revision", err: fmt.Errorf("%w: none", bindingrevision.ErrNoPreviousRevision),
 			wantOutcome: rollbackConflict, wantCode: gen.NOPREVIOUSREVISION},
+		{name: "auto-deploy would undo it", err: fmt.Errorf("%w: component x", bindingrevision.ErrAutoDeployEnabled),
+			wantOutcome: rollbackConflict, wantCode: gen.AUTODEPLOYENABLED},
 		{name: "validation", err: &services.ValidationError{Msg: "revision must be at least 1"}, wantOutcome: rollbackBadRequest},
 		{name: "anything else", err: errors.New("etcd is on fire"), wantOutcome: rollbackInternalError},
 	}

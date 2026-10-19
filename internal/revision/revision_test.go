@@ -45,8 +45,7 @@ func baseSpec() openchoreov1alpha1.ReleaseBindingSpec {
 				Env: []openchoreov1alpha1.EnvVar{{Key: "LOG_LEVEL", Value: "info"}},
 			},
 		},
-		State:      openchoreov1alpha1.ReleaseStateActive,
-		ReleasePin: openchoreov1alpha1.ReleasePinAuto,
+		State: openchoreov1alpha1.ReleaseStateActive,
 	}
 }
 
@@ -120,7 +119,6 @@ func TestCanonicalHash_ChangedFieldChangesHash(t *testing.T) {
 		{name: "environment", mutate: func(s *openchoreov1alpha1.ReleaseBindingSpec) { s.Environment = "staging" }},
 		{name: "owner.componentName", mutate: func(s *openchoreov1alpha1.ReleaseBindingSpec) { s.Owner.ComponentName = otherComponent }},
 		{name: "state", mutate: func(s *openchoreov1alpha1.ReleaseBindingSpec) { s.State = openchoreov1alpha1.ReleaseStateUndeploy }},
-		{name: "releasePin", mutate: func(s *openchoreov1alpha1.ReleaseBindingSpec) { s.ReleasePin = openchoreov1alpha1.ReleasePinPinned }},
 		{
 			name: "nested raw value",
 			mutate: func(s *openchoreov1alpha1.ReleaseBindingSpec) {

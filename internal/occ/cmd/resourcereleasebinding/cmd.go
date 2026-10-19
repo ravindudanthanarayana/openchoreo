@@ -117,10 +117,8 @@ history cannot say which it was, nothing is changed; name a revision instead.
 List the revisions with "occ resourcereleasebindingrevision list --binding <name>".
 
 The rollback is previewed first: the spec fields it changes and any pre-flight
-warnings are printed, and you are asked to confirm. The binding is pinned to the
-restored release so auto-deploy does not move it forward again. No revision is
-created: the controller makes the target revision active again, under its own
-name and number.`,
+warnings are printed, and you are asked to confirm. No revision is created: the
+controller makes the target revision active again, under its own name and number.`,
 		Example: `  # Roll back to the previously active revision, confirming interactively
   occ resourcereleasebinding rollback orders-db-development --namespace acme-corp
 

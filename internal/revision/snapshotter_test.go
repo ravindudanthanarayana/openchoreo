@@ -117,7 +117,6 @@ func newBinding(name string) *openchoreov1alpha1.ReleaseBinding {
 			Environment: "development",
 			ReleaseName: firstRelease,
 			State:       openchoreov1alpha1.ReleaseStateActive,
-			ReleasePin:  openchoreov1alpha1.ReleasePinAuto,
 		},
 	}
 }
@@ -236,11 +235,6 @@ func TestReleaseBindingSnapshotter_SpecChanges(t *testing.T) {
 			wantNew:     true,
 			wantCause:   openchoreov1alpha1.RevisionCauseUndeploy,
 			wantRelease: firstRelease,
-		},
-		{
-			name:    "releasePin alone records nothing",
-			mutate:  func(s *openchoreov1alpha1.ReleaseBindingSpec) { s.ReleasePin = openchoreov1alpha1.ReleasePinPinned },
-			wantNew: false,
 		},
 		{
 			name: "raw key order alone records nothing",
@@ -706,7 +700,6 @@ func newResourceBinding(name, env, release string) *openchoreov1alpha1.ResourceR
 			Owner:           openchoreov1alpha1.ResourceReleaseBindingOwner{ProjectName: "doclet", ResourceName: "db"},
 			Environment:     env,
 			ResourceRelease: release,
-			ReleasePin:      openchoreov1alpha1.ReleasePinAuto,
 		},
 	}
 }
@@ -745,7 +738,6 @@ func TestReleaseBindingSnapshotter_RollbackReactivatesTheTarget(t *testing.T) {
 	// of the recorded spec.
 	bump(binding, func(spec *openchoreov1alpha1.ReleaseBindingSpec) {
 		spec.ReleaseName = firstRelease
-		spec.ReleasePin = openchoreov1alpha1.ReleasePinPinned
 	})
 	res, err := s.Record(ctx, binding)
 	require.NoError(t, err)
@@ -830,7 +822,6 @@ func TestReleaseBindingSnapshotter_DeletedRevisionIsNotRecreatedOrRenumbered(t *
 	// persists Result.Highest as status.highestRevision.
 	bump(binding, func(spec *openchoreov1alpha1.ReleaseBindingSpec) {
 		spec.ReleaseName = firstRelease
-		spec.ReleasePin = openchoreov1alpha1.ReleasePinPinned
 	})
 	res, err := s.Record(ctx, binding)
 	require.NoError(t, err)
@@ -947,7 +938,6 @@ func TestResourceReleaseBindingSnapshotter(t *testing.T) {
 	assert.True(t, getRRBR("db-development-r3").Status.Active)
 
 	// The pin alone is not a revision.
-	dev.Spec.ReleasePin = openchoreov1alpha1.ReleasePinPinned
 	dev.Generation++
 	res, err = s.Record(ctx, dev)
 	require.NoError(t, err)
@@ -1103,7 +1093,6 @@ func rollbackTo(t *testing.T, c client.Client, binding *openchoreov1alpha1.Relea
 	rev := getRBR(t, c, "frontend-development-r"+strconv.FormatInt(n, 10))
 	bump(binding, func(spec *openchoreov1alpha1.ReleaseBindingSpec) {
 		*spec = *rev.Spec.BindingSpec.DeepCopy()
-		spec.ReleasePin = openchoreov1alpha1.ReleasePinPinned
 	})
 }
 

@@ -14,13 +14,15 @@ import (
 	"github.com/openchoreo/openchoreo/internal/controller"
 )
 
-var _ = Describe("Component Controller — autoDeploy and releasePin", func() {
+// A rollback writes an older release into the root environment's binding;
+// whether it stays depends only on the component's autoDeploy.
+var _ = Describe("Component Controller — autoDeploy and a rolled-back binding", func() {
 	const (
-		ctName       = "pin-ct"
-		compName     = "pin-comp"
-		wlName       = "pin-wl"
-		project      = "pin-proj"
-		pipelineName = "pin-pipe"
+		ctName       = "adr-ct"
+		compName     = "adr-comp"
+		wlName       = "adr-wl"
+		project      = "adr-proj"
+		pipelineName = "adr-pipe"
 		bindingName  = compName + "-dev" // autoDeploy binds the pipeline's root environment
 	)
 
@@ -39,17 +41,42 @@ var _ = Describe("Component Controller — autoDeploy and releasePin", func() {
 		return rb
 	}
 
-	// setPin sets the binding's releasePin, retrying on the conflicts a lagging
-	// cached client can produce.
-	setPin := func(pin openchoreov1alpha1.ReleasePin) {
+	// rollBackTo writes release into the binding, as a rollback does, retrying on
+	// the conflicts a lagging cached client can produce.
+	rollBackTo := func(release string) {
 		GinkgoHelper()
 		Eventually(func(g Gomega) {
 			rb := fetchBinding(g)
-			rb.Spec.ReleasePin = pin
+			rb.Spec.ReleaseName = release
 			g.Expect(k8sClient.Update(ctx, rb)).To(Succeed())
 		}, itTimeout, itInterval).Should(Succeed())
+	}
+
+	// setAutoDeploy sets the component's autoDeploy.
+	setAutoDeploy := func(on bool) {
+		GinkgoHelper()
 		Eventually(func(g Gomega) {
-			g.Expect(fetchBinding(g).Spec.ReleasePin).To(Equal(pin))
+			c := &openchoreov1alpha1.Component{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: compName, Namespace: itNamespace}, c)).To(Succeed())
+			c.Spec.AutoDeploy = on
+			g.Expect(k8sClient.Update(ctx, c)).To(Succeed())
+		}, itTimeout, itInterval).Should(Succeed())
+	}
+
+	reconcileComponent := func(g Gomega) {
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: compName,
+			Namespace: itNamespace}})
+		g.Expect(err).NotTo(HaveOccurred())
+	}
+
+	// changeWorkload changes the Workload image, as a new build does.
+	changeWorkload := func(image string) {
+		GinkgoHelper()
+		Eventually(func(g Gomega) {
+			w := &openchoreov1alpha1.Workload{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: wlName, Namespace: itNamespace}, w)).To(Succeed())
+			w.Spec.Container.Image = image
+			g.Expect(k8sClient.Update(ctx, w)).To(Succeed())
 		}, itTimeout, itInterval).Should(Succeed())
 	}
 
@@ -122,32 +149,37 @@ var _ = Describe("Component Controller — autoDeploy and releasePin", func() {
 		_ = k8sClient.Delete(ctx, ct)
 	})
 
-	It("moves an Auto binding to the new release", func() {
+	It("with autoDeploy on, moves the binding to a new release and undoes a rollback", func() {
 		first := fetchComp(ctx, compName).Status.LatestRelease.Name
-		setPin(openchoreov1alpha1.ReleasePinAuto)
-
 		latest := cutNewRelease(first)
-
 		Eventually(func(g Gomega) {
 			g.Expect(fetchBinding(g).Spec.ReleaseName).To(Equal(latest))
 		}, itTimeout, itInterval).Should(Succeed())
+
+		By("rolling the binding back to the first release")
+		rollBackTo(first)
+		Eventually(func(g Gomega) {
+			reconcileComponent(g)
+			g.Expect(fetchBinding(g).Spec.ReleaseName).To(Equal(latest), "auto-deploy moved it back")
+		}, itTimeout, itInterval).Should(Succeed())
 	})
 
-	It("does not move a Pinned binding to the new release", func() {
+	It("with autoDeploy off, keeps a rolled-back binding and deploys no new build", func() {
 		first := fetchComp(ctx, compName).Status.LatestRelease.Name
-		setPin(openchoreov1alpha1.ReleasePinPinned)
-
 		latest := cutNewRelease(first)
-		Expect(latest).NotTo(Equal(first))
 
-		By("reconciling further and checking the binding stays on the pinned release")
-		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: compName, Namespace: itNamespace}}
+		By("turning autoDeploy off, then rolling back to the first release")
+		setAutoDeploy(false)
+		rollBackTo(first)
+
+		By("a new build changes the workload")
+		changeWorkload("nginx:1.25")
+
 		Consistently(func(g Gomega) {
-			_, err := r.Reconcile(ctx, req)
-			g.Expect(err).NotTo(HaveOccurred())
-			rb := fetchBinding(g)
-			g.Expect(rb.Spec.ReleaseName).To(Equal(first))
-			g.Expect(rb.Spec.ReleasePin).To(Equal(openchoreov1alpha1.ReleasePinPinned))
-		}, "2s", itInterval).Should(Succeed())
+			reconcileComponent(g)
+			g.Expect(fetchBinding(g).Spec.ReleaseName).To(Equal(first), "the rollback stays")
+			g.Expect(fetchComp(ctx, compName).Status.LatestRelease.Name).To(Equal(latest),
+				"no release is created while autoDeploy is off")
+		}, "3s", itInterval).Should(Succeed())
 	})
 })

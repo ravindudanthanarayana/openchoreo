@@ -47,13 +47,6 @@ type ResourceReleaseBindingSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	ResourceTypeEnvironmentConfigs *runtime.RawExtension `json:"resourceTypeEnvironmentConfigs,omitempty"`
-
-	// ReleasePin controls whether resourceRelease may be advanced automatically.
-	// Auto: resourceRelease follows new ResourceReleases
-	// Pinned: resourceRelease is held at its current value until changed explicitly
-	// +kubebuilder:default=Auto
-	// +optional
-	ReleasePin ReleasePin `json:"releasePin,omitempty"`
 }
 
 // ResourceReleaseBindingOwner identifies the resource this ResourceReleaseBinding belongs to.

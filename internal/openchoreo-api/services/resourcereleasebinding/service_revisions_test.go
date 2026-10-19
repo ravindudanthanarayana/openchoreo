@@ -42,7 +42,6 @@ func rrbSpec(release string) openchoreov1alpha1.ResourceReleaseBindingSpec {
 		Owner:           openchoreov1alpha1.ResourceReleaseBindingOwner{ProjectName: testProject, ResourceName: testResourceName},
 		Environment:     testEnvironment,
 		ResourceRelease: release,
-		ReleasePin:      openchoreov1alpha1.ReleasePinAuto,
 	}
 }
 
@@ -112,7 +111,6 @@ func TestRollbackResourceReleaseBinding(t *testing.T) {
 
 		b := getRRB(t, c)
 		assert.Equal(t, rrReleaseA, b.Spec.ResourceRelease)
-		assert.Equal(t, openchoreov1alpha1.ReleasePinPinned, b.Spec.ReleasePin)
 		assert.NotContains(t, b.Annotations, openchoreov1alpha1.AnnotationKeyRevisionCause)
 	})
 
@@ -124,10 +122,10 @@ func TestRollbackResourceReleaseBinding(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, result.DryRun)
 		require.NotEmpty(t, result.Changes)
-		assert.Equal(t, "releasePin", result.Changes[0].Field)
-		assert.Equal(t, "resourceRelease", result.Changes[1].Field)
-		assert.Equal(t, rrReleaseB, result.Changes[1].Current)
-		assert.Equal(t, rrReleaseA, result.Changes[1].Target)
+		assert.Len(t, result.Changes, 1)
+		assert.Equal(t, "resourceRelease", result.Changes[0].Field)
+		assert.Equal(t, rrReleaseB, result.Changes[0].Current)
+		assert.Equal(t, rrReleaseA, result.Changes[0].Target)
 		assert.Equal(t, before.ResourceVersion, getRRB(t, c).ResourceVersion)
 	})
 
@@ -341,7 +339,6 @@ func TestRollbackResourceReleaseBinding_WithoutRevision(t *testing.T) {
 		assert.Equal(t, int64(1), got.TargetRevision)
 		b := getRRB(t, c)
 		assert.Equal(t, rrReleaseA, b.Spec.ResourceRelease)
-		assert.Equal(t, openchoreov1alpha1.ReleasePinPinned, b.Spec.ReleasePin)
 	})
 
 	t.Run("refuses when the previously active revision was deleted", func(t *testing.T) {

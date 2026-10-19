@@ -50,8 +50,7 @@ func newReleaseBindingRevision() *openchoreov1alpha1.ReleaseBindingRevision {
 						Env: []openchoreov1alpha1.EnvVar{{Key: "LOG_LEVEL", Value: "info"}},
 					},
 				},
-				State:      openchoreov1alpha1.ReleaseStateActive,
-				ReleasePin: openchoreov1alpha1.ReleasePinAuto,
+				State: openchoreov1alpha1.ReleaseStateActive,
 			},
 		},
 	}
@@ -71,7 +70,6 @@ func newResourceReleaseBindingRevision() *openchoreov1alpha1.ResourceReleaseBind
 				ResourceRelease:                "db-abc123",
 				RetainPolicy:                   openchoreov1alpha1.ResourceRetainPolicyDelete,
 				ResourceTypeEnvironmentConfigs: &runtime.RawExtension{Raw: []byte(`{"size":"small"}`)},
-				ReleasePin:                     openchoreov1alpha1.ReleasePinAuto,
 			},
 		},
 	}
@@ -163,9 +161,6 @@ var _ = Describe("ReleaseBindingRevision mutability", func() {
 		}),
 		Entry("spec.bindingSpec.state", func(s *openchoreov1alpha1.ReleaseBindingRevisionSpec) {
 			s.BindingSpec.State = openchoreov1alpha1.ReleaseStateUndeploy
-		}),
-		Entry("spec.bindingSpec.releasePin", func(s *openchoreov1alpha1.ReleaseBindingRevisionSpec) {
-			s.BindingSpec.ReleasePin = openchoreov1alpha1.ReleasePinPinned
 		}),
 		Entry("spec.bindingSpec.componentTypeEnvironmentConfigs value", func(s *openchoreov1alpha1.ReleaseBindingRevisionSpec) {
 			s.BindingSpec.ComponentTypeEnvironmentConfigs = &runtime.RawExtension{Raw: []byte(`{"replicas":3}`)}
@@ -307,9 +302,6 @@ var _ = Describe("ResourceReleaseBindingRevision mutability", func() {
 		}),
 		Entry("spec.bindingSpec.retainPolicy", func(s *openchoreov1alpha1.ResourceReleaseBindingRevisionSpec) {
 			s.BindingSpec.RetainPolicy = openchoreov1alpha1.ResourceRetainPolicyRetain
-		}),
-		Entry("spec.bindingSpec.releasePin", func(s *openchoreov1alpha1.ResourceReleaseBindingRevisionSpec) {
-			s.BindingSpec.ReleasePin = openchoreov1alpha1.ReleasePinPinned
 		}),
 		Entry("spec.bindingSpec.resourceTypeEnvironmentConfigs", func(s *openchoreov1alpha1.ResourceReleaseBindingRevisionSpec) {
 			s.BindingSpec.ResourceTypeEnvironmentConfigs = &runtime.RawExtension{Raw: []byte(`{"size":"large"}`)}

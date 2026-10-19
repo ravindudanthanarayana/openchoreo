@@ -97,16 +97,6 @@ spec:
                 x-kubernetes-validations:
                 - message: spec.owner is immutable
                   rule: self == oldSelf
-              releasePin:
-                default: Auto
-                description: |-
-                  ReleasePin controls whether resourceRelease may be advanced automatically.
-                  Auto: resourceRelease follows new ResourceReleases
-                  Pinned: resourceRelease is held at its current value until changed explicitly
-                enum:
-                - Auto
-                - Pinned
-                type: string
               resourceRelease:
                 description: |-
                   ResourceRelease is the name of the ResourceRelease pinned by this binding.
