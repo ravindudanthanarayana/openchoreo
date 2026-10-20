@@ -16,7 +16,7 @@ import (
 func NewReleaseBindingRevisionCmd(f client.NewClientFunc) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "releasebindingrevision",
-		Aliases: []string{"releasebindingrevisions", "rbr"},
+		Aliases: []string{"releasebindingrevisions", "rbr", "crbr"},
 		Short:   "Manage release binding revisions",
 		Long:    "Commands for listing, showing and deleting release binding revisions. To roll back, use occ releasebinding rollback.",
 	}
