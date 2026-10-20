@@ -35,6 +35,7 @@ func TestNewReleaseBindingRevisionCmd_Use(t *testing.T) {
 	cmd := NewReleaseBindingRevisionCmd(errFactory("unused"))
 	assert.Equal(t, "releasebindingrevision", cmd.Use)
 	assert.Contains(t, cmd.Aliases, "rbr")
+	assert.Contains(t, cmd.Aliases, "crbr")
 	assert.Contains(t, cmd.Aliases, "releasebindingrevisions")
 }
 
