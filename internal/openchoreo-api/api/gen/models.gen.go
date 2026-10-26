@@ -220,6 +220,7 @@ const (
 	CONCURRENTMODIFICATION ErrorResponseCode = "CONCURRENT_MODIFICATION"
 	CONFLICT               ErrorResponseCode = "CONFLICT"
 	FORBIDDEN              ErrorResponseCode = "FORBIDDEN"
+	GITOPSMANAGED          ErrorResponseCode = "GITOPS_MANAGED"
 	INTERNALERROR          ErrorResponseCode = "INTERNAL_ERROR"
 	NOPREVIOUSREVISION     ErrorResponseCode = "NO_PREVIOUS_REVISION"
 	NOTFOUND               ErrorResponseCode = "NOT_FOUND"

@@ -82,6 +82,9 @@ func (s *resourceReleaseBindingService) GetResourceReleaseBindingRevision(ctx co
 // earlier revision; see the ReleaseBinding service's RollbackReleaseBinding.
 // The release check is on the revision's ResourceRelease.
 //
+// A binding a GitOps tool applies from Git is refused with ErrGitOpsManaged,
+// dry runs included (see bindingrevision.RejectGitOpsManaged).
+//
 // A request without a revision (0) rolls back to the revision that was active
 // immediately before the current one (bindingrevision.PreviousRevision), and
 // leaves the binding unchanged when that revision is gone or unknown.
@@ -97,6 +100,12 @@ func (s *resourceReleaseBindingService) RollbackResourceReleaseBinding(ctx conte
 			return nil, ErrResourceReleaseBindingNotFound
 		}
 		return nil, fmt.Errorf("failed to get resource release binding: %w", err)
+	}
+
+	// A binding applied from Git would be restored from Git on the next sync:
+	// refuse, dry runs included, and change nothing.
+	if err := bindingrevision.RejectGitOpsManaged(binding, "resource release binding"); err != nil {
+		return nil, err
 	}
 
 	revs, err := s.bindingRevisions(ctx, binding)

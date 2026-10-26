@@ -46,6 +46,25 @@ var (
 	// ErrAutoDeployEnabled is returned when a rollback is refused because the
 	// component's auto-deploy would undo it (see AutoDeployBlocksRollback).
 	ErrAutoDeployEnabled = errors.New("rollback blocked: auto-deploy is enabled")
+	// ErrGitOpsManaged is returned when a rollback is refused because a GitOps
+	// tool applies the binding from Git (see RejectGitOpsManaged).
+	ErrGitOpsManaged = errors.New("rollback blocked: the binding is managed by GitOps")
+)
+
+// Tracking metadata GitOps tools put on every object they apply. Any one of
+// these keys on a binding means a tool re-applies its spec from Git.
+const (
+	// labelKeyFluxKustomizationName and labelKeyFluxKustomizationNamespace name
+	// the Flux Kustomization that applies the object.
+	labelKeyFluxKustomizationName      = "kustomize.toolkit.fluxcd.io/name"
+	labelKeyFluxKustomizationNamespace = "kustomize.toolkit.fluxcd.io/namespace"
+	// labelKeyFluxHelmReleaseName and labelKeyFluxHelmReleaseNamespace name the
+	// Flux HelmRelease that installs the object.
+	labelKeyFluxHelmReleaseName      = "helm.toolkit.fluxcd.io/name"
+	labelKeyFluxHelmReleaseNamespace = "helm.toolkit.fluxcd.io/namespace"
+	// annotationKeyArgoCDTrackingID is Argo CD's annotation resource tracking:
+	// "{application}:{group}/{kind}:{namespace}/{name}".
+	annotationKeyArgoCDTrackingID = "argocd.argoproj.io/tracking-id"
 )
 
 // ProtectedError explains why a revision may not be deleted.
@@ -420,6 +439,61 @@ func AutoDeployBlocksRollback(ctx context.Context, c client.Client, namespace, c
 		return false, nil //nolint:nilerr // an invalid pipeline means no auto-deploy, as in the controller
 	}
 	return environment == root, nil
+}
+
+// GitOpsManager returns the GitOps tool that applies obj from Git, as it is
+// shown to people (`Flux Kustomization "flux-system/apps"`), or "" when obj
+// carries no GitOps tracking metadata. Any one of a tool's keys is enough,
+// whatever its value: partial or malformed tracking metadata was still written
+// by a tool, so it is never taken to mean the binding is not managed from Git.
+func GitOpsManager(obj metav1.Object) string {
+	objLabels := obj.GetLabels()
+	if m := fluxManager(objLabels, "Kustomization", labelKeyFluxKustomizationName,
+		labelKeyFluxKustomizationNamespace); m != "" {
+		return m
+	}
+	if m := fluxManager(objLabels, "HelmRelease", labelKeyFluxHelmReleaseName,
+		labelKeyFluxHelmReleaseNamespace); m != "" {
+		return m
+	}
+	if id, ok := obj.GetAnnotations()[annotationKeyArgoCDTrackingID]; ok {
+		if app, _, found := strings.Cut(id, ":"); found && app != "" {
+			return fmt.Sprintf("Argo CD application %q", app)
+		}
+		return "Argo CD"
+	}
+	return ""
+}
+
+// fluxManager describes the Flux object named by the nameKey and nsKey labels,
+// "Flux" when only part of that name is recorded, or "" when neither label is set.
+func fluxManager(objLabels map[string]string, kind, nameKey, nsKey string) string {
+	name, hasName := objLabels[nameKey]
+	ns, hasNS := objLabels[nsKey]
+	switch {
+	case !hasName && !hasNS:
+		return ""
+	case name != "" && ns != "":
+		return fmt.Sprintf("Flux %s %q", kind, ns+"/"+name)
+	default:
+		return "Flux"
+	}
+}
+
+// RejectGitOpsManaged returns ErrGitOpsManaged when a GitOps tool applies the
+// binding from Git (GitOpsManager), and nil otherwise. A rollback writes the
+// binding directly, so the tool would restore the spec in Git on its next sync
+// and silently undo it: the rollback has to be made in Git instead. kind names
+// the binding kind for people, e.g. "release binding".
+func RejectGitOpsManaged(binding client.Object, kind string) error {
+	manager := GitOpsManager(binding)
+	if manager == "" {
+		return nil
+	}
+	return fmt.Errorf("%w: %s %q is applied from Git by %s. Rollback through OpenChoreo revision history is not "+
+		"supported for GitOps-managed bindings, because GitOps would restore the configuration in Git on its next "+
+		"sync. Revert the binding's configuration in Git and let GitOps reconcile the change",
+		ErrGitOpsManaged, kind, binding.GetName(), manager)
 }
 
 // ProjectCellDrift reports when the project's cell in the environment -- its
