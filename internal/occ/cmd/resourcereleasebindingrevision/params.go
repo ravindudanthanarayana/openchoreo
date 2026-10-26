@@ -37,3 +37,17 @@ type DeleteParams struct {
 }
 
 func (p DeleteParams) GetNamespace() string { return p.Namespace }
+
+// DiffParams defines parameters for comparing two resource release binding revisions
+type DiffParams struct {
+	Namespace string
+	Binding   string
+	// From and To name the revisions as REVISION_NAME arguments do: r3, 3, or a
+	// revision's object or display name.
+	From string
+	To   string
+	// Color is the --color mode: auto, always or never.
+	Color string
+}
+
+func (p DiffParams) GetNamespace() string { return p.Namespace }

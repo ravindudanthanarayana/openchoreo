@@ -205,8 +205,11 @@ export class RevisionsPO {
     return dialog.getByRole('alert').allTextContents();
   }
 
-  async confirmRollback(revision: number): Promise<void> {
+  async confirmRollback(revision: number, reason?: string): Promise<void> {
     const dialog = this.confirmDialog(revision);
+    if (reason) {
+      await dialog.getByRole('textbox', { name: 'Reason (optional)' }).fill(reason);
+    }
     await dialog.getByRole('button', { name: 'Roll back', exact: true }).click();
     await expect(dialog).toBeHidden({ timeout: 30_000 });
   }

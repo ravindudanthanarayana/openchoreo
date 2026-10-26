@@ -14,6 +14,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
 )
 
 const (
@@ -26,7 +28,23 @@ const (
 
 	// numberSeparator separates the binding name from the revision number.
 	numberSeparator = "-r"
+
+	// MaxChangeMessageLength is the longest change message a revision keeps, in
+	// characters; it matches the CRD's maxLength for spec.message.
+	MaxChangeMessageLength = 1024
 )
+
+// ChangeMessage returns the change message in a binding's annotations
+// (openchoreo.dev/change-message), without surrounding whitespace and cut to
+// MaxChangeMessageLength characters so it always fits a revision's spec.message.
+// It is empty when none was given.
+func ChangeMessage(annotations map[string]string) string {
+	msg := strings.TrimSpace(annotations[openchoreov1alpha1.AnnotationKeyChangeMessage])
+	if runes := []rune(msg); len(runes) > MaxChangeMessageLength {
+		msg = strings.TrimSpace(string(runes[:MaxChangeMessageLength]))
+	}
+	return msg
+}
 
 // CanonicalHash returns the hex-encoded SHA-256 of the canonical JSON form of v.
 //

@@ -192,6 +192,7 @@ func (s *resourceReleaseBindingService) RollbackResourceReleaseBinding(ctx conte
 
 	base := binding.DeepCopy()
 	binding.Spec = restored
+	bindingrevision.SetChangeMessage(binding, req.Message)
 
 	if err := s.k8sClient.Patch(ctx, binding,
 		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {

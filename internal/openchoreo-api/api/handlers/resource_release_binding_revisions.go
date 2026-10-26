@@ -93,7 +93,7 @@ func (h *Handler) RollbackResourceReleaseBinding(
 	if invalid != "" {
 		return gen.RollbackResourceReleaseBinding400JSONResponse{BadRequestJSONResponse: badRequest(invalid)}, nil
 	}
-	setDryRunAuditResource(ctx, request.NamespaceName, request.ResourceReleaseBindingName, req.DryRun)
+	setRollbackAuditResource(ctx, request.NamespaceName, request.ResourceReleaseBindingName, req)
 
 	result, err := h.services.ResourceReleaseBindingService.RollbackResourceReleaseBinding(ctx, request.NamespaceName,
 		request.ResourceReleaseBindingName, req)

@@ -239,6 +239,12 @@ spec:
                   bound by this revision.
                 minLength: 1
                 type: string
+              message:
+                description: |-
+                  Message is the optional reason given for the change this revision records,
+                  copied from the binding's openchoreo.dev/change-message annotation.
+                maxLength: 1024
+                type: string
               revision:
                 description: Revision is the sequence number of this revision within
                   its ReleaseBinding.

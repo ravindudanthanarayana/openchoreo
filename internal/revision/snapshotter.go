@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -68,13 +69,18 @@ const (
 	// protected revisions alone exceed the history limit.
 	EventReasonRevisionHistoryLimitExceeded = "RevisionHistoryLimitExceeded"
 
+	// EventReasonInvalidRevisionHistoryLimit is emitted on a binding whose
+	// openchoreo.dev/revision-history-limit annotation is not a non-negative
+	// integer; the controller's limit is used instead.
+	EventReasonInvalidRevisionHistoryLimit = "InvalidRevisionHistoryLimit"
+
 	// DefaultKnownGoodWindow is how long a revision must stay Healthy before it
 	// is marked known-good, when no window is configured.
 	DefaultKnownGoodWindow = 60 * time.Second
 
 	// DefaultHistoryLimit is the number of revisions kept per binding when no
-	// limit is configured.
-	DefaultHistoryLimit = 10
+	// limit is configured: 0 keeps every revision.
+	DefaultHistoryLimit = 0
 
 	// KeepRevisionValue is the value of openchoreo.dev/keep that exempts a
 	// revision from history-limit eviction.
@@ -121,7 +127,8 @@ type Options struct {
 	// observation.
 	KnownGoodWindow time.Duration
 	// HistoryLimit is the number of revisions kept per binding; older ones are
-	// deleted after each new revision. Zero or less keeps every revision.
+	// deleted after each new revision. Zero or less keeps every revision. A
+	// binding's openchoreo.dev/revision-history-limit annotation overrides it.
 	HistoryLimit int
 	// Recorder receives events about the binding. Optional.
 	Recorder record.EventRecorder
@@ -171,8 +178,9 @@ type Snapshotter[B client.Object, R client.Object] struct {
 // revision recorded -- a rollback, or any change back to an identical spec --
 // that revision becomes active again under its own name and number, and nothing
 // is created. A spec no revision records becomes a new revision numbered one
-// above the highest. Every other revision is marked inactive, and once the
-// current spec is recorded the binding's cause annotation is removed.
+// above the highest, carrying the binding's change message. Every other revision
+// is marked inactive, and once the current spec is recorded the binding's cause
+// and change-message annotations are removed.
 //
 // Which revision is active only changes for a binding read newer than the
 // generation the current revision was activated at (AnnotationKeyBindingGeneration):
@@ -202,9 +210,10 @@ func (s *Snapshotter[B, R]) Record(ctx context.Context, binding B) (Result, erro
 	// fresh reports whether this binding read may change the active revision.
 	fresh := !hasCurrent || binding.GetGeneration() > recordedGeneration(current)
 
-	// recorded reports whether a revision of the binding's current spec exists, which
-	// is when the cause annotation has served its purpose. A stale binding read
-	// whose spec is not recorded keeps it for the reconcile that records it.
+	// recorded reports whether a revision of the binding's current spec exists,
+	// which is when the cause and change-message annotations have served their
+	// purpose. A stale binding read whose spec is not recorded keeps them for the
+	// reconcile that records it.
 	recorded := false
 	if match, ok := s.matching(revs, hash); ok {
 		recorded = true
@@ -216,9 +225,14 @@ func (s *Snapshotter[B, R]) Record(ctx context.Context, binding B) (Result, erro
 			result.Name = match.GetName()
 			result.Reactivated = true
 			if s.Recorder != nil {
+				// No revision records this change, so its message goes on the event.
+				note := ""
+				if msg := ChangeMessage(binding.GetAnnotations()); msg != "" {
+					note = fmt.Sprintf(". Message: %q", msg)
+				}
 				s.Recorder.Eventf(binding, corev1.EventTypeNormal, EventReasonRevisionReactivated,
-					"Revision %d (%s) is active again: the binding spec matches the one it recorded",
-					result.Number, result.Name)
+					"Revision %d (%s) is active again: the binding spec matches the one it recorded%s",
+					result.Number, result.Name, note)
 			}
 		}
 	} else if fresh {
@@ -241,7 +255,7 @@ func (s *Snapshotter[B, R]) Record(ctx context.Context, binding B) (Result, erro
 
 	errs := []error{s.projectStatus(ctx, revs, result.Number)}
 	if recorded {
-		errs = append(errs, s.clearCauseAnnotations(ctx, binding))
+		errs = append(errs, s.clearChangeAnnotations(ctx, binding))
 	}
 	if result.Created {
 		errs = append(errs, s.evict(ctx, binding, revs, result.Number))
@@ -477,12 +491,25 @@ func (s *Snapshotter[B, R]) cause(binding B, current R, hasCurrent bool) opencho
 	return s.Adapter.Cause(binding, current, hasCurrent)
 }
 
-// clearCauseAnnotations removes the cause annotation from the binding, if it
-// has one. The patch is applied to a copy; only annotations and resourceVersion
-// are carried back to binding.
-func (s *Snapshotter[B, R]) clearCauseAnnotations(ctx context.Context, binding B) error {
+// changeAnnotations are set on a binding to describe one change and removed
+// once a revision records it.
+var changeAnnotations = []string{
+	openchoreov1alpha1.AnnotationKeyRevisionCause,
+	openchoreov1alpha1.AnnotationKeyChangeMessage,
+}
+
+// clearChangeAnnotations removes the cause and change-message annotations from
+// the binding, if it has any. The patch is applied to a copy; only annotations
+// and resourceVersion are carried back to binding.
+func (s *Snapshotter[B, R]) clearChangeAnnotations(ctx context.Context, binding B) error {
 	current := binding.GetAnnotations()
-	if _, ok := current[openchoreov1alpha1.AnnotationKeyRevisionCause]; !ok {
+	found := false
+	for _, k := range changeAnnotations {
+		if _, ok := current[k]; ok {
+			found = true
+		}
+	}
+	if !found {
 		return nil
 	}
 
@@ -492,14 +519,14 @@ func (s *Snapshotter[B, R]) clearCauseAnnotations(ctx context.Context, binding B
 	}
 	remaining := make(map[string]string, len(current))
 	for k, v := range current {
-		if k != openchoreov1alpha1.AnnotationKeyRevisionCause {
+		if !slices.Contains(changeAnnotations, k) {
 			remaining[k] = v
 		}
 	}
 	patched.SetAnnotations(remaining)
 
 	if err := s.Client.Patch(ctx, patched, client.MergeFrom(binding)); err != nil {
-		return fmt.Errorf("remove revision cause annotation: %w", err)
+		return fmt.Errorf("remove revision change annotations: %w", err)
 	}
 	binding.SetAnnotations(patched.GetAnnotations())
 	binding.SetResourceVersion(patched.GetResourceVersion())
@@ -557,13 +584,14 @@ func (s *Snapshotter[B, R]) updateStatus(ctx context.Context, rev R,
 	})
 }
 
-// evict deletes the binding's oldest revisions beyond HistoryLimit, keeping the
-// active revision, the revision active before it (the target of an undo), the
-// newest known-good revision and revisions annotated openchoreo.dev/keep:
-// "true" (see SelectEvictions). When those alone exceed
+// evict deletes the binding's oldest revisions beyond its history limit (see
+// historyLimit), keeping the active revision, the revision active before it (the
+// target of an undo), the newest known-good revision and revisions annotated
+// openchoreo.dev/keep: "true" (see SelectEvictions). When those alone exceed
 // the limit it keeps them and records a warning event on the binding.
 func (s *Snapshotter[B, R]) evict(ctx context.Context, binding B, revs []R, active int64) error {
-	if s.HistoryLimit <= 0 {
+	limit := s.historyLimit(binding)
+	if limit <= 0 {
 		return nil
 	}
 
@@ -589,7 +617,7 @@ func (s *Snapshotter[B, R]) evict(ctx context.Context, binding B, revs []R, acti
 		})
 	}
 
-	evict, overLimit := SelectEvictions(candidates, s.HistoryLimit)
+	evict, overLimit := SelectEvictions(candidates, limit)
 	var errs []error
 	for _, c := range evict {
 		err := s.Client.Delete(ctx, byName[c.Name])
@@ -601,9 +629,31 @@ func (s *Snapshotter[B, R]) evict(ctx context.Context, binding B, revs []R, acti
 		s.Recorder.Eventf(binding, corev1.EventTypeWarning, EventReasonRevisionHistoryLimitExceeded,
 			"%d revisions are kept, above the history limit of %d: the active revision, the revision active "+
 				"before it, the newest known-good revision and revisions annotated %s=%s are never deleted",
-			len(revs)-len(evict), s.HistoryLimit, openchoreov1alpha1.AnnotationKeyKeepRevision, KeepRevisionValue)
+			len(revs)-len(evict), limit, openchoreov1alpha1.AnnotationKeyKeepRevision, KeepRevisionValue)
 	}
 	return kerrors.NewAggregate(errs)
+}
+
+// historyLimit returns the number of revisions kept for binding: its
+// openchoreo.dev/revision-history-limit annotation when set, otherwise
+// HistoryLimit. An annotation that is not a non-negative integer is ignored with
+// a warning event, so a typo never deletes revisions the user meant to keep
+// beyond what the controller's own limit would.
+func (s *Snapshotter[B, R]) historyLimit(binding B) int {
+	value, ok := binding.GetAnnotations()[openchoreov1alpha1.AnnotationKeyRevisionHistoryLimit]
+	if !ok {
+		return s.HistoryLimit
+	}
+	limit, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || limit < 0 {
+		if s.Recorder != nil {
+			s.Recorder.Eventf(binding, corev1.EventTypeWarning, EventReasonInvalidRevisionHistoryLimit,
+				"Annotation %s=%q is not a non-negative integer; using the controller's limit of %d",
+				openchoreov1alpha1.AnnotationKeyRevisionHistoryLimit, value, s.HistoryLimit)
+		}
+		return s.HistoryLimit
+	}
+	return limit
 }
 
 // now returns the current time from Options.Now, or time.Now.

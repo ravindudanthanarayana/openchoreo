@@ -68,7 +68,7 @@ func TestList_Success(t *testing.T) {
 	})
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	require.Len(t, lines, 4)
-	assert.Equal(t, []string{"NAME", "CAUSE", "HEALTH", "ACTIVE", "KNOWN-GOOD", "AGE"}, strings.Fields(lines[0]))
+	assert.Equal(t, []string{"NAME", "CAUSE", "HEALTH", "ACTIVE", "KNOWN-GOOD", "AGE", "MESSAGE"}, strings.Fields(lines[0]))
 	assert.Equal(t, []string{"api-ccc-r3", "Override", "Progressing", "true", "false", "3h"}, strings.Fields(lines[1]))
 	assert.Equal(t, []string{"api-aaa-r1", "Deploy", "Healthy", "false", "true", "1h"}, strings.Fields(lines[3]))
 }
@@ -145,7 +145,7 @@ func TestList_AllBindings(t *testing.T) {
 	})
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	require.Len(t, lines, 4)
-	assert.Equal(t, []string{"PROJECT", "BINDING", "ENVIRONMENT", "NAME", "CAUSE", "HEALTH", "ACTIVE", "KNOWN-GOOD", "AGE"}, strings.Fields(lines[0]))
+	assert.Equal(t, []string{"PROJECT", "BINDING", "ENVIRONMENT", "NAME", "CAUSE", "HEALTH", "ACTIVE", "KNOWN-GOOD", "AGE", "MESSAGE"}, strings.Fields(lines[0]))
 	assert.Equal(t, []string{"shop", "api-dev", "dev", "api-bbb-r2"}, strings.Fields(lines[1])[:4])
 	assert.Equal(t, []string{"shop", "api-dev", "dev", "api-aaa-r1"}, strings.Fields(lines[2])[:4])
 	assert.Equal(t, []string{"shop", "web-prod", "production", "web-aaa-r1"}, strings.Fields(lines[3])[:4])

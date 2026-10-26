@@ -3181,6 +3181,9 @@ type ReleaseBindingRevisionSpec struct {
 	// ComponentReleaseName ComponentRelease bound by this revision
 	ComponentReleaseName string `json:"componentReleaseName"`
 
+	// Message Optional reason given for the change this revision records, copied from the binding's openchoreo.dev/change-message annotation
+	Message *string `json:"message,omitempty"`
+
 	// Revision Sequence number of this revision within its binding
 	Revision int64 `json:"revision"`
 
@@ -3716,6 +3719,9 @@ type ResourceReleaseBindingRevisionSpec struct {
 	// Cause Why a binding revision was created
 	Cause RevisionCause `json:"cause"`
 
+	// Message Optional reason given for the change this revision records, copied from the binding's openchoreo.dev/change-message annotation
+	Message *string `json:"message,omitempty"`
+
 	// ResourceReleaseName ResourceRelease pinned by this revision
 	ResourceReleaseName string `json:"resourceReleaseName"`
 
@@ -3920,6 +3926,9 @@ type RevisionCause string
 type RollbackRequest struct {
 	// DryRun Run every check and return the response without writing anything
 	DryRun *bool `json:"dryRun,omitempty"`
+
+	// Message Optional reason for the rollback. It is written to the binding's openchoreo.dev/change-message annotation with the restored spec, shown on the binding's RevisionReactivated event, and recorded in the audit log. A rollback creates no revision, so it is not stored on one.
+	Message *string `json:"message,omitempty"`
 
 	// Revision Number of the revision to roll back to. When omitted, the revision that was active immediately before the current one, by activation history rather than revision number (like kubectl rollout undo). If that revision was deleted, or the history cannot say which it was, the rollback is refused with 409 NO_PREVIOUS_REVISION and nothing is changed.
 	Revision *int64 `json:"revision,omitempty"`

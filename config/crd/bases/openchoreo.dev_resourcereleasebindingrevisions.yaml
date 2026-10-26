@@ -132,6 +132,12 @@ spec:
                 - Undeploy
                 - Redeploy
                 type: string
+              message:
+                description: |-
+                  Message is the optional reason given for the change this revision records,
+                  copied from the binding's openchoreo.dev/change-message annotation.
+                maxLength: 1024
+                type: string
               resourceReleaseName:
                 description: ResourceReleaseName is the name of the ResourceRelease
                   pinned by this revision.

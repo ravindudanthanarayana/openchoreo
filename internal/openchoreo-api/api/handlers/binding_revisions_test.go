@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -246,6 +247,33 @@ func TestToRollbackRequest(t *testing.T) {
 
 	_, invalid = toRollbackRequest(nil)
 	assert.Equal(t, "Request body is required", invalid)
+
+	req, invalid = toRollbackRequest(&gen.RollbackRequest{Message: ptr.To("  Payments failing  ")})
+	assert.Empty(t, invalid)
+	assert.Equal(t, "Payments failing", req.Message, "surrounding whitespace is dropped")
+
+	_, invalid = toRollbackRequest(&gen.RollbackRequest{Message: ptr.To(strings.Repeat("é", 1025))})
+	assert.Equal(t, "message must be at most 1024 characters", invalid, "counted in characters, not bytes")
+
+	_, invalid = toRollbackRequest(&gen.RollbackRequest{Message: ptr.To(strings.Repeat("é", 1024))})
+	assert.Empty(t, invalid)
+}
+
+func TestRollbackAuditRecordsTheMessage(t *testing.T) {
+	const ns, binding = "test-ns", "api-dev"
+	svc := releasebindingmocks.NewMockService(t)
+	svc.EXPECT().RollbackReleaseBinding(mock.Anything, ns, binding,
+		bindingrevision.RollbackRequest{Revision: 1, Message: "Payments failing"}).
+		Return(&bindingrevision.RollbackResult{RevisionName: binding + "-r1", Revision: 1}, nil)
+	h := &Handler{services: &handlerservices.Services{ReleaseBindingService: svc}, logger: slog.Default()}
+
+	ctx, data := audit.NewAuditContext(context.Background(),
+		&audit.Resource{Namespace: ns, Name: binding}, audit.RequestInfo{})
+	_, err := h.RollbackReleaseBinding(ctx, gen.RollbackReleaseBindingRequestObject{
+		NamespaceName: ns, ReleaseBindingName: binding,
+		Body: &gen.RollbackRequest{Revision: ptr.To(int64(1)), Message: ptr.To("Payments failing")}})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"dryRun": false, "message": "Payments failing"}, data.Resource.Metadata)
 }
 
 func TestRollbackWithoutRevision(t *testing.T) {

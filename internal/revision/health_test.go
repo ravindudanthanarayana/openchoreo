@@ -6,6 +6,7 @@ package revision
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -416,6 +417,110 @@ func TestRecord_ProtectedRevisionsAboveLimitEmitEvent(t *testing.T) {
 	assert.Len(t, listRBRs(t, c), 2, "r1 (known-good) and r2 (active) are both protected")
 	require.Len(t, recorder.Events, 1)
 	assert.Contains(t, <-recorder.Events, EventReasonRevisionHistoryLimitExceeded)
+}
+
+// recordRevisions records n new revisions of binding, each with a spec no
+// earlier revision recorded.
+func recordRevisions(t *testing.T, s *Snapshotter[*openchoreov1alpha1.ReleaseBinding, *openchoreov1alpha1.ReleaseBindingRevision],
+	binding *openchoreov1alpha1.ReleaseBinding, n int) {
+	t.Helper()
+	for range n {
+		replicas := fmt.Sprintf(`{"replicas":%d}`, binding.Generation+1)
+		bump(binding, func(spec *openchoreov1alpha1.ReleaseBindingSpec) {
+			spec.ComponentTypeEnvironmentConfigs = raw(replicas)
+		})
+		_, err := s.Record(context.Background(), binding)
+		require.NoError(t, err)
+	}
+}
+
+// revisionNumbers returns the numbers of the stored revisions, ascending.
+func revisionNumbers(t *testing.T, c client.Client) []int64 {
+	t.Helper()
+	stored := listRBRs(t, c)
+	numbers := make([]int64, 0, len(stored))
+	for _, rev := range stored {
+		numbers = append(numbers, rev.Spec.Revision)
+	}
+	slices.Sort(numbers)
+	return numbers
+}
+
+// numberRange returns from, from+1, ..., to.
+func numberRange(from, to int64) []int64 {
+	numbers := make([]int64, 0, to-from+1)
+	for n := from; n <= to; n++ {
+		numbers = append(numbers, n)
+	}
+	return numbers
+}
+
+func TestRecord_DefaultLimitKeepsEveryRevision(t *testing.T) {
+	binding := newBinding("frontend-development")
+	c := newTestClient(t, binding.DeepCopy())
+	s := NewReleaseBindingSnapshotter(c, newTestScheme(t), Options{HistoryLimit: DefaultHistoryLimit})
+
+	recordRevisions(t, s, binding, 25)
+
+	assert.Equal(t, numberRange(1, 25), revisionNumbers(t, c))
+}
+
+func TestRecord_AnnotationLimitDeletesOldestFirst(t *testing.T) {
+	binding := newBinding("frontend-development")
+	binding.Annotations = map[string]string{openchoreov1alpha1.AnnotationKeyRevisionHistoryLimit: "20"}
+	c := newTestClient(t, binding.DeepCopy())
+	s := NewReleaseBindingSnapshotter(c, newTestScheme(t), Options{HistoryLimit: DefaultHistoryLimit})
+
+	recordRevisions(t, s, binding, 20)
+	assert.Equal(t, numberRange(1, 20), revisionNumbers(t, c), "at the limit nothing is deleted")
+
+	recordRevisions(t, s, binding, 1)
+	assert.Equal(t, numberRange(2, 21), revisionNumbers(t, c), "r1 is deleted first")
+
+	recordRevisions(t, s, binding, 4)
+	assert.Equal(t, numberRange(6, 25), revisionNumbers(t, c), "then r2, r3, r4 and r5")
+}
+
+func TestRecord_AnnotationLimitOverridesControllerLimit(t *testing.T) {
+	tests := []struct {
+		name       string
+		annotation string
+		want       []int64
+	}{
+		{name: "zero keeps every revision", annotation: "0", want: numberRange(1, 8)},
+		{name: "a higher limit keeps more", annotation: "6", want: numberRange(3, 8)},
+		{name: "a lower limit keeps fewer", annotation: "2", want: numberRange(7, 8)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binding := newBinding("frontend-development")
+			binding.Annotations = map[string]string{openchoreov1alpha1.AnnotationKeyRevisionHistoryLimit: tt.annotation}
+			c := newTestClient(t, binding.DeepCopy())
+			s := NewReleaseBindingSnapshotter(c, newTestScheme(t), Options{HistoryLimit: 4})
+
+			recordRevisions(t, s, binding, 8)
+
+			assert.Equal(t, tt.want, revisionNumbers(t, c))
+		})
+	}
+}
+
+func TestRecord_InvalidAnnotationLimitUsesControllerLimit(t *testing.T) {
+	for _, value := range []string{"twenty", "-1", ""} {
+		t.Run(fmt.Sprintf("%q", value), func(t *testing.T) {
+			binding := newBinding("frontend-development")
+			binding.Annotations = map[string]string{openchoreov1alpha1.AnnotationKeyRevisionHistoryLimit: value}
+			c := newTestClient(t, binding.DeepCopy())
+			recorder := record.NewFakeRecorder(10)
+			s := NewReleaseBindingSnapshotter(c, newTestScheme(t), Options{HistoryLimit: 3, Recorder: recorder})
+
+			recordRevisions(t, s, binding, 5)
+
+			assert.Equal(t, numberRange(3, 5), revisionNumbers(t, c))
+			require.NotEmpty(t, recorder.Events)
+			assert.Contains(t, <-recorder.Events, EventReasonInvalidRevisionHistoryLimit)
+		})
+	}
 }
 
 func TestRecord_KeepAnnotationProtects(t *testing.T) {
