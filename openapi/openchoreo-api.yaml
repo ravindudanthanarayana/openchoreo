@@ -4358,6 +4358,13 @@ paths:
         status.currentRevision to it, and restarts its health at Progressing.
 
 
+        If a GitOps tool applies the binding from Git (it carries Flux's
+        kustomize.toolkit.fluxcd.io or helm.toolkit.fluxcd.io name or namespace label, or Argo CD's
+        argocd.argoproj.io/tracking-id annotation), the tool would restore the configuration in Git
+        on its next sync, so the rollback (dry runs included) is refused with 409 GITOPS_MANAGED and
+        nothing is changed. Revert the binding's configuration in Git instead.
+
+
         If the component has autoDeploy enabled and the binding is in the first environment of
         its deployment pipeline, auto-deploy would move the binding back to the component's
         latest release right after the rollback, so the rollback (dry runs included) is refused
@@ -5964,6 +5971,13 @@ paths:
         status.currentRevision to it, and restarts its health at Progressing.
 
 
+        If a GitOps tool applies the binding from Git (it carries Flux's
+        kustomize.toolkit.fluxcd.io or helm.toolkit.fluxcd.io name or namespace label, or Argo CD's
+        argocd.argoproj.io/tracking-id annotation), the tool would restore the configuration in Git
+        on its next sync, so the rollback (dry runs included) is refused with 409 GITOPS_MANAGED and
+        nothing is changed. Revert the binding's configuration in Git instead.
+
+
         Without a revision, the target is the revision that was active immediately before the
         current one. With dryRun, every check runs and the response is the same, but nothing is
         written. Requires the resourcereleasebinding:rollback permission on the binding's resource.
@@ -7183,7 +7197,8 @@ components:
     RollbackConflict:
       description: >-
         The rollback cannot be applied as requested: the release the revision binds has been
-        deleted, or the binding changed while the rollback was being applied
+        deleted, or the binding changed while the rollback was being applied, or the binding is
+        managed by GitOps
       content:
         application/json:
           schema:
@@ -7204,6 +7219,11 @@ components:
               value:
                 error: "Rollback blocked: auto-deploy is enabled for component \"api-service\", and \"development\" is the first environment of its deployment pipeline, so auto-deploy would move release binding \"api-service-development\" back to the latest release right after the rollback. Turn off auto-deploy for the component, then roll back again"
                 code: AUTO_DEPLOY_ENABLED
+            gitOpsManaged:
+              summary: A GitOps tool applies the binding from Git, so the rollback must be made in Git
+              value:
+                error: "Rollback blocked: the binding is managed by GitOps: release binding \"api-service-development\" is applied from Git by Flux Kustomization \"flux-system/apps\". Rollback through OpenChoreo revision history is not supported for GitOps-managed bindings, because GitOps would restore the configuration in Git on its next sync. Revert the binding's configuration in Git and let GitOps reconcile the change"
+                code: GITOPS_MANAGED
             noPreviousRevision:
               summary: No revision was named and the previously active one cannot be rolled back to
               value:
@@ -7312,6 +7332,7 @@ components:
             - REVISION_PROTECTED
             - NO_PREVIOUS_REVISION
             - AUTO_DEPLOY_ENABLED
+            - GITOPS_MANAGED
           example: NOT_FOUND
         details:
           type: array

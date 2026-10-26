@@ -91,6 +91,9 @@ func (s *releaseBindingService) GetReleaseBindingRevision(ctx context.Context, n
 // and points status.currentRevision at it. With DryRun it returns the same
 // result and writes nothing.
 //
+// A binding a GitOps tool applies from Git is refused with ErrGitOpsManaged,
+// dry runs included (see bindingrevision.RejectGitOpsManaged).
+//
 // A binding in the first environment of a component with autoDeploy enabled is
 // refused with ErrAutoDeployEnabled, dry runs included: auto-deploy would move
 // it straight back to the latest release.
@@ -110,6 +113,12 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 			return nil, ErrReleaseBindingNotFound
 		}
 		return nil, fmt.Errorf("failed to get release binding: %w", err)
+	}
+
+	// A binding applied from Git would be restored from Git on the next sync:
+	// refuse, dry runs included, and change nothing.
+	if err := bindingrevision.RejectGitOpsManaged(binding, "release binding"); err != nil {
+		return nil, err
 	}
 
 	// Auto-deploy keeps the first environment's binding on the component's

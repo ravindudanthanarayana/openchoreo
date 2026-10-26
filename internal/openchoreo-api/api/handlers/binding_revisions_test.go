@@ -46,6 +46,8 @@ func TestClassifyRollbackError(t *testing.T) {
 			wantOutcome: rollbackConflict, wantCode: gen.NOPREVIOUSREVISION},
 		{name: "auto-deploy would undo it", err: fmt.Errorf("%w: component x", bindingrevision.ErrAutoDeployEnabled),
 			wantOutcome: rollbackConflict, wantCode: gen.AUTODEPLOYENABLED},
+		{name: "managed by GitOps", err: fmt.Errorf("%w: release binding x", bindingrevision.ErrGitOpsManaged),
+			wantOutcome: rollbackConflict, wantCode: gen.GITOPSMANAGED},
 		{name: "validation", err: &services.ValidationError{Msg: "revision must be at least 1"}, wantOutcome: rollbackBadRequest},
 		{name: "anything else", err: errors.New("etcd is on fire"), wantOutcome: rollbackInternalError},
 	}
