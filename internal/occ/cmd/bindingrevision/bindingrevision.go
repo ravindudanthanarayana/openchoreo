@@ -17,11 +17,13 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 	"sigs.k8s.io/yaml"
 
+	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
 	"github.com/openchoreo/openchoreo/internal/occ/cmd/config"
 	"github.com/openchoreo/openchoreo/internal/occ/cmd/utils"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/api/gen"
@@ -204,6 +206,8 @@ type Row struct {
 	Active      bool
 	KnownGood   bool
 	CreatedAt   *time.Time
+	// Message is the revision's change message; tables show it shortened.
+	Message string
 }
 
 // StatusRow fills a Row's status columns from a revision's status.
@@ -221,14 +225,28 @@ func StatusRow(row Row, status *gen.BindingRevisionStatus) Row {
 
 // revisionColumns are the columns every revision table ends with; revisionCells
 // returns a row's values for them.
-const revisionColumns = "NAME\tCAUSE\tHEALTH\tACTIVE\tKNOWN-GOOD\tAGE"
+const revisionColumns = "NAME\tCAUSE\tHEALTH\tACTIVE\tKNOWN-GOOD\tAGE\tMESSAGE"
+
+// tableMessageLength is how many characters of a change message a table shows;
+// get -o yaml shows all of it.
+const tableMessageLength = 50
+
+// shortMessage returns msg on one line, cut to tableMessageLength characters.
+func shortMessage(msg string) string {
+	msg = strings.Join(strings.Fields(msg), " ")
+	if runes := []rune(msg); len(runes) > tableMessageLength {
+		return string(runes[:tableMessageLength-1]) + "…"
+	}
+	return msg
+}
 
 func revisionCells(r Row) string {
 	age := ""
 	if r.CreatedAt != nil {
 		age = utils.FormatAge(*r.CreatedAt)
 	}
-	return fmt.Sprintf("%s\t%s\t%s\t%t\t%t\t%s", r.Name, r.Cause, r.Health, r.Active, r.KnownGood, age)
+	return fmt.Sprintf("%s\t%s\t%s\t%t\t%t\t%s\t%s", r.Name, r.Cause, r.Health, r.Active, r.KnownGood, age,
+		shortMessage(r.Message))
 }
 
 // printNoRevisions writes the message an empty revision list shows.
@@ -316,6 +334,41 @@ func confirm(in io.Reader, out io.Writer, question string) (bool, error) {
 // revision asks the server for the revision that was active before the
 // current one.
 type RollbackFunc func(ctx context.Context, revision *int64, dryRun bool) (*gen.RollbackResponse, error)
+
+// CheckMessage refuses a change message longer than a revision keeps, so it is
+// never cut short without notice.
+func CheckMessage(msg string) error {
+	if n := utf8.RuneCountInString(msg); n > maxMessageLength {
+		return fmt.Errorf("--message must be at most %d characters (got %d)", maxMessageLength, n)
+	}
+	return nil
+}
+
+// maxMessageLength is the longest change message a revision keeps: the CRD's
+// maxLength for spec.message.
+const maxMessageLength = 1024
+
+// WithChangeMessage adds msg to a binding's metadata as its change message, so
+// the revision recording this change carries it. An empty msg adds nothing.
+func WithChangeMessage(meta *gen.ObjectMeta, msg string) {
+	if msg == "" {
+		return
+	}
+	if meta.Annotations == nil {
+		meta.Annotations = &map[string]string{}
+	}
+	(*meta.Annotations)[openchoreov1alpha1.AnnotationKeyChangeMessage] = msg
+}
+
+// RollbackRequest is the request body of one rollback call. The message is only
+// sent when the rollback is applied: a preview changes nothing to describe.
+func RollbackRequest(revision *int64, dryRun bool, message string) gen.RollbackRequest {
+	req := gen.RollbackRequest{Revision: revision, DryRun: &dryRun}
+	if !dryRun && message != "" {
+		req.Message = &message
+	}
+	return req
+}
 
 // RollbackOptions configures RunRollback.
 type RollbackOptions struct {
@@ -524,6 +577,9 @@ func RunDelete(ctx context.Context, opts DeleteOptions, del DeleteFunc) error {
 	fmt.Fprintf(opts.Out, "Health:      %s\n", t.Health)
 	fmt.Fprintf(opts.Out, "Known-good:  %t\n", t.KnownGood)
 	fmt.Fprintf(opts.Out, "Cause:       %s\n", t.Cause)
+	if t.Message != "" {
+		fmt.Fprintf(opts.Out, "Message:     %s\n", t.Message)
+	}
 
 	if _, err := del(ctx, true); err != nil {
 		return err

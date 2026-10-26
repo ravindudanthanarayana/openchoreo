@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
+	"github.com/openchoreo/openchoreo/internal/occ/cmd/bindingrevision"
 	"github.com/openchoreo/openchoreo/internal/occ/cmd/pagination"
 	"github.com/openchoreo/openchoreo/internal/occ/cmd/setoverride"
 	"github.com/openchoreo/openchoreo/internal/occ/cmd/utils"
@@ -273,6 +274,9 @@ func (cp *Component) Deploy(params DeployParams) error {
 	if err := cmdutil.RequireFields("deploy", "component", map[string]string{"namespace": params.Namespace, "project": params.Project}); err != nil {
 		return err
 	}
+	if err := bindingrevision.CheckMessage(params.Message); err != nil {
+		return err
+	}
 
 	ctx := context.Background()
 	params.ReleaseLine = releaseline.Normalize(params.ReleaseLine)
@@ -373,6 +377,7 @@ func (cp *Component) deployComponent(ctx context.Context, c client.Interface, pa
 			existing = merged
 		}
 
+		bindingrevision.WithChangeMessage(&existing.Metadata, params.Message)
 		return c.UpdateReleaseBinding(ctx, params.Namespace, bindingName, *existing)
 	}
 
@@ -385,6 +390,7 @@ func (cp *Component) deployComponent(ctx context.Context, c client.Interface, pa
 		rb = *merged
 	}
 
+	bindingrevision.WithChangeMessage(&rb.Metadata, params.Message)
 	return c.CreateReleaseBinding(ctx, params.Namespace, rb)
 }
 
@@ -448,6 +454,7 @@ func (cp *Component) promoteComponent(ctx context.Context, c client.Interface, p
 			existing = merged
 		}
 
+		bindingrevision.WithChangeMessage(&existing.Metadata, params.Message)
 		return c.UpdateReleaseBinding(ctx, params.Namespace, bindingName, *existing)
 	}
 
@@ -484,6 +491,7 @@ func (cp *Component) promoteComponent(ctx context.Context, c client.Interface, p
 		rb = *merged
 	}
 
+	bindingrevision.WithChangeMessage(&rb.Metadata, params.Message)
 	return c.CreateReleaseBinding(ctx, params.Namespace, rb)
 }
 

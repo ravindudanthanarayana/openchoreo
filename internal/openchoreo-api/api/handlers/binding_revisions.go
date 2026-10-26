@@ -70,6 +70,13 @@ func toRollbackRequest(body *gen.RollbackRequest) (bindingrevision.RollbackReque
 	if body.DryRun != nil {
 		req.DryRun = *body.DryRun
 	}
+	if body.Message != nil {
+		msg, err := bindingrevision.NormalizeMessage(*body.Message)
+		if err != nil {
+			return req, err.Error()
+		}
+		req.Message = msg
+	}
 	return req, ""
 }
 
@@ -101,6 +108,16 @@ func toRollbackResponse(result *bindingrevision.RollbackResult) gen.RollbackResp
 // dryRun. Every call is audited, dry runs included, so the record carries
 // dryRun to tell a preview, which changes nothing, from an applied change. It
 // is set before the service runs so that a failed or denied call is marked too.
+// setRollbackAuditResource is setDryRunAuditResource for a rollback, which also
+// records the rollback's message when one is given.
+func setRollbackAuditResource(ctx context.Context, namespace, binding string, req bindingrevision.RollbackRequest) {
+	metadata := map[string]any{"dryRun": req.DryRun}
+	if req.Message != "" {
+		metadata["message"] = req.Message
+	}
+	audit.SetResource(ctx, &audit.Resource{Namespace: namespace, Name: binding, Metadata: metadata})
+}
+
 func setDryRunAuditResource(ctx context.Context, namespace, name string, dryRun bool) {
 	audit.SetResource(ctx, &audit.Resource{
 		Namespace: namespace,

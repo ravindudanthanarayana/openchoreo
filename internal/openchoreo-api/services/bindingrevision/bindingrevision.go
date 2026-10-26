@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -178,6 +180,35 @@ type RollbackRequest struct {
 	Revision int64
 	// DryRun runs every check and computes the result without writing anything.
 	DryRun bool
+	// Message is an optional reason for the rollback. It is written to the
+	// binding's change-message annotation with the restored spec; the
+	// controller puts it on the RevisionReactivated event.
+	Message string
+}
+
+// NormalizeMessage returns a rollback message without surrounding whitespace,
+// or a ValidationError when it is longer than a change message may be.
+func NormalizeMessage(message string) (string, error) {
+	message = strings.TrimSpace(message)
+	if utf8.RuneCountInString(message) > revision.MaxChangeMessageLength {
+		return "", &services.ValidationError{
+			Msg: fmt.Sprintf("message must be at most %d characters", revision.MaxChangeMessageLength)}
+	}
+	return message, nil
+}
+
+// SetChangeMessage sets the binding's change-message annotation to message, in
+// the write that carries the change it describes. An empty message sets nothing.
+func SetChangeMessage(binding client.Object, message string) {
+	if message == "" {
+		return
+	}
+	annotations := binding.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations[openchoreov1alpha1.AnnotationKeyChangeMessage] = message
+	binding.SetAnnotations(annotations)
 }
 
 // RollbackResult describes a rollback, applied or dry-run.

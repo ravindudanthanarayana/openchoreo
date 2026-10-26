@@ -112,6 +112,7 @@ func (releaseBindingAdapter) Build(binding *openchoreov1alpha1.ReleaseBinding, n
 			Cause:                cause,
 			ComponentReleaseName: binding.Spec.ReleaseName,
 			SnapshotHash:         hash,
+			Message:              ChangeMessage(binding.Annotations),
 			BindingSpec:          *binding.Spec.DeepCopy(),
 		},
 	}
@@ -226,6 +227,7 @@ func (resourceReleaseBindingAdapter) Build(binding *openchoreov1alpha1.ResourceR
 			Cause:               cause,
 			ResourceReleaseName: binding.Spec.ResourceRelease,
 			SnapshotHash:        hash,
+			Message:             ChangeMessage(binding.Annotations),
 			BindingSpec:         *binding.Spec.DeepCopy(),
 		},
 	}

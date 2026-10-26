@@ -33,7 +33,7 @@ func TestPrintTable(t *testing.T) {
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	require.Len(t, lines, 3)
-	assert.Equal(t, []string{"NAME", "CAUSE", "HEALTH", "ACTIVE", "KNOWN-GOOD", "AGE"}, strings.Fields(lines[0]))
+	assert.Equal(t, []string{"NAME", "CAUSE", "HEALTH", "ACTIVE", "KNOWN-GOOD", "AGE", "MESSAGE"}, strings.Fields(lines[0]))
 	assert.Equal(t, []string{"api-ccc-r3", "Override", "Progressing", "true", "false", "2h"}, strings.Fields(lines[1]))
 	assert.Equal(t, []string{"api-bbb-r2", "Deploy", "Healthy", "false", "true", "2h"}, strings.Fields(lines[2]))
 }

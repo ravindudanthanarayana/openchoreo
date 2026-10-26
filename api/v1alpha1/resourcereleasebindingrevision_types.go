@@ -30,6 +30,12 @@ type ResourceReleaseBindingRevisionSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	SnapshotHash string `json:"snapshotHash"`
 
+	// Message is the optional reason given for the change this revision records,
+	// copied from the binding's openchoreo.dev/change-message annotation.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	Message string `json:"message,omitempty"`
+
 	// BindingSpec is a copy of the ResourceReleaseBinding spec at the time of this revision.
 	// +kubebuilder:validation:Required
 	BindingSpec ResourceReleaseBindingSpec `json:"bindingSpec"`

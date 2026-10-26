@@ -50,7 +50,7 @@ func (h *MCPHandler) GetReleaseBindingRevision(
 }
 
 func (h *MCPHandler) RollbackReleaseBinding(
-	ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool,
+	ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool, message string,
 ) (any, error) {
 	// Every call is audited, dry runs (the default) included: dryRun tells a
 	// preview, which changes nothing, from an applied rollback. Set before the
@@ -60,11 +60,15 @@ func (h *MCPHandler) RollbackReleaseBinding(
 	if revision < 1 {
 		return nil, &services.ValidationError{Msg: "revision must be at least 1"}
 	}
+	message, err := bindingrevision.NormalizeMessage(message)
+	if err != nil {
+		return nil, err
+	}
 	audit.SetResource(ctx, &audit.Resource{
-		Namespace: namespaceName, Name: bindingName, Metadata: map[string]any{"dryRun": dryRun},
+		Namespace: namespaceName, Name: bindingName, Metadata: rollbackAuditMetadata(dryRun, message),
 	})
 	result, err := h.services.ReleaseBindingService.RollbackReleaseBinding(ctx, namespaceName, bindingName,
-		bindingrevision.RollbackRequest{Revision: revision, DryRun: dryRun})
+		bindingrevision.RollbackRequest{Revision: revision, DryRun: dryRun, Message: message})
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +119,7 @@ func (h *MCPHandler) GetResourceReleaseBindingRevision(
 }
 
 func (h *MCPHandler) RollbackResourceReleaseBinding(
-	ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool,
+	ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool, message string,
 ) (any, error) {
 	// Every call is audited, dry runs (the default) included: dryRun tells a
 	// preview, which changes nothing, from an applied rollback. Set before the
@@ -125,11 +129,15 @@ func (h *MCPHandler) RollbackResourceReleaseBinding(
 	if revision < 1 {
 		return nil, &services.ValidationError{Msg: "revision must be at least 1"}
 	}
+	message, err := bindingrevision.NormalizeMessage(message)
+	if err != nil {
+		return nil, err
+	}
 	audit.SetResource(ctx, &audit.Resource{
-		Namespace: namespaceName, Name: bindingName, Metadata: map[string]any{"dryRun": dryRun},
+		Namespace: namespaceName, Name: bindingName, Metadata: rollbackAuditMetadata(dryRun, message),
 	})
 	result, err := h.services.ResourceReleaseBindingService.RollbackResourceReleaseBinding(ctx, namespaceName,
-		bindingName, bindingrevision.RollbackRequest{Revision: revision, DryRun: dryRun})
+		bindingName, bindingrevision.RollbackRequest{Revision: revision, DryRun: dryRun, Message: message})
 	if err != nil {
 		return nil, err
 	}
@@ -206,4 +214,14 @@ func rollbackResult(bindingName string, result *bindingrevision.RollbackResult) 
 			"and only then call again with dry_run=false."
 	}
 	return m
+}
+
+// rollbackAuditMetadata is the audit metadata of a rollback call: whether it was
+// a dry run, and its message when one is given.
+func rollbackAuditMetadata(dryRun bool, message string) map[string]any {
+	metadata := map[string]any{"dryRun": dryRun}
+	if message != "" {
+		metadata["message"] = message
+	}
+	return metadata
 }

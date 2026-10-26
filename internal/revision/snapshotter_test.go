@@ -734,8 +734,7 @@ func TestReleaseBindingSnapshotter_RollbackReactivatesTheTarget(t *testing.T) {
 	ctx := context.Background()
 	s, binding, c, recorder := reactivationFixture(t)
 
-	// The rollback restores r1's spec and pins the binding; the pin is not part
-	// of the recorded spec.
+	// The rollback restores r1's spec.
 	bump(binding, func(spec *openchoreov1alpha1.ReleaseBindingSpec) {
 		spec.ReleaseName = firstRelease
 	})

@@ -228,7 +228,7 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 		return result, nil
 	}
 
-	if err := s.patchBindingSpec(ctx, binding, restored, releaseBindingName); err != nil {
+	if err := s.patchBindingSpec(ctx, binding, restored, req.Message, releaseBindingName); err != nil {
 		return nil, err
 	}
 
@@ -240,9 +240,10 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 // patchBindingSpec writes spec to the binding, conditional on the
 // resourceVersion it was read at.
 func (s *releaseBindingService) patchBindingSpec(ctx context.Context, binding *openchoreov1alpha1.ReleaseBinding,
-	spec openchoreov1alpha1.ReleaseBindingSpec, releaseBindingName string) error {
+	spec openchoreov1alpha1.ReleaseBindingSpec, message, releaseBindingName string) error {
 	base := binding.DeepCopy()
 	binding.Spec = spec
+	bindingrevision.SetChangeMessage(binding, message)
 	err := s.k8sClient.Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 	switch {
 	case err == nil:

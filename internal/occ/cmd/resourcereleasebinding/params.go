@@ -29,6 +29,8 @@ type RollbackParams struct {
 	Revision                   int64
 	DryRun                     bool
 	Yes                        bool
+	// Message is an optional reason for the rollback.
+	Message string
 }
 
 func (p RollbackParams) GetNamespace() string { return p.Namespace }

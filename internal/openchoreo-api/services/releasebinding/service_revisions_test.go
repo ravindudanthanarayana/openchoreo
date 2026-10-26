@@ -177,6 +177,39 @@ func TestRollbackReleaseBinding_Applies(t *testing.T) {
 	assert.Equal(t, revsBefore, revisionVersions(t, c), "the service never writes a revision")
 }
 
+func TestRollbackReleaseBinding_Message(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("applied: written with the restored spec, for the controller's event", func(t *testing.T) {
+		c := newFixture(t).client()
+		_, err := NewService(c, testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, testRBName,
+			bindingrevision.RollbackRequest{Revision: 1, Message: "Payments failing since r3"})
+		require.NoError(t, err)
+		rb := getRB(t, c)
+		assert.Equal(t, specFor(releaseA, ""), rb.Spec)
+		assert.Equal(t, "Payments failing since r3", rb.Annotations[openchoreov1alpha1.AnnotationKeyChangeMessage])
+	})
+
+	t.Run("dry run writes nothing", func(t *testing.T) {
+		c := newFixture(t).client()
+		before := getRB(t, c)
+		_, err := NewService(c, testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, testRBName,
+			bindingrevision.RollbackRequest{Revision: 1, DryRun: true, Message: "Payments failing since r3"})
+		require.NoError(t, err)
+		after := getRB(t, c)
+		assert.Equal(t, before.ResourceVersion, after.ResourceVersion)
+		assert.NotContains(t, after.Annotations, openchoreov1alpha1.AnnotationKeyChangeMessage)
+	})
+
+	t.Run("no message: no annotation", func(t *testing.T) {
+		c := newFixture(t).client()
+		_, err := NewService(c, testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, testRBName,
+			bindingrevision.RollbackRequest{Revision: 1})
+		require.NoError(t, err)
+		assert.NotContains(t, getRB(t, c).Annotations, openchoreov1alpha1.AnnotationKeyChangeMessage)
+	})
+}
+
 func TestRollbackReleaseBinding_ActiveIsTheMostRecentlyActivated(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
