@@ -46,6 +46,8 @@ func classifyRollbackError(err, bindingNotFound error) (rollbackOutcome, gen.Err
 		return rollbackConflict, gen.ErrorResponse{Code: gen.NOPREVIOUSREVISION, Error: sentence(err.Error())}, ""
 	case errors.Is(err, bindingrevision.ErrAutoDeployEnabled):
 		return rollbackConflict, gen.ErrorResponse{Code: gen.AUTODEPLOYENABLED, Error: sentence(err.Error())}, ""
+	case errors.Is(err, bindingrevision.ErrGitOpsManaged):
+		return rollbackConflict, gen.ErrorResponse{Code: gen.GITOPSMANAGED, Error: sentence(err.Error())}, ""
 	}
 	if validationErr, ok := errors.AsType[*services.ValidationError](err); ok {
 		return rollbackBadRequest, gen.ErrorResponse{}, validationErr.Msg
