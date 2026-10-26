@@ -507,6 +507,9 @@ func (r *ReleaseBinding) Rollback(params RollbackParams) error {
 		map[string]string{"namespace": params.Namespace}); err != nil {
 		return err
 	}
+	if err := bindingrevision.CheckMessage(params.Message); err != nil {
+		return err
+	}
 	return bindingrevision.RunRollback(context.Background(), bindingrevision.RollbackOptions{
 		Kind:     "release binding",
 		Binding:  params.ReleaseBindingName,
@@ -517,6 +520,6 @@ func (r *ReleaseBinding) Rollback(params RollbackParams) error {
 		Confirm:  r.confirm,
 	}, func(ctx context.Context, revision *int64, dryRun bool) (*gen.RollbackResponse, error) {
 		return r.client.RollbackReleaseBinding(ctx, params.Namespace, params.ReleaseBindingName,
-			gen.RollbackRequest{Revision: revision, DryRun: &dryRun})
+			bindingrevision.RollbackRequest(revision, dryRun, params.Message))
 	})
 }

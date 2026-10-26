@@ -155,6 +155,9 @@ func (rrb *ResourceReleaseBinding) Rollback(params RollbackParams) error {
 		map[string]string{"namespace": params.Namespace}); err != nil {
 		return err
 	}
+	if err := bindingrevision.CheckMessage(params.Message); err != nil {
+		return err
+	}
 	return bindingrevision.RunRollback(context.Background(), bindingrevision.RollbackOptions{
 		Kind:     "resource release binding",
 		Binding:  params.ResourceReleaseBindingName,
@@ -165,6 +168,6 @@ func (rrb *ResourceReleaseBinding) Rollback(params RollbackParams) error {
 		Confirm:  rrb.confirm,
 	}, func(ctx context.Context, revision *int64, dryRun bool) (*gen.RollbackResponse, error) {
 		return rrb.client.RollbackResourceReleaseBinding(ctx, params.Namespace, params.ResourceReleaseBindingName,
-			gen.RollbackRequest{Revision: revision, DryRun: &dryRun})
+			bindingrevision.RollbackRequest(revision, dryRun, params.Message))
 	})
 }

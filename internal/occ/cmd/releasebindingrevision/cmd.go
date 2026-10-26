@@ -18,13 +18,56 @@ func NewReleaseBindingRevisionCmd(f client.NewClientFunc) *cobra.Command {
 		Use:     "releasebindingrevision",
 		Aliases: []string{"releasebindingrevisions", "rbr", "crbr"},
 		Short:   "Manage release binding revisions",
-		Long:    "Commands for listing, showing and deleting release binding revisions. To roll back, use occ releasebinding rollback.",
+		Long:    "Commands for listing, showing, comparing and deleting release binding revisions. To roll back, use occ releasebinding rollback.",
 	}
 	cmd.AddCommand(
 		newListCmd(f),
 		newGetCmd(f),
+		newDiffCmd(f),
 		newDeleteCmd(f),
 	)
+	return cmd
+}
+
+func newDiffCmd(f client.NewClientFunc) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "diff FROM_REVISION TO_REVISION",
+		Short: "Compare two release binding revisions",
+		Long: `Compare the binding specs two revisions of a release binding recorded, and
+show each field that was added (+), removed (-) or modified (~) going from
+FROM_REVISION to TO_REVISION. This includes the component release the revision
+deploys, environment configs, trait configs, workload overrides and state.
+
+Name each revision as get does: its name (for example
+product-catalog-development-r3), the display name shown by list, r3 or 3. A name
+that belongs to another binding is refused.`,
+		Args: bindingrevision.DiffArgs,
+		Example: `  # What changed from revision 2 to revision 3
+  occ releasebindingrevision diff r2 r3 --namespace acme-corp --binding product-catalog-development
+
+  # What a rollback from revision 5 to revision 3 would change
+  occ releasebindingrevision diff r5 r3 --namespace acme-corp --binding product-catalog-development
+
+  # Keep colors when piping to a pager
+  occ releasebindingrevision diff r2 r3 --namespace acme-corp --binding product-catalog-development --color always | less -R`,
+		PreRunE: auth.RequireLogin(),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cl, err := f()
+			if err != nil {
+				return err
+			}
+			return New(cl).Diff(DiffParams{
+				Namespace: flags.GetNamespace(cmd),
+				Binding:   bindingrevision.GetBinding(cmd),
+				From:      args[0],
+				To:        args[1],
+				Color:     bindingrevision.GetColor(cmd),
+			})
+		},
+	}
+	flags.AddNamespace(cmd)
+	bindingrevision.AddBinding(cmd, "release binding")
+	bindingrevision.AddColor(cmd)
 	return cmd
 }
 

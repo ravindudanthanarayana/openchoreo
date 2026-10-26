@@ -1153,9 +1153,9 @@ func (m *MockCoreToolsetHandler) GetReleaseBindingRevision(
 }
 
 func (m *MockCoreToolsetHandler) RollbackReleaseBinding(
-	ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool,
+	ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool, message string,
 ) (any, error) {
-	m.recordCall("RollbackReleaseBinding", namespaceName, bindingName, revision, dryRun)
+	m.recordCall("RollbackReleaseBinding", namespaceName, bindingName, revision, dryRun, message)
 	return `{"revisionName":"release-binding-1-r4"}`, nil
 }
 
@@ -1176,9 +1176,9 @@ func (m *MockCoreToolsetHandler) GetResourceReleaseBindingRevision(
 }
 
 func (m *MockCoreToolsetHandler) RollbackResourceReleaseBinding(
-	ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool,
+	ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool, message string,
 ) (any, error) {
-	m.recordCall("RollbackResourceReleaseBinding", namespaceName, bindingName, revision, dryRun)
+	m.recordCall("RollbackResourceReleaseBinding", namespaceName, bindingName, revision, dryRun, message)
 	return `{"revisionName":"resource-release-binding-1-r3"}`, nil
 }
 

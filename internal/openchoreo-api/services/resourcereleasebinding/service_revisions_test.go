@@ -100,7 +100,7 @@ func getRRB(t *testing.T, c client.Client) *openchoreov1alpha1.ResourceReleaseBi
 func TestRollbackResourceReleaseBinding(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("applies the target spec, pinned, and points at the target", func(t *testing.T) {
+	t.Run("applies the target spec and points at the target", func(t *testing.T) {
 		c := testutil.NewFakeClient(rrbObjects(t, true)...)
 		result, err := NewService(c, testutil.TestLogger()).RollbackResourceReleaseBinding(ctx, testNamespace,
 			testBindingName, bindingrevision.RollbackRequest{Revision: 1})
@@ -112,6 +112,16 @@ func TestRollbackResourceReleaseBinding(t *testing.T) {
 		b := getRRB(t, c)
 		assert.Equal(t, rrReleaseA, b.Spec.ResourceRelease)
 		assert.NotContains(t, b.Annotations, openchoreov1alpha1.AnnotationKeyRevisionCause)
+	})
+
+	t.Run("a message is written with the restored spec", func(t *testing.T) {
+		c := testutil.NewFakeClient(rrbObjects(t, true)...)
+		_, err := NewService(c, testutil.TestLogger()).RollbackResourceReleaseBinding(ctx, testNamespace,
+			testBindingName, bindingrevision.RollbackRequest{Revision: 1, Message: "Back to the smaller instance"})
+		require.NoError(t, err)
+		b := getRRB(t, c)
+		assert.Equal(t, rrReleaseA, b.Spec.ResourceRelease)
+		assert.Equal(t, "Back to the smaller instance", b.Annotations[openchoreov1alpha1.AnnotationKeyChangeMessage])
 	})
 
 	t.Run("dry run returns the diff and writes nothing", func(t *testing.T) {

@@ -185,7 +185,11 @@ func newDeployCmd(f client.NewClientFunc) *cobra.Command {
   occ component deploy api-service --namespace acme-corp --project online-store
 
   # Promote to a specific environment
-  occ component deploy api-service --namespace acme-corp --project online-store --to staging`,
+  occ component deploy api-service --namespace acme-corp --project online-store --to staging
+
+  # Record why, on the revision this creates
+  occ component deploy api-service --namespace acme-corp --project online-store --to staging \
+    --message "Fix checkout timeout"`,
 		Args:    cmdutil.ExactOneArgWithUsage(),
 		PreRunE: auth.RequireLogin(),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -200,6 +204,7 @@ func newDeployCmd(f client.NewClientFunc) *cobra.Command {
 				Release:       flags.GetRelease(cmd),
 				To:            flags.GetTo(cmd),
 				Set:           flags.GetSet(cmd),
+				Message:       flags.GetMessage(cmd),
 			})
 		},
 	}
@@ -208,6 +213,7 @@ func newDeployCmd(f client.NewClientFunc) *cobra.Command {
 	flags.AddRelease(cmd)
 	flags.AddTo(cmd)
 	flags.AddSet(cmd)
+	flags.AddMessage(cmd, "Optional reason for the deployment, recorded on the binding's new revision")
 	return cmd
 }
 

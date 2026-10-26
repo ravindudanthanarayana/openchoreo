@@ -123,10 +123,12 @@ func newPromoteCmd(f client.NewClientFunc) *cobra.Command {
 				Namespace:    flags.GetNamespace(cmd),
 				ResourceName: args[0],
 				Environment:  flags.GetEnvironment(cmd),
+				Message:      flags.GetMessage(cmd),
 			})
 		},
 	}
 	flags.AddNamespace(cmd)
 	flags.AddEnvironment(cmd)
+	flags.AddMessage(cmd, "Optional reason for the promotion, recorded on the binding's new revision")
 	return cmd
 }

@@ -527,7 +527,7 @@ type DeploymentToolsetHandler interface {
 	) (any, error)
 	GetReleaseBindingRevision(ctx context.Context, namespaceName, revisionName string) (any, error)
 	RollbackReleaseBinding(
-		ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool,
+		ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool, message string,
 	) (any, error)
 
 	// Resource release binding revision history and rollback
@@ -536,7 +536,7 @@ type DeploymentToolsetHandler interface {
 	) (any, error)
 	GetResourceReleaseBindingRevision(ctx context.Context, namespaceName, revisionName string) (any, error)
 	RollbackResourceReleaseBinding(
-		ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool,
+		ctx context.Context, namespaceName, bindingName string, revision int64, dryRun bool, message string,
 	) (any, error)
 }
 

@@ -147,6 +147,7 @@ controller makes the target revision active again, under its own name and number
 				Revision:                   revision,
 				DryRun:                     bindingrevision.GetDryRun(cmd),
 				Yes:                        bindingrevision.GetYes(cmd),
+				Message:                    flags.GetMessage(cmd),
 			})
 		},
 	}
@@ -154,5 +155,6 @@ controller makes the target revision active again, under its own name and number
 	bindingrevision.AddRollbackRevision(cmd)
 	bindingrevision.AddDryRun(cmd, "Show the changes and warnings the rollback would produce without applying it")
 	bindingrevision.AddYes(cmd, "Roll back without asking for confirmation")
+	flags.AddMessage(cmd, "Optional reason for the rollback, shown on the binding's events and in the audit log")
 	return cmd
 }

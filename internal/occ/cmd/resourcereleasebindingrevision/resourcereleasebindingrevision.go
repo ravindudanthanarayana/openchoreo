@@ -9,6 +9,8 @@ import (
 	"os"
 	"sort"
 
+	"k8s.io/utils/ptr"
+
 	"github.com/openchoreo/openchoreo/internal/occ/cmd/bindingrevision"
 	"github.com/openchoreo/openchoreo/internal/occ/cmd/pagination"
 	"github.com/openchoreo/openchoreo/internal/occ/cmdutil"
@@ -174,6 +176,53 @@ func (r *ResourceReleaseBindingRevision) Delete(params DeleteParams) error {
 	})
 }
 
+// Diff compares the binding specs two revisions of a resource release binding
+// recorded, From against To.
+func (r *ResourceReleaseBindingRevision) Diff(params DiffParams) error {
+	if err := cmdutil.RequireFields("diff", "resourcereleasebindingrevision",
+		map[string]string{"namespace": params.Namespace, "binding": params.Binding}); err != nil {
+		return err
+	}
+	color, err := bindingrevision.UseColor(params.Color, os.Stdout)
+	if err != nil {
+		return err
+	}
+
+	revs, err := r.revisions(context.Background(), params.Namespace, params.Binding)
+	if err != nil {
+		return err
+	}
+	named := make([]bindingrevision.Named, len(revs))
+	for i := range revs {
+		named[i] = bindingrevision.Named{
+			Number:      revs[i].Spec.Revision,
+			ObjectName:  revs[i].Metadata.Name,
+			DisplayName: bindingrevision.DisplayName(revs[i].Spec.ResourceReleaseName, revs[i].Spec.Revision),
+		}
+	}
+	from, err := bindingrevision.FindRevision("resource release binding", params.Binding, params.From, named)
+	if err != nil {
+		return err
+	}
+	to, err := bindingrevision.FindRevision("resource release binding", params.Binding, params.To, named)
+	if err != nil {
+		return err
+	}
+
+	return bindingrevision.RunDiff(bindingrevision.DiffOptions{
+		Kind:    "resource release binding",
+		Binding: params.Binding,
+		From:    diffSide(&revs[from]),
+		To:      diffSide(&revs[to]),
+		Out:     os.Stdout,
+		Color:   color,
+	})
+}
+
+func diffSide(rev *gen.ResourceReleaseBindingRevision) bindingrevision.DiffSide {
+	return bindingrevision.DiffSide{Row: toRow(rev), Number: rev.Spec.Revision, Spec: rev.Spec.BindingSpec}
+}
+
 // revisions returns a binding's revisions, newest first. A binding is the one
 // binding of its resource in its environment, so its history is that
 // resource's revisions in that environment.
@@ -212,5 +261,6 @@ func toRow(rev *gen.ResourceReleaseBindingRevision) bindingrevision.Row {
 		Name:      bindingrevision.DisplayName(rev.Spec.ResourceReleaseName, rev.Spec.Revision),
 		Cause:     string(rev.Spec.Cause),
 		CreatedAt: rev.Metadata.CreationTimestamp,
+		Message:   ptr.Deref(rev.Spec.Message, ""),
 	}, rev.Status)
 }

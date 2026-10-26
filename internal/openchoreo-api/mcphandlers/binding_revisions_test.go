@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,7 +146,7 @@ func TestRollbackReleaseBinding(t *testing.T) {
 			bindingrevision.RollbackRequest{Revision: 1, DryRun: true}).Return(sampleRollbackResult(true), nil)
 
 		h := newTestHandler(withReleaseBindingService(svc))
-		result, err := h.RollbackReleaseBinding(ctx, testNS, testReleaseBindingName, 1, true)
+		result, err := h.RollbackReleaseBinding(ctx, testNS, testReleaseBindingName, 1, true, "")
 		require.NoError(t, err)
 
 		m, ok := result.(map[string]any)
@@ -166,12 +167,34 @@ func TestRollbackReleaseBinding(t *testing.T) {
 			bindingrevision.RollbackRequest{Revision: 1, DryRun: false}).Return(sampleRollbackResult(false), nil)
 
 		h := newTestHandler(withReleaseBindingService(svc))
-		result, err := h.RollbackReleaseBinding(ctx, testNS, testReleaseBindingName, 1, false)
+		result, err := h.RollbackReleaseBinding(ctx, testNS, testReleaseBindingName, 1, false, "")
 		require.NoError(t, err)
 
 		m := result.(map[string]any)
 		assert.Equal(t, true, m["applied"])
 		assert.NotContains(t, m, "nextStep")
+	})
+
+	t.Run("a message is trimmed, passed on and audited", func(t *testing.T) {
+		svc := releasebindingmocks.NewMockService(t)
+		svc.EXPECT().RollbackReleaseBinding(mock.Anything, testNS, testReleaseBindingName,
+			bindingrevision.RollbackRequest{Revision: 1, Message: "Payments failing since r4"}).
+			Return(sampleRollbackResult(false), nil)
+
+		h := newTestHandler(withReleaseBindingService(svc))
+		actx, data := audit.NewAuditContext(ctx,
+			&audit.Resource{Namespace: testNS, Name: testReleaseBindingName}, audit.RequestInfo{})
+		_, err := h.RollbackReleaseBinding(actx, testNS, testReleaseBindingName, 1, false, "  Payments failing since r4 ")
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{"dryRun": false, "message": "Payments failing since r4"}, data.Resource.Metadata)
+	})
+
+	t.Run("a message over the limit is refused before the service is called", func(t *testing.T) {
+		h := newTestHandler(withReleaseBindingService(releasebindingmocks.NewMockService(t)))
+		_, err := h.RollbackReleaseBinding(ctx, testNS, testReleaseBindingName, 1, true, strings.Repeat("x", 1025))
+		var vErr *services.ValidationError
+		require.ErrorAs(t, err, &vErr)
+		assert.Equal(t, "message must be at most 1024 characters", vErr.Msg)
 	})
 
 	t.Run("conflict propagates", func(t *testing.T) {
@@ -180,7 +203,7 @@ func TestRollbackReleaseBinding(t *testing.T) {
 			Return(nil, bindingrevision.ErrReleaseDeleted)
 
 		h := newTestHandler(withReleaseBindingService(svc))
-		_, err := h.RollbackReleaseBinding(ctx, testNS, testReleaseBindingName, 1, true)
+		_, err := h.RollbackReleaseBinding(ctx, testNS, testReleaseBindingName, 1, true, "")
 		assert.ErrorIs(t, err, bindingrevision.ErrReleaseDeleted)
 	})
 }
@@ -242,7 +265,7 @@ func TestResourceReleaseBindingRevisionTools(t *testing.T) {
 			bindingrevision.RollbackRequest{Revision: 1, DryRun: true}).Return(sampleRollbackResult(true), nil)
 
 		h := newTestHandler(withResourceReleaseBindingService(svc))
-		result, err := h.RollbackResourceReleaseBinding(ctx, testNS, testResourceReleaseBindingName, 1, true)
+		result, err := h.RollbackResourceReleaseBinding(ctx, testNS, testResourceReleaseBindingName, 1, true, "")
 		require.NoError(t, err)
 		m := result.(map[string]any)
 		assert.Equal(t, testResourceReleaseBindingName, m["binding"])
@@ -272,7 +295,7 @@ func TestRollbackAuditRecordsDryRun(t *testing.T) {
 
 				ctx, data := audit.NewAuditContext(context.Background(),
 					&audit.Resource{Namespace: testNS, Name: testReleaseBindingName}, audit.RequestInfo{})
-				_, _ = h.RollbackReleaseBinding(ctx, testNS, testReleaseBindingName, 1, dryRun)
+				_, _ = h.RollbackReleaseBinding(ctx, testNS, testReleaseBindingName, 1, dryRun, "")
 
 				require.NotNil(t, data.Resource)
 				assert.Equal(t, testNS, data.Resource.Namespace)
@@ -288,7 +311,7 @@ func TestRollbackAuditRecordsDryRun(t *testing.T) {
 
 				ctx, data := audit.NewAuditContext(context.Background(),
 					&audit.Resource{Namespace: testNS, Name: "db-dev"}, audit.RequestInfo{})
-				_, _ = h.RollbackResourceReleaseBinding(ctx, testNS, "db-dev", 1, dryRun)
+				_, _ = h.RollbackResourceReleaseBinding(ctx, testNS, "db-dev", 1, dryRun, "")
 
 				require.NotNil(t, data.Resource)
 				assert.Equal(t, "db-dev", data.Resource.Name)

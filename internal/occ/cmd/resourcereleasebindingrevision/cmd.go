@@ -18,13 +18,56 @@ func NewResourceReleaseBindingRevisionCmd(f client.NewClientFunc) *cobra.Command
 		Use:     "resourcereleasebindingrevision",
 		Aliases: []string{"resourcereleasebindingrevisions", "rrbr"},
 		Short:   "Manage resource release binding revisions",
-		Long:    "Commands for listing, showing and deleting resource release binding revisions. To roll back, use occ resourcereleasebinding rollback.",
+		Long:    "Commands for listing, showing, comparing and deleting resource release binding revisions. To roll back, use occ resourcereleasebinding rollback.",
 	}
 	cmd.AddCommand(
 		newListCmd(f),
 		newGetCmd(f),
+		newDiffCmd(f),
 		newDeleteCmd(f),
 	)
+	return cmd
+}
+
+func newDiffCmd(f client.NewClientFunc) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "diff FROM_REVISION TO_REVISION",
+		Short: "Compare two resource release binding revisions",
+		Long: `Compare the binding specs two revisions of a resource release binding
+recorded, and show each field that was added (+), removed (-) or modified (~)
+going from FROM_REVISION to TO_REVISION. This includes the pinned resource
+release, resource type environment configs and the retain policy.
+
+Name each revision as get does: its name (for example orders-db-development-r3),
+the display name shown by list, r3 or 3. A name that belongs to another binding
+is refused.`,
+		Args: bindingrevision.DiffArgs,
+		Example: `  # What changed from revision 2 to revision 3
+  occ resourcereleasebindingrevision diff r2 r3 --namespace acme-corp --binding orders-db-development
+
+  # What a rollback from revision 5 to revision 3 would change
+  occ resourcereleasebindingrevision diff r5 r3 --namespace acme-corp --binding orders-db-development
+
+  # Keep colors when piping to a pager
+  occ resourcereleasebindingrevision diff r2 r3 --namespace acme-corp --binding orders-db-development --color always | less -R`,
+		PreRunE: auth.RequireLogin(),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cl, err := f()
+			if err != nil {
+				return err
+			}
+			return New(cl).Diff(DiffParams{
+				Namespace: flags.GetNamespace(cmd),
+				Binding:   bindingrevision.GetBinding(cmd),
+				From:      args[0],
+				To:        args[1],
+				Color:     bindingrevision.GetColor(cmd),
+			})
+		},
+	}
+	flags.AddNamespace(cmd)
+	bindingrevision.AddBinding(cmd, "resource release binding")
+	bindingrevision.AddColor(cmd)
 	return cmd
 }
 

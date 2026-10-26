@@ -97,7 +97,7 @@ func (t *Toolsets) RegisterRollbackReleaseBinding(s *mcp.Server, perms map[strin
 			"Use list_release_bindings to discover names."), []string{"namespace_name", "name", "revision"}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args rollbackArgs) (*mcp.CallToolResult, any, error) {
 		result, err := t.DeploymentToolset.RollbackReleaseBinding(ctx, args.NamespaceName, args.Name,
-			args.Revision, args.dryRun())
+			args.Revision, args.dryRun(), args.Message)
 		return handleToolResult(result, err)
 	})
 }
@@ -162,7 +162,7 @@ func (t *Toolsets) RegisterRollbackResourceReleaseBinding(s *mcp.Server, perms m
 			"Use list_resource_release_bindings to discover names."), []string{"namespace_name", "name", "revision"}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args rollbackArgs) (*mcp.CallToolResult, any, error) {
 		result, err := t.DeploymentToolset.RollbackResourceReleaseBinding(ctx, args.NamespaceName, args.Name,
-			args.Revision, args.dryRun())
+			args.Revision, args.dryRun(), args.Message)
 		return handleToolResult(result, err)
 	})
 }
@@ -173,6 +173,7 @@ type rollbackArgs struct {
 	Name          string `json:"name"`
 	Revision      int64  `json:"revision"`
 	DryRun        *bool  `json:"dry_run,omitempty"`
+	Message       string `json:"message,omitempty"`
 }
 
 // dryRun defaults to true: a rollback is only applied when dry_run is explicitly false.
@@ -194,6 +195,12 @@ func rollbackProperties(bindingDescription string) map[string]any {
 			"default": true,
 			"description": "Defaults to true: preview the rollback (changes and warnings) without applying it. " +
 				"Set false only after showing the dry-run result to the user and receiving their confirmation.",
+		},
+		"message": map[string]any{
+			"type":      "string",
+			"maxLength": 1024,
+			"description": "Optional reason for the rollback, in the user's words, e.g. \"payments failing since r4\". " +
+				"It goes on the binding's RevisionReactivated event and the audit log. Leave it out unless the user gave one.",
 		},
 	}
 }

@@ -61,7 +61,7 @@ func deploymentBindingRevisionSpecs() []toolTestSpec {
 			descriptionKeywords: []string{"dry_run=true", "knownGood", "warnings", "confirm", "dry_run=false"},
 			descriptionMinLen:   200,
 			requiredParams:      []string{"namespace_name", "name", "revision"},
-			optionalParams:      []string{"dry_run"},
+			optionalParams:      []string{"dry_run", "message"},
 			testArgs: map[string]any{
 				"namespace_name": testNamespaceName,
 				"name":           testReleaseBindingName,
@@ -119,7 +119,7 @@ func deploymentBindingRevisionSpecs() []toolTestSpec {
 			descriptionKeywords: []string{"dry_run=true", "knownGood", "warnings", "confirm", "dry_run=false"},
 			descriptionMinLen:   200,
 			requiredParams:      []string{"namespace_name", "name", "revision"},
-			optionalParams:      []string{"dry_run"},
+			optionalParams:      []string{"dry_run", "message"},
 			testArgs: map[string]any{
 				"namespace_name": testNamespaceName,
 				"name":           testResourceReleaseBindingName,

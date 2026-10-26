@@ -274,12 +274,22 @@ test.describe('release binding revisions through the Deploy tab', () => {
     expect(warnings.join('\n')).not.toContain('auto deploy');
     expect(revisionSummary()).toHaveLength(2);
 
-    await revs.confirmRollback(1);
+    await revs.confirmRollback(1, 'UI test: back to r1');
     await expect(
       page.getByText(
         new RegExp(`^Rolled back .* to revision 1: ${r1.name} is active again\\.$`),
       ),
     ).toBeVisible();
+    // The reason reaches the binding's RevisionReactivated event.
+    await expect
+      .poll(
+        () =>
+          kubectl(['get', 'events', '-n', NS, '--field-selector',
+            `involvedObject.name=${BINDING_NAME},reason=RevisionReactivated`,
+            '-o', 'jsonpath={.items[*].message}']).stdout,
+        { timeout: 60_000 },
+      )
+      .toContain('Message: "UI test: back to r1"');
 
     // ── No revision is created: r1 is active again and settles Healthy ──
     // No reload: the panel polls until the controller switches to r1, then

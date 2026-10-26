@@ -75,9 +75,26 @@ const (
 	// binding's first revision. The binding controller removes it once the revision is written.
 	AnnotationKeyRevisionCause = "openchoreo.dev/revision-cause"
 
+	// AnnotationKeyChangeMessage is set on a ReleaseBinding or ResourceReleaseBinding,
+	// in the same write as a spec change, to say why the change was made. It is
+	// optional free text. The binding controller copies it into the revision that
+	// records the change (spec.message) and removes it once the revision is
+	// written. A change that makes an earlier revision active again, such as a
+	// rollback, creates no revision; its message is put on the binding's
+	// RevisionReactivated event instead.
+	AnnotationKeyChangeMessage = "openchoreo.dev/change-message"
+
 	// AnnotationKeyKeepRevision exempts a ReleaseBindingRevision or
 	// ResourceReleaseBindingRevision from history-limit eviction when set to "true".
 	AnnotationKeyKeepRevision = "openchoreo.dev/keep"
+
+	// AnnotationKeyRevisionHistoryLimit is set on a ReleaseBinding or
+	// ResourceReleaseBinding to the number of revisions kept for it, overriding
+	// the controller's --revision-history-limit. "0" keeps every revision. Once a
+	// new revision takes the binding over the limit, its oldest revisions are
+	// deleted first. It is an annotation rather than a spec field so that changing
+	// it records no revision and a rollback does not restore an earlier limit.
+	AnnotationKeyRevisionHistoryLimit = "openchoreo.dev/revision-history-limit"
 )
 
 // RevisionCause records why a binding revision was created.
