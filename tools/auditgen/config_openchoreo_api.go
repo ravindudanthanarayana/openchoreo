@@ -75,6 +75,7 @@ var apiResourceCategories = map[string]string{
 
 	"clustercomponenttypes":                   "CategoryManagement",
 	"clusterdataplanes":                       "CategoryManagement",
+	"clusterendpointtypes":                    "CategoryManagement",
 	"clusterobservabilityplanes":              "CategoryManagement",
 	"clusterprojecttypes":                     "CategoryManagement",
 	"clusterresourcetypes":                    "CategoryManagement",
@@ -86,6 +87,10 @@ var apiResourceCategories = map[string]string{
 	"componenttypes":                          "CategoryManagement",
 	"dataplanes":                              "CategoryManagement",
 	"deploymentpipelines":                     "CategoryManagement",
+	"endpoints":                               "CategoryManagement",
+	"endpointreleases":                        "CategoryManagement",
+	"endpointreleasebindings":                 "CategoryManagement",
+	"endpointtypes":                           "CategoryManagement",
 	"environments":                            "CategoryManagement",
 	"gitsecrets":                              "CategoryManagement",
 	"namespaces":                              "CategoryManagement",
