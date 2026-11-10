@@ -16,6 +16,7 @@ import (
 	"github.com/openchoreo/openchoreo/internal/labels"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services/bindingrevision"
+	"github.com/openchoreo/openchoreo/internal/releaseline"
 	"github.com/openchoreo/openchoreo/internal/revision"
 )
 
@@ -121,19 +122,19 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 		return nil, err
 	}
 
-	// Auto-deploy keeps the first environment's binding on the component's
-	// latest release, so it would undo the rollback within seconds: refuse it,
-	// dry runs included, and change nothing.
-	blocked, err := bindingrevision.AutoDeployBlocksRollback(ctx, s.k8sClient, namespaceName,
-		binding.Spec.Owner.ComponentName, binding.Spec.Environment)
+	// Auto-deploy keeps the first environment's binding on the latest release of
+	// its component or release line, so it would undo the rollback within
+	// seconds: refuse it, dry runs included, and change nothing.
+	deployer, err := bindingrevision.AutoDeployBlocksRollback(ctx, s.k8sClient, namespaceName,
+		binding.Spec.Owner.ComponentName, binding.Spec.Owner.ReleaseLine, binding.Spec.Environment)
 	if err != nil {
 		return nil, err
 	}
-	if blocked {
-		return nil, fmt.Errorf("%w for component %q, and %q is the first environment of its deployment pipeline, "+
+	if deployer != "" {
+		return nil, fmt.Errorf("%w for %s, and %q is the first environment of its deployment pipeline, "+
 			"so auto-deploy would move release binding %q back to the latest release right after the rollback. "+
-			"Turn off auto-deploy for the component, then roll back again", bindingrevision.ErrAutoDeployEnabled,
-			binding.Spec.Owner.ComponentName, binding.Spec.Environment, releaseBindingName)
+			"Turn off auto-deploy for the %s, then roll back again", bindingrevision.ErrAutoDeployEnabled,
+			deployer, binding.Spec.Environment, releaseBindingName, autoDeployScope(binding.Spec.Owner.ReleaseLine))
 	}
 
 	revs, err := s.bindingRevisions(ctx, binding)
@@ -418,4 +419,13 @@ func (s *releaseBindingService) secretReferenceDrift(ctx context.Context, namesp
 		}
 	}
 	return warnings, nil
+}
+
+// autoDeployScope names what auto-deploy is turned off on for a binding of the
+// given release line: the component for its main line, the release line otherwise.
+func autoDeployScope(releaseLine string) string {
+	if releaseline.Normalize(releaseLine) != "" {
+		return "release line"
+	}
+	return "component"
 }

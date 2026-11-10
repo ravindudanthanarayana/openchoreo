@@ -257,9 +257,9 @@ The rollback is previewed first: the spec fields it changes and any pre-flight
 warnings are printed, and you are asked to confirm. No revision is created: the
 controller makes the target revision active again, under its own name and number.
 
-A rollback in the first environment of a component with auto-deploy enabled is
-refused: auto-deploy would move the binding straight back to the latest release.
-Turn off auto-deploy for the component first.`,
+A rollback in the first environment of a component or release line with
+auto-deploy enabled is refused: auto-deploy would move the binding straight back
+to the latest release. Turn off auto-deploy for the component or release line first.`,
 		Example: `  # Roll back to the previously active revision, confirming interactively
   occ releasebinding rollback product-catalog-development --namespace acme-corp
 

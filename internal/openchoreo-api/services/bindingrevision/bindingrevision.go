@@ -24,6 +24,7 @@ import (
 
 	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/services"
+	"github.com/openchoreo/openchoreo/internal/releaseline"
 	"github.com/openchoreo/openchoreo/internal/revision"
 )
 
@@ -44,7 +45,8 @@ var (
 	// was none, it was deleted, or the history cannot say which it was.
 	ErrNoPreviousRevision = errors.New("no previous revision to roll back to")
 	// ErrAutoDeployEnabled is returned when a rollback is refused because the
-	// component's auto-deploy would undo it (see AutoDeployBlocksRollback).
+	// auto-deploy of the binding's component or release line would undo it (see
+	// AutoDeployBlocksRollback).
 	ErrAutoDeployEnabled = errors.New("rollback blocked: auto-deploy is enabled")
 	// ErrGitOpsManaged is returned when a rollback is refused because a GitOps
 	// tool applies the binding from Git (see RejectGitOpsManaged).
@@ -395,50 +397,75 @@ func CommonWarnings(target int64, status openchoreov1alpha1.BindingRevisionStatu
 	return warnings
 }
 
-// AutoDeployBlocksRollback reports whether a rollback of the component's
-// binding in environment must be refused because auto-deploy would undo it.
-// It mirrors the component controller: with spec.autoDeploy true, every
-// reconcile sets the release of the binding in the deployment pipeline's root
-// (first) environment to the component's latest release, and the controller
-// reconciles as soon as that binding changes. Bindings in any other
-// environment, and components without autoDeploy, are never moved. When the
-// project or pipeline cannot be resolved the controller does not auto-deploy
-// either, so that does not block.
-func AutoDeployBlocksRollback(ctx context.Context, c client.Client, namespace, componentName,
-	environment string) (bool, error) {
+// AutoDeployBlocksRollback reports whether a rollback of a binding in
+// environment must be refused because auto-deploy would undo it, and if so
+// names what auto-deploys it for the error message: the component, or the
+// release line of the component the binding belongs to. It mirrors the
+// controllers that auto-deploy. The component controller keeps the main
+// line's binding in the deployment pipeline's root (first) environment on the
+// component's latest release when spec.autoDeploy is true. The ReleaseLine
+// controller does the same for a release line's binding, with the line's
+// spec.autoDeploy overriding the component's when set. Both reconcile as soon
+// as that binding changes. Bindings in any other environment, and lines
+// without auto-deploy, are never moved. When the release line, project or
+// pipeline cannot be resolved the controllers do not auto-deploy either, so
+// that does not block.
+func AutoDeployBlocksRollback(ctx context.Context, c client.Client, namespace, componentName, releaseLine,
+	environment string) (string, error) {
 	comp := &openchoreov1alpha1.Component{}
 	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: componentName}, comp); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, nil
+			return "", nil
 		}
-		return false, fmt.Errorf("failed to get component: %w", err)
+		return "", fmt.Errorf("failed to get component: %w", err)
 	}
-	if !comp.Spec.AutoDeploy {
-		return false, nil
+	autoDeploy := comp.Spec.AutoDeploy
+	deployer := fmt.Sprintf("component %q", componentName)
+	if line := releaseline.Normalize(releaseLine); line != "" {
+		rl := &openchoreov1alpha1.ReleaseLine{}
+		if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: line}, rl); err != nil {
+			if apierrors.IsNotFound(err) {
+				return "", nil
+			}
+			return "", fmt.Errorf("failed to get release line: %w", err)
+		}
+		if rl.Spec.Owner.ComponentName != comp.Name || rl.Spec.Owner.ProjectName != comp.Spec.Owner.ProjectName {
+			return "", nil
+		}
+		if rl.Spec.AutoDeploy != nil {
+			autoDeploy = *rl.Spec.AutoDeploy
+		}
+		deployer = fmt.Sprintf("release line %q of component %q", line, componentName)
+	}
+	if !autoDeploy {
+		return "", nil
 	}
 	project := &openchoreov1alpha1.Project{}
 	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: comp.Spec.Owner.ProjectName}, project); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, nil
+			return "", nil
 		}
-		return false, fmt.Errorf("failed to get project: %w", err)
+		return "", fmt.Errorf("failed to get project: %w", err)
 	}
 	if project.Spec.DeploymentPipelineRef.Name == "" {
-		return false, nil
+		return "", nil
 	}
 	pipeline := &openchoreov1alpha1.DeploymentPipeline{}
 	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: project.Spec.DeploymentPipelineRef.Name},
 		pipeline); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, nil
+			return "", nil
 		}
-		return false, fmt.Errorf("failed to get deployment pipeline: %w", err)
+		return "", fmt.Errorf("failed to get deployment pipeline: %w", err)
 	}
 	root, err := pipeline.RootEnvironment()
 	if err != nil {
-		return false, nil //nolint:nilerr // an invalid pipeline means no auto-deploy, as in the controller
+		return "", nil //nolint:nilerr // an invalid pipeline means no auto-deploy, as in the controller
 	}
-	return environment == root, nil
+	if environment != root {
+		return "", nil
+	}
+	return deployer, nil
 }
 
 // GitOpsManager returns the GitOps tool that applies obj from Git, as it is

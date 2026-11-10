@@ -1017,3 +1017,68 @@ func TestRollbackReleaseBinding_AutoDeploy(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
+
+// releaseLineObjects is autoDeployObjects with the binding on release line
+// "next" and, when withLine is true, that line's ReleaseLine with the given
+// spec.autoDeploy (nil inherits the component's).
+func releaseLineObjects(f *fixture, componentAutoDeploy bool, withLine bool, lineAutoDeploy *bool) []client.Object {
+	f.binding.Spec.Owner.ReleaseLine = "next"
+	objs := autoDeployObjects(f, componentAutoDeploy)
+	if withLine {
+		objs = append(objs, &openchoreov1alpha1.ReleaseLine{
+			ObjectMeta: metav1.ObjectMeta{Name: "next", Namespace: testNamespace},
+			Spec: openchoreov1alpha1.ReleaseLineSpec{
+				Owner:      openchoreov1alpha1.ReleaseLineOwner{ProjectName: testProjectName, ComponentName: testComponentName},
+				AutoDeploy: lineAutoDeploy,
+			},
+		})
+	}
+	return objs
+}
+
+func TestRollbackReleaseBinding_ReleaseLineAutoDeploy(t *testing.T) {
+	ctx := context.Background()
+	dryRun := func(c client.Client) error {
+		_, err := NewService(c, testutil.TestLogger()).RollbackReleaseBinding(ctx, testNamespace, testRBName,
+			bindingrevision.RollbackRequest{Revision: 1, DryRun: true})
+		return err
+	}
+	on, off := true, false
+
+	t.Run("the line's auto-deploy on, component's off: refused, naming the line", func(t *testing.T) {
+		err := dryRun(testutil.NewFakeClient(releaseLineObjects(newFixture(t), false, true, &on)...))
+		require.ErrorIs(t, err, bindingrevision.ErrAutoDeployEnabled)
+		assert.ErrorContains(t, err, `auto-deploy is enabled for release line "next" of component "`+testComponentName+`"`)
+		assert.ErrorContains(t, err, "Turn off auto-deploy for the release line, then roll back again")
+	})
+
+	t.Run("the line inherits the component's auto-deploy: refused", func(t *testing.T) {
+		err := dryRun(testutil.NewFakeClient(releaseLineObjects(newFixture(t), true, true, nil)...))
+		require.ErrorIs(t, err, bindingrevision.ErrAutoDeployEnabled)
+	})
+
+	t.Run("the line turns off the component's auto-deploy: allowed", func(t *testing.T) {
+		require.NoError(t, dryRun(testutil.NewFakeClient(releaseLineObjects(newFixture(t), true, true, &off)...)))
+	})
+
+	t.Run("the line does not exist, so nothing auto-deploys it: allowed", func(t *testing.T) {
+		require.NoError(t, dryRun(testutil.NewFakeClient(releaseLineObjects(newFixture(t), true, false, nil)...)))
+	})
+
+	t.Run("a ReleaseLine of the same name owned by another component does not count: allowed", func(t *testing.T) {
+		objs := releaseLineObjects(newFixture(t), false, true, &on)
+		for _, o := range objs {
+			if rl, ok := o.(*openchoreov1alpha1.ReleaseLine); ok {
+				rl.Spec.Owner.ComponentName = "other"
+			}
+		}
+		require.NoError(t, dryRun(testutil.NewFakeClient(objs...)))
+	})
+
+	t.Run("a main-line binding ignores release lines: the component's auto-deploy decides", func(t *testing.T) {
+		f := newFixture(t)
+		objs := releaseLineObjects(f, false, true, &on)
+		f.binding.Spec.Owner.ReleaseLine = ""
+		require.NoError(t, dryRun(testutil.NewFakeClient(objs...)))
+	})
+}

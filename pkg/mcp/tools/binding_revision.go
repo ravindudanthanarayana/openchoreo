@@ -34,9 +34,10 @@ const rollbackProcedure = "Procedure — follow it every time: " +
 	"the target revision becomes active again under its own name and number, the binding's " +
 	"status.currentRevision names it, and its health restarts at Progressing. " +
 	"Errors: not found (unknown binding or revision); conflict when the release the revision binds was " +
-	"deleted, the binding changed concurrently (re-run the dry run before retrying), or the component has " +
-	"auto-deploy enabled and the binding is in its first environment (auto-deploy would undo the rollback: " +
-	"tell the user to turn auto-deploy off for the component first), or the binding is managed by GitOps " +
+	"deleted, the binding changed concurrently (re-run the dry run before retrying), or auto-deploy is " +
+	"enabled for the binding's component or release line and the binding is in its first environment " +
+	"(auto-deploy would undo the rollback: tell the user to turn auto-deploy off for the component or " +
+	"release line the error names first), or the binding is managed by GitOps " +
 	"(rollback is not supported: tell the user to revert the binding's configuration in Git and let GitOps " +
 	"reconcile the change)."
 
