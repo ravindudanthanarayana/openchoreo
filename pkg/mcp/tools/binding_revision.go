@@ -55,16 +55,20 @@ func (t *Toolsets) RegisterListReleaseBindingRevisions(s *mcp.Server, perms map[
 			"namespace_name": defaultStringProperty(),
 			"component_name": stringProperty("Component whose release binding revisions to list."),
 			"environment":    stringProperty("Optional: only revisions of the binding in this environment."),
+			"binding_name": stringProperty("Optional: only revisions of this binding. A component can have one " +
+				"binding per release line in an environment, each numbered from r1, so pass it to keep one " +
+				"binding's history."),
 		}), []string{"namespace_name", "component_name"}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args struct {
 		NamespaceName string `json:"namespace_name"`
 		ComponentName string `json:"component_name"`
 		Environment   string `json:"environment"`
+		BindingName   string `json:"binding_name"`
 		Limit         int    `json:"limit,omitempty"`
 		Cursor        string `json:"cursor,omitempty"`
 	}) (*mcp.CallToolResult, any, error) {
 		result, err := t.DeploymentToolset.ListReleaseBindingRevisions(ctx, args.NamespaceName,
-			args.ComponentName, args.Environment, ListOpts{Limit: args.Limit, Cursor: args.Cursor})
+			args.ComponentName, args.Environment, args.BindingName, ListOpts{Limit: args.Limit, Cursor: args.Cursor})
 		return handleToolResult(result, err)
 	})
 }
@@ -119,16 +123,20 @@ func (t *Toolsets) RegisterListResourceReleaseBindingRevisions(s *mcp.Server, pe
 			"namespace_name": defaultStringProperty(),
 			"resource_name":  stringProperty("Resource whose release binding revisions to list."),
 			"environment":    stringProperty("Optional: only revisions of the binding in this environment."),
+			"binding_name": stringProperty("Optional: only revisions of this binding. A resource can have one " +
+				"binding per release line in an environment, each numbered from r1, so pass it to keep one " +
+				"binding's history."),
 		}), []string{"namespace_name", "resource_name"}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args struct {
 		NamespaceName string `json:"namespace_name"`
 		ResourceName  string `json:"resource_name"`
 		Environment   string `json:"environment"`
+		BindingName   string `json:"binding_name"`
 		Limit         int    `json:"limit,omitempty"`
 		Cursor        string `json:"cursor,omitempty"`
 	}) (*mcp.CallToolResult, any, error) {
 		result, err := t.DeploymentToolset.ListResourceReleaseBindingRevisions(ctx, args.NamespaceName,
-			args.ResourceName, args.Environment, ListOpts{Limit: args.Limit, Cursor: args.Cursor})
+			args.ResourceName, args.Environment, args.BindingName, ListOpts{Limit: args.Limit, Cursor: args.Cursor})
 		return handleToolResult(result, err)
 	})
 }

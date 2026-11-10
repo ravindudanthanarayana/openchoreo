@@ -13816,6 +13816,22 @@ func NewListReleaseBindingRevisionsRequest(server string, namespaceName Namespac
 
 		}
 
+		if params.Binding != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "binding", runtime.ParamLocationQuery, *params.Binding); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
 		if params.Limit != nil {
 
 			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
@@ -14595,6 +14611,22 @@ func NewListResourceReleaseBindingRevisionsRequest(server string, namespaceName 
 		if params.Environment != nil {
 
 			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "environment", runtime.ParamLocationQuery, *params.Environment); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Binding != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "binding", runtime.ParamLocationQuery, *params.Binding); err != nil {
 				return nil, err
 			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
 				return nil, err

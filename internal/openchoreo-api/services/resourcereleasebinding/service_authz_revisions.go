@@ -38,10 +38,10 @@ func revisionCheckRequest(action, namespaceName string, rev *openchoreov1alpha1.
 }
 
 func (s *resourceReleaseBindingServiceWithAuthz) ListResourceReleaseBindingRevisions(ctx context.Context, namespaceName,
-	resourceName, environment string, opts services.ListOptions) (*services.ListResult[openchoreov1alpha1.ResourceReleaseBindingRevision], error) {
+	resourceName, environment, binding string, opts services.ListOptions) (*services.ListResult[openchoreov1alpha1.ResourceReleaseBindingRevision], error) {
 	return services.FilteredList(ctx, opts, s.authz,
 		func(ctx context.Context, pageOpts services.ListOptions) (*services.ListResult[openchoreov1alpha1.ResourceReleaseBindingRevision], error) {
-			return s.internal.ListResourceReleaseBindingRevisions(ctx, namespaceName, resourceName, environment, pageOpts)
+			return s.internal.ListResourceReleaseBindingRevisions(ctx, namespaceName, resourceName, environment, binding, pageOpts)
 		},
 		func(rev openchoreov1alpha1.ResourceReleaseBindingRevision) services.CheckRequest {
 			return revisionCheckRequest(authz.ActionViewResourceReleaseBinding, namespaceName, &rev)

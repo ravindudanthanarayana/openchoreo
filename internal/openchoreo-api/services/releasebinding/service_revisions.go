@@ -33,7 +33,7 @@ var releaseBindingRevisionTypeMeta = metav1.TypeMeta{
 // whole, sorted, and paged with an offset cursor; a Kubernetes continue token
 // would page in name order, where r10 sorts before r2.
 func (s *releaseBindingService) ListReleaseBindingRevisions(ctx context.Context, namespaceName, componentName,
-	environment string, opts services.ListOptions) (*services.ListResult[openchoreov1alpha1.ReleaseBindingRevision], error) {
+	environment, binding string, opts services.ListOptions) (*services.ListResult[openchoreov1alpha1.ReleaseBindingRevision], error) {
 	if err := s.validateComponentExists(ctx, namespaceName, componentName); err != nil {
 		return nil, err
 	}
@@ -53,6 +53,9 @@ func (s *releaseBindingService) ListReleaseBindingRevisions(ctx context.Context,
 		rev := list.Items[i]
 		spec := rev.Spec.BindingSpec
 		if spec.Owner.ComponentName != componentName || (environment != "" && spec.Environment != environment) {
+			continue
+		}
+		if binding != "" && !bindingrevision.OwnedByBinding(&rev, "ReleaseBinding", binding) {
 			continue
 		}
 		rev.TypeMeta = releaseBindingRevisionTypeMeta

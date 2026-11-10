@@ -5567,6 +5567,9 @@ type RevisionComponentQueryParam = string
 // RevisionDeleteDryRunQueryParam defines model for RevisionDeleteDryRunQueryParam.
 type RevisionDeleteDryRunQueryParam = bool
 
+// RevisionListBindingQueryParam defines model for RevisionListBindingQueryParam.
+type RevisionListBindingQueryParam = string
+
 // RevisionResourceQueryParam defines model for RevisionResourceQueryParam.
 type RevisionResourceQueryParam = string
 
@@ -6204,6 +6207,9 @@ type ListReleaseBindingRevisionsParams struct {
 	// Environment Filter resources by environment name
 	Environment *EnvironmentQueryParam `form:"environment,omitempty" json:"environment,omitempty"`
 
+	// Binding Only list the revisions of this binding. A component (or resource) can have several bindings in one environment, one per release line, each numbered from r1, so filtering by environment alone can mix their histories.
+	Binding *RevisionListBindingQueryParam `form:"binding,omitempty" json:"binding,omitempty"`
+
 	// Limit Maximum number of items to return per page
 	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
 
@@ -6275,6 +6281,9 @@ type ListResourceReleaseBindingRevisionsParams struct {
 
 	// Environment Filter resources by environment name
 	Environment *EnvironmentQueryParam `form:"environment,omitempty" json:"environment,omitempty"`
+
+	// Binding Only list the revisions of this binding. A component (or resource) can have several bindings in one environment, one per release line, each numbered from r1, so filtering by environment alone can mix their histories.
+	Binding *RevisionListBindingQueryParam `form:"binding,omitempty" json:"binding,omitempty"`
 
 	// Limit Maximum number of items to return per page
 	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`

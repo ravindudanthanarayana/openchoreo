@@ -29,7 +29,7 @@ var resourceReleaseBindingRevisionTypeMeta = metav1.TypeMeta{
 // then by revision number, newest first. See the ReleaseBinding service for why
 // the history is read whole and paged with an offset cursor.
 func (s *resourceReleaseBindingService) ListResourceReleaseBindingRevisions(ctx context.Context, namespaceName,
-	resourceName, environment string, opts services.ListOptions) (*services.ListResult[openchoreov1alpha1.ResourceReleaseBindingRevision], error) {
+	resourceName, environment, binding string, opts services.ListOptions) (*services.ListResult[openchoreov1alpha1.ResourceReleaseBindingRevision], error) {
 	if err := s.validateResourceExists(ctx, namespaceName, resourceName); err != nil {
 		return nil, err
 	}
@@ -48,6 +48,9 @@ func (s *resourceReleaseBindingService) ListResourceReleaseBindingRevisions(ctx 
 		rev := list.Items[i]
 		spec := rev.Spec.BindingSpec
 		if spec.Owner.ResourceName != resourceName || (environment != "" && spec.Environment != environment) {
+			continue
+		}
+		if binding != "" && !bindingrevision.OwnedByBinding(&rev, "ResourceReleaseBinding", binding) {
 			continue
 		}
 		rev.TypeMeta = resourceReleaseBindingRevisionTypeMeta

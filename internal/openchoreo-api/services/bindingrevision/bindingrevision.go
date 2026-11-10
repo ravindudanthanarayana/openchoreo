@@ -586,3 +586,12 @@ func PreviousRevision(revs []Candidate, highest int64, bindingSpecHash string) (
 	}
 	return previous.Number, nil, nil
 }
+
+// OwnedByBinding reports whether rev is a revision of the binding of the given
+// kind and name: its controller reference names that binding. A component (or
+// resource) can have several bindings in one environment, one per release
+// line, so the environment alone does not tell their revisions apart.
+func OwnedByBinding(rev metav1.Object, kind, name string) bool {
+	ref := metav1.GetControllerOf(rev)
+	return ref != nil && ref.Kind == kind && ref.Name == name
+}

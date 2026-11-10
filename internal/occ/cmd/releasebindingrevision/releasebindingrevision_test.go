@@ -49,7 +49,8 @@ func testRevision(n int64, release, cause, health string, active, knownGood bool
 func expectHistory(mc *mocks.MockInterface) {
 	mc.EXPECT().GetReleaseBinding(mock.Anything, testNS, testBinding).Return(testBindingObj(), nil)
 	mc.EXPECT().ListReleaseBindingRevisions(mock.Anything, testNS, mock.MatchedBy(func(p *gen.ListReleaseBindingRevisionsParams) bool {
-		return p.Component == testComponent && p.Environment != nil && *p.Environment == "dev"
+		return p.Component == testComponent && p.Environment != nil && *p.Environment == "dev" &&
+			p.Binding != nil && *p.Binding == testBinding
 	})).Return(&gen.ReleaseBindingRevisionList{Items: []gen.ReleaseBindingRevision{
 		testRevision(3, "api-ccc", "Override", "Progressing", true, false),
 		testRevision(2, "api-bbb", "Deploy", "Degraded", false, false),

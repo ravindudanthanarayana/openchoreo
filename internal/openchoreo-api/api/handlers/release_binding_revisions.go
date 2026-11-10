@@ -28,8 +28,13 @@ func (h *Handler) ListReleaseBindingRevisions(
 	}
 	opts := NormalizeListOptions(request.Params.Limit, request.Params.Cursor, nil)
 
+	binding := ""
+	if request.Params.Binding != nil {
+		binding = *request.Params.Binding
+	}
+
 	result, err := h.services.ReleaseBindingService.ListReleaseBindingRevisions(ctx, request.NamespaceName,
-		request.Params.Component, environment, opts)
+		request.Params.Component, environment, binding, opts)
 	if err != nil {
 		if errors.Is(err, services.ErrForbidden) {
 			return gen.ListReleaseBindingRevisions403JSONResponse{ForbiddenJSONResponse: forbidden()}, nil

@@ -316,9 +316,9 @@ func (_c *MockService_GetResourceReleaseBindingRevision_Call) RunAndReturn(run f
 	return _c
 }
 
-// ListResourceReleaseBindingRevisions provides a mock function with given fields: ctx, namespaceName, resourceName, environment, opts
-func (_m *MockService) ListResourceReleaseBindingRevisions(ctx context.Context, namespaceName string, resourceName string, environment string, opts services.ListOptions) (*services.ListResult[v1alpha1.ResourceReleaseBindingRevision], error) {
-	ret := _m.Called(ctx, namespaceName, resourceName, environment, opts)
+// ListResourceReleaseBindingRevisions provides a mock function with given fields: ctx, namespaceName, resourceName, environment, binding, opts
+func (_m *MockService) ListResourceReleaseBindingRevisions(ctx context.Context, namespaceName string, resourceName string, environment string, binding string, opts services.ListOptions) (*services.ListResult[v1alpha1.ResourceReleaseBindingRevision], error) {
+	ret := _m.Called(ctx, namespaceName, resourceName, environment, binding, opts)
 
 	if len(ret) == 0 {
 		panic("no return value specified for ListResourceReleaseBindingRevisions")
@@ -326,19 +326,19 @@ func (_m *MockService) ListResourceReleaseBindingRevisions(ctx context.Context, 
 
 	var r0 *services.ListResult[v1alpha1.ResourceReleaseBindingRevision]
 	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, string, string, string, services.ListOptions) (*services.ListResult[v1alpha1.ResourceReleaseBindingRevision], error)); ok {
-		return rf(ctx, namespaceName, resourceName, environment, opts)
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, string, string, services.ListOptions) (*services.ListResult[v1alpha1.ResourceReleaseBindingRevision], error)); ok {
+		return rf(ctx, namespaceName, resourceName, environment, binding, opts)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, string, string, string, services.ListOptions) *services.ListResult[v1alpha1.ResourceReleaseBindingRevision]); ok {
-		r0 = rf(ctx, namespaceName, resourceName, environment, opts)
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, string, string, services.ListOptions) *services.ListResult[v1alpha1.ResourceReleaseBindingRevision]); ok {
+		r0 = rf(ctx, namespaceName, resourceName, environment, binding, opts)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(*services.ListResult[v1alpha1.ResourceReleaseBindingRevision])
 		}
 	}
 
-	if rf, ok := ret.Get(1).(func(context.Context, string, string, string, services.ListOptions) error); ok {
-		r1 = rf(ctx, namespaceName, resourceName, environment, opts)
+	if rf, ok := ret.Get(1).(func(context.Context, string, string, string, string, services.ListOptions) error); ok {
+		r1 = rf(ctx, namespaceName, resourceName, environment, binding, opts)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -356,14 +356,15 @@ type MockService_ListResourceReleaseBindingRevisions_Call struct {
 //   - namespaceName string
 //   - resourceName string
 //   - environment string
+//   - binding string
 //   - opts services.ListOptions
-func (_e *MockService_Expecter) ListResourceReleaseBindingRevisions(ctx interface{}, namespaceName interface{}, resourceName interface{}, environment interface{}, opts interface{}) *MockService_ListResourceReleaseBindingRevisions_Call {
-	return &MockService_ListResourceReleaseBindingRevisions_Call{Call: _e.mock.On("ListResourceReleaseBindingRevisions", ctx, namespaceName, resourceName, environment, opts)}
+func (_e *MockService_Expecter) ListResourceReleaseBindingRevisions(ctx interface{}, namespaceName interface{}, resourceName interface{}, environment interface{}, binding interface{}, opts interface{}) *MockService_ListResourceReleaseBindingRevisions_Call {
+	return &MockService_ListResourceReleaseBindingRevisions_Call{Call: _e.mock.On("ListResourceReleaseBindingRevisions", ctx, namespaceName, resourceName, environment, binding, opts)}
 }
 
-func (_c *MockService_ListResourceReleaseBindingRevisions_Call) Run(run func(ctx context.Context, namespaceName string, resourceName string, environment string, opts services.ListOptions)) *MockService_ListResourceReleaseBindingRevisions_Call {
+func (_c *MockService_ListResourceReleaseBindingRevisions_Call) Run(run func(ctx context.Context, namespaceName string, resourceName string, environment string, binding string, opts services.ListOptions)) *MockService_ListResourceReleaseBindingRevisions_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(string), args[2].(string), args[3].(string), args[4].(services.ListOptions))
+		run(args[0].(context.Context), args[1].(string), args[2].(string), args[3].(string), args[4].(string), args[5].(services.ListOptions))
 	})
 	return _c
 }
@@ -373,7 +374,7 @@ func (_c *MockService_ListResourceReleaseBindingRevisions_Call) Return(_a0 *serv
 	return _c
 }
 
-func (_c *MockService_ListResourceReleaseBindingRevisions_Call) RunAndReturn(run func(context.Context, string, string, string, services.ListOptions) (*services.ListResult[v1alpha1.ResourceReleaseBindingRevision], error)) *MockService_ListResourceReleaseBindingRevisions_Call {
+func (_c *MockService_ListResourceReleaseBindingRevisions_Call) RunAndReturn(run func(context.Context, string, string, string, string, services.ListOptions) (*services.ListResult[v1alpha1.ResourceReleaseBindingRevision], error)) *MockService_ListResourceReleaseBindingRevisions_Call {
 	_c.Call.Return(run)
 	return _c
 }

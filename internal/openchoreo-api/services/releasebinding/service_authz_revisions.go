@@ -37,10 +37,10 @@ func revisionCheckRequest(action, namespaceName string, rev *openchoreov1alpha1.
 }
 
 func (s *releaseBindingServiceWithAuthz) ListReleaseBindingRevisions(ctx context.Context, namespaceName, componentName,
-	environment string, opts services.ListOptions) (*services.ListResult[openchoreov1alpha1.ReleaseBindingRevision], error) {
+	environment, binding string, opts services.ListOptions) (*services.ListResult[openchoreov1alpha1.ReleaseBindingRevision], error) {
 	return services.FilteredList(ctx, opts, s.authz,
 		func(ctx context.Context, pageOpts services.ListOptions) (*services.ListResult[openchoreov1alpha1.ReleaseBindingRevision], error) {
-			return s.internal.ListReleaseBindingRevisions(ctx, namespaceName, componentName, environment, pageOpts)
+			return s.internal.ListReleaseBindingRevisions(ctx, namespaceName, componentName, environment, binding, pageOpts)
 		},
 		func(rev openchoreov1alpha1.ReleaseBindingRevision) services.CheckRequest {
 			return revisionCheckRequest(authz.ActionViewReleaseBinding, namespaceName, &rev)

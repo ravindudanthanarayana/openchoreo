@@ -569,26 +569,26 @@ func TestListReleaseBindingRevisions(t *testing.T) {
 	}
 
 	t.Run("all environments, by environment then newest first", func(t *testing.T) {
-		result, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "", services.ListOptions{})
+		result, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "", "", services.ListOptions{})
 		require.NoError(t, err)
 		assert.Equal(t, []string{"test-rb-r3", "test-rb-r2", "test-rb-r1", "test-rb-staging-r1"}, names(result.Items))
 		assert.Equal(t, releaseBindingRevisionTypeMeta, result.Items[0].TypeMeta)
 	})
 
 	t.Run("one environment", func(t *testing.T) {
-		result, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "staging", services.ListOptions{})
+		result, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "staging", "", services.ListOptions{})
 		require.NoError(t, err)
 		assert.Equal(t, []string{"test-rb-staging-r1"}, names(result.Items))
 	})
 
 	t.Run("pages keep the order", func(t *testing.T) {
-		page1, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "", services.ListOptions{Limit: 3})
+		page1, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "", "", services.ListOptions{Limit: 3})
 		require.NoError(t, err)
 		assert.Equal(t, []string{"test-rb-r3", "test-rb-r2", "test-rb-r1"}, names(page1.Items))
 		require.NotEmpty(t, page1.NextCursor)
 		assert.Equal(t, ptr.To(int64(1)), page1.RemainingCount)
 
-		page2, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "",
+		page2, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "", "",
 			services.ListOptions{Limit: 3, Cursor: page1.NextCursor})
 		require.NoError(t, err)
 		assert.Equal(t, []string{"test-rb-staging-r1"}, names(page2.Items))
@@ -596,14 +596,62 @@ func TestListReleaseBindingRevisions(t *testing.T) {
 	})
 
 	t.Run("invalid cursor is a validation error", func(t *testing.T) {
-		_, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "", services.ListOptions{Cursor: "%%%"})
+		_, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "", "", services.ListOptions{Cursor: "%%%"})
 		var vErr *services.ValidationError
 		assert.True(t, errors.As(err, &vErr))
 	})
 
 	t.Run("unknown component", func(t *testing.T) {
-		_, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, "no-such-component", "", services.ListOptions{})
+		_, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, "no-such-component", "", "", services.ListOptions{})
 		assert.ErrorIs(t, err, ErrComponentNotFound)
+	})
+}
+
+// TestListReleaseBindingRevisions_OneBindingPerReleaseLine covers a component
+// with a release line: its main-line and line bindings share the environment
+// and both count from r1, so only the binding filter keeps their histories apart.
+func TestListReleaseBindingRevisions_OneBindingPerReleaseLine(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	lineSpec := specFor(releaseA, "")
+	lineSpec.Owner.ReleaseLine = "next"
+	f.extra = append(f.extra, newRevision(t, "test-rb-next", types.UID("next-uid"), 1, lineSpec, t0))
+	svc := NewService(f.client(), testutil.TestLogger())
+
+	names := func(items []openchoreov1alpha1.ReleaseBindingRevision) []string {
+		out := make([]string, 0, len(items))
+		for _, i := range items {
+			out = append(out, i.Name)
+		}
+		return out
+	}
+
+	t.Run("without a binding, the environment mixes both lines", func(t *testing.T) {
+		result, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, testEnvironmentName, "",
+			services.ListOptions{})
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"test-rb-r3", "test-rb-r2", "test-rb-r1", "test-rb-next-r1"}, names(result.Items))
+	})
+
+	t.Run("the main-line binding", func(t *testing.T) {
+		result, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, testEnvironmentName, testRBName,
+			services.ListOptions{})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"test-rb-r3", "test-rb-r2", "test-rb-r1"}, names(result.Items))
+	})
+
+	t.Run("the release line's binding", func(t *testing.T) {
+		result, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "", "test-rb-next",
+			services.ListOptions{})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"test-rb-next-r1"}, names(result.Items))
+	})
+
+	t.Run("an unknown binding lists nothing", func(t *testing.T) {
+		result, err := svc.ListReleaseBindingRevisions(ctx, testNamespace, testComponentName, "", "no-such-binding",
+			services.ListOptions{})
+		require.NoError(t, err)
+		assert.Empty(t, result.Items)
 	})
 }
 

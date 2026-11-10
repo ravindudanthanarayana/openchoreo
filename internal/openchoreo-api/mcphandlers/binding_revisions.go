@@ -21,10 +21,10 @@ import (
 // ---------------------------------------------------------------------------
 
 func (h *MCPHandler) ListReleaseBindingRevisions(
-	ctx context.Context, namespaceName, componentName, environment string, opts tools.ListOpts,
+	ctx context.Context, namespaceName, componentName, environment, bindingName string, opts tools.ListOpts,
 ) (any, error) {
 	result, err := h.services.ReleaseBindingService.ListReleaseBindingRevisions(
-		ctx, namespaceName, componentName, environment, toServiceListOptions(opts))
+		ctx, namespaceName, componentName, environment, bindingName, toServiceListOptions(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -90,10 +90,10 @@ func releaseBindingRevisionSummary(rev openchoreov1alpha1.ReleaseBindingRevision
 // ---------------------------------------------------------------------------
 
 func (h *MCPHandler) ListResourceReleaseBindingRevisions(
-	ctx context.Context, namespaceName, resourceName, environment string, opts tools.ListOpts,
+	ctx context.Context, namespaceName, resourceName, environment, bindingName string, opts tools.ListOpts,
 ) (any, error) {
 	result, err := h.services.ResourceReleaseBindingService.ListResourceReleaseBindingRevisions(
-		ctx, namespaceName, resourceName, environment, toServiceListOptions(opts))
+		ctx, namespaceName, resourceName, environment, bindingName, toServiceListOptions(opts))
 	if err != nil {
 		return nil, err
 	}

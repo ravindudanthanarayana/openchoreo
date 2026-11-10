@@ -89,7 +89,7 @@ func (r *ReleaseBindingRevision) listAll(ctx context.Context, params ListParams)
 		if params.Project != "" && b.Spec.Owner.ProjectName != params.Project {
 			continue
 		}
-		revs, err := r.revisionsOf(ctx, params.Namespace, b.Spec.Owner.ComponentName, environment)
+		revs, err := r.revisionsOf(ctx, params.Namespace, b.Spec.Owner.ComponentName, b.Spec.Environment, b.Metadata.Name)
 		if err != nil {
 			return fmt.Errorf("list revisions of release binding %q: %w", b.Metadata.Name, err)
 		}
@@ -234,13 +234,14 @@ func (r *ReleaseBindingRevision) revisions(ctx context.Context, namespace, bindi
 	if rb == nil || rb.Spec == nil {
 		return nil, fmt.Errorf("release binding %q not found in namespace %q", binding, namespace)
 	}
-	return r.revisionsOf(ctx, namespace, rb.Spec.Owner.ComponentName, rb.Spec.Environment)
+	return r.revisionsOf(ctx, namespace, rb.Spec.Owner.ComponentName, rb.Spec.Environment, binding)
 }
 
-// revisionsOf returns the revisions of the component's binding in one environment.
-func (r *ReleaseBindingRevision) revisionsOf(ctx context.Context, namespace, component, environment string) ([]gen.ReleaseBindingRevision, error) {
+// revisionsOf returns the revisions of one binding of the component in one environment. The
+// binding is named because a component can have one binding per release line in an environment.
+func (r *ReleaseBindingRevision) revisionsOf(ctx context.Context, namespace, component, environment, binding string) ([]gen.ReleaseBindingRevision, error) {
 	return pagination.FetchAll(func(limit int, cursor string) ([]gen.ReleaseBindingRevision, string, error) {
-		p := &gen.ListReleaseBindingRevisionsParams{Component: component, Environment: &environment, Limit: &limit}
+		p := &gen.ListReleaseBindingRevisionsParams{Component: component, Environment: &environment, Binding: &binding, Limit: &limit}
 		if cursor != "" {
 			p.Cursor = &cursor
 		}

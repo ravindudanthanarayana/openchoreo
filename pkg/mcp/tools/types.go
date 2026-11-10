@@ -597,7 +597,7 @@ type DeploymentToolsetHandler interface {
 
 	// Release binding revision history and rollback
 	ListReleaseBindingRevisions(
-		ctx context.Context, namespaceName, componentName, environment string, opts ListOpts,
+		ctx context.Context, namespaceName, componentName, environment, bindingName string, opts ListOpts,
 	) (any, error)
 	GetReleaseBindingRevision(ctx context.Context, namespaceName, revisionName string) (any, error)
 	RollbackReleaseBinding(
@@ -606,7 +606,7 @@ type DeploymentToolsetHandler interface {
 
 	// Resource release binding revision history and rollback
 	ListResourceReleaseBindingRevisions(
-		ctx context.Context, namespaceName, resourceName, environment string, opts ListOpts,
+		ctx context.Context, namespaceName, resourceName, environment, bindingName string, opts ListOpts,
 	) (any, error)
 	GetResourceReleaseBindingRevision(ctx context.Context, namespaceName, revisionName string) (any, error)
 	RollbackResourceReleaseBinding(

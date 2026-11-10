@@ -180,13 +180,13 @@ func TestListResourceReleaseBindingRevisions(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(testutil.NewFakeClient(rrbObjects(t, true)...), testutil.TestLogger())
 
-	result, err := svc.ListResourceReleaseBindingRevisions(ctx, testNamespace, testResourceName, testEnvironment, services.ListOptions{})
+	result, err := svc.ListResourceReleaseBindingRevisions(ctx, testNamespace, testResourceName, testEnvironment, "", services.ListOptions{})
 	require.NoError(t, err)
 	require.Len(t, result.Items, 2)
 	assert.Equal(t, int64(2), result.Items[0].Spec.Revision, "newest first")
 	assert.Equal(t, resourceReleaseBindingRevisionTypeMeta, result.Items[0].TypeMeta)
 
-	_, err = svc.ListResourceReleaseBindingRevisions(ctx, testNamespace, "no-such-resource", "", services.ListOptions{})
+	_, err = svc.ListResourceReleaseBindingRevisions(ctx, testNamespace, "no-such-resource", "", "", services.ListOptions{})
 	assert.ErrorIs(t, err, ErrResourceNotFound)
 
 	rev, err := svc.GetResourceReleaseBindingRevision(ctx, testNamespace, testBindingName+"-r1")

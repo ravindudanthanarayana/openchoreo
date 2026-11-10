@@ -4616,6 +4616,7 @@ paths:
         - $ref: '#/components/parameters/NamespaceNameParam'
         - $ref: '#/components/parameters/RevisionComponentQueryParam'
         - $ref: '#/components/parameters/EnvironmentQueryParam'
+        - $ref: '#/components/parameters/RevisionListBindingQueryParam'
         - $ref: '#/components/parameters/LimitParam'
         - $ref: '#/components/parameters/CursorParam'
       responses:
@@ -6382,6 +6383,7 @@ paths:
         - $ref: '#/components/parameters/NamespaceNameParam'
         - $ref: '#/components/parameters/RevisionResourceQueryParam'
         - $ref: '#/components/parameters/EnvironmentQueryParam'
+        - $ref: '#/components/parameters/RevisionListBindingQueryParam'
         - $ref: '#/components/parameters/LimitParam'
         - $ref: '#/components/parameters/CursorParam'
       responses:
@@ -7784,6 +7786,18 @@ components:
       schema:
         type: string
         example: api-service-dev
+
+    RevisionListBindingQueryParam:
+      name: binding
+      in: query
+      required: false
+      description: >-
+        Only list the revisions of this binding. A component (or resource) can have several
+        bindings in one environment, one per release line, each numbered from r1, so filtering
+        by environment alone can mix their histories.
+      schema:
+        type: string
+        example: api-service-development
 
     RevisionBindingQueryParam:
       name: binding

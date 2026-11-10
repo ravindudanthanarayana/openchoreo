@@ -113,11 +113,11 @@ func TestListReleaseBindingRevisions_AuthzCheck(t *testing.T) {
 	t.Run("each revision is checked against its own environment", func(t *testing.T) {
 		pdp := testutil.AllowPDP()
 		mockSvc := mocks.NewMockService(t)
-		mockSvc.On("ListReleaseBindingRevisions", mock.Anything, "ns-1", "my-comp", "", mock.Anything).
+		mockSvc.On("ListReleaseBindingRevisions", mock.Anything, "ns-1", "my-comp", "", "", mock.Anything).
 			Return(&services.ListResult[openchoreov1alpha1.ReleaseBindingRevision]{Items: revs}, nil)
 		svc := &releaseBindingServiceWithAuthz{internal: mockSvc, authz: testutil.NewTestAuthzChecker(pdp)}
 
-		result, err := svc.ListReleaseBindingRevisions(testutil.AuthzContext(), "ns-1", "my-comp", "", services.ListOptions{Limit: 10})
+		result, err := svc.ListReleaseBindingRevisions(testutil.AuthzContext(), "ns-1", "my-comp", "", "", services.ListOptions{Limit: 10})
 		require.NoError(t, err)
 		require.Len(t, result.Items, 2)
 	})
@@ -125,11 +125,11 @@ func TestListReleaseBindingRevisions_AuthzCheck(t *testing.T) {
 	t.Run("denied revisions are filtered out", func(t *testing.T) {
 		pdp := testutil.DenyPDP()
 		mockSvc := mocks.NewMockService(t)
-		mockSvc.On("ListReleaseBindingRevisions", mock.Anything, "ns-1", "my-comp", "", mock.Anything).
+		mockSvc.On("ListReleaseBindingRevisions", mock.Anything, "ns-1", "my-comp", "", "", mock.Anything).
 			Return(&services.ListResult[openchoreov1alpha1.ReleaseBindingRevision]{Items: revs}, nil)
 		svc := &releaseBindingServiceWithAuthz{internal: mockSvc, authz: testutil.NewTestAuthzChecker(pdp)}
 
-		result, err := svc.ListReleaseBindingRevisions(testutil.AuthzContext(), "ns-1", "my-comp", "", services.ListOptions{Limit: 10})
+		result, err := svc.ListReleaseBindingRevisions(testutil.AuthzContext(), "ns-1", "my-comp", "", "", services.ListOptions{Limit: 10})
 		require.NoError(t, err)
 		require.Empty(t, result.Items)
 	})

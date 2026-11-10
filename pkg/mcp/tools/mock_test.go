@@ -1176,9 +1176,9 @@ func (m *MockCoreToolsetHandler) DeleteResourceReleaseBinding(
 // ReleaseBindingRevision methods
 
 func (m *MockCoreToolsetHandler) ListReleaseBindingRevisions(
-	ctx context.Context, namespaceName, componentName, environment string, opts ListOpts,
+	ctx context.Context, namespaceName, componentName, environment, bindingName string, opts ListOpts,
 ) (any, error) {
-	m.recordCall("ListReleaseBindingRevisions", namespaceName, componentName, environment, opts)
+	m.recordCall("ListReleaseBindingRevisions", namespaceName, componentName, environment, bindingName, opts)
 	return `[{"name":"release-binding-1-r1"}]`, nil
 }
 
@@ -1199,9 +1199,9 @@ func (m *MockCoreToolsetHandler) RollbackReleaseBinding(
 // ResourceReleaseBindingRevision methods
 
 func (m *MockCoreToolsetHandler) ListResourceReleaseBindingRevisions(
-	ctx context.Context, namespaceName, resourceName, environment string, opts ListOpts,
+	ctx context.Context, namespaceName, resourceName, environment, bindingName string, opts ListOpts,
 ) (any, error) {
-	m.recordCall("ListResourceReleaseBindingRevisions", namespaceName, resourceName, environment, opts)
+	m.recordCall("ListResourceReleaseBindingRevisions", namespaceName, resourceName, environment, bindingName, opts)
 	return `[{"name":"resource-release-binding-1-r1"}]`, nil
 }
 

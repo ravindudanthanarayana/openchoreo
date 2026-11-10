@@ -63,7 +63,7 @@ func TestListReleaseBindingRevisions(t *testing.T) {
 
 	t.Run("returns wrapped list with the fields an agent picks a target by", func(t *testing.T) {
 		svc := releasebindingmocks.NewMockService(t)
-		svc.EXPECT().ListReleaseBindingRevisions(mock.Anything, testNS, testComponent, testEnvironmentName, mock.Anything).
+		svc.EXPECT().ListReleaseBindingRevisions(mock.Anything, testNS, testComponent, testEnvironmentName, "", mock.Anything).
 			Return(&services.ListResult[openchoreov1alpha1.ReleaseBindingRevision]{
 				Items: []openchoreov1alpha1.ReleaseBindingRevision{
 					sampleReleaseBindingRevision(2, "rel-b", true, false),
@@ -73,7 +73,7 @@ func TestListReleaseBindingRevisions(t *testing.T) {
 			}, nil)
 
 		h := newTestHandler(withReleaseBindingService(svc))
-		result, err := h.ListReleaseBindingRevisions(ctx, testNS, testComponent, testEnvironmentName, tools.ListOpts{Limit: 10})
+		result, err := h.ListReleaseBindingRevisions(ctx, testNS, testComponent, testEnvironmentName, "", tools.ListOpts{Limit: 10})
 		require.NoError(t, err)
 
 		m, ok := result.(map[string]any)
@@ -97,11 +97,11 @@ func TestListReleaseBindingRevisions(t *testing.T) {
 
 	t.Run("service error propagates", func(t *testing.T) {
 		svc := releasebindingmocks.NewMockService(t)
-		svc.EXPECT().ListReleaseBindingRevisions(mock.Anything, testNS, testComponent, "", mock.Anything).
+		svc.EXPECT().ListReleaseBindingRevisions(mock.Anything, testNS, testComponent, "", "", mock.Anything).
 			Return(nil, errors.New("list failed"))
 
 		h := newTestHandler(withReleaseBindingService(svc))
-		_, err := h.ListReleaseBindingRevisions(ctx, testNS, testComponent, "", tools.ListOpts{})
+		_, err := h.ListReleaseBindingRevisions(ctx, testNS, testComponent, "", "", tools.ListOpts{})
 		assert.EqualError(t, err, "list failed")
 	})
 }
@@ -230,13 +230,13 @@ func TestResourceReleaseBindingRevisionTools(t *testing.T) {
 
 	t.Run("list", func(t *testing.T) {
 		svc := resourcereleasebindingmocks.NewMockService(t)
-		svc.EXPECT().ListResourceReleaseBindingRevisions(mock.Anything, testNS, testResourceName, "", mock.Anything).
+		svc.EXPECT().ListResourceReleaseBindingRevisions(mock.Anything, testNS, testResourceName, "", "", mock.Anything).
 			Return(&services.ListResult[openchoreov1alpha1.ResourceReleaseBindingRevision]{
 				Items: []openchoreov1alpha1.ResourceReleaseBindingRevision{sampleResourceReleaseBindingRevision(1, testResourceReleaseName)},
 			}, nil)
 
 		h := newTestHandler(withResourceReleaseBindingService(svc))
-		result, err := h.ListResourceReleaseBindingRevisions(ctx, testNS, testResourceName, "", tools.ListOpts{})
+		result, err := h.ListResourceReleaseBindingRevisions(ctx, testNS, testResourceName, "", "", tools.ListOpts{})
 		require.NoError(t, err)
 
 		items := result.(map[string]any)["resource_release_binding_revisions"].([]map[string]any)
