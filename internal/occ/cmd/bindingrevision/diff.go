@@ -87,7 +87,7 @@ func DiffArgs(cmd *cobra.Command, args []string) error {
 }
 
 // Named is a revision as a command can name it: by number, object name
-// ({binding}-r{N}) or display name ({release}-r{N}).
+// ({binding}-r{N}) or display name ({owner}-r{N}).
 type Named struct {
 	Number      int64
 	ObjectName  string

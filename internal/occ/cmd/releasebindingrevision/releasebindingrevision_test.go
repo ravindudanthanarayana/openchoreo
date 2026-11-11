@@ -36,13 +36,15 @@ func testBindingObj() *gen.ReleaseBinding {
 func testRevision(n int64, release, cause, health string, active, knownGood bool) gen.ReleaseBindingRevision {
 	created := time.Now().Add(-time.Duration(n) * time.Hour)
 	h := gen.BindingRevisionStatusHealth(health)
-	return gen.ReleaseBindingRevision{
+	rev := gen.ReleaseBindingRevision{
 		Metadata: gen.ObjectMeta{Name: fmt.Sprintf("%s-r%d", testBinding, n), CreationTimestamp: &created},
 		Spec: gen.ReleaseBindingRevisionSpec{
 			Revision: n, ComponentReleaseName: release, Cause: gen.RevisionCause(cause), SnapshotHash: "h",
 		},
 		Status: &gen.BindingRevisionStatus{Health: &h, Active: &active, KnownGood: &knownGood},
 	}
+	rev.Spec.BindingSpec.Owner.ComponentName = testComponent
+	return rev
 }
 
 // expectHistory sets up a binding with three revisions, newest first as the API returns them.
@@ -70,8 +72,8 @@ func TestList_Success(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	require.Len(t, lines, 4)
 	assert.Equal(t, []string{"NAME", "CAUSE", "HEALTH", "ACTIVE", "KNOWN-GOOD", "AGE", "MESSAGE"}, strings.Fields(lines[0]))
-	assert.Equal(t, []string{"api-ccc-r3", "Override", "Progressing", "true", "false", "3h"}, strings.Fields(lines[1]))
-	assert.Equal(t, []string{"api-aaa-r1", "Deploy", "Healthy", "false", "true", "1h"}, strings.Fields(lines[3]))
+	assert.Equal(t, []string{"api-r3", "Override", "Progressing", "true", "false", "3h"}, strings.Fields(lines[1]))
+	assert.Equal(t, []string{"api-r1", "Deploy", "Healthy", "false", "true", "1h"}, strings.Fields(lines[3]))
 }
 
 func TestList_BindingNotFound(t *testing.T) {
@@ -120,6 +122,9 @@ func bindingInProject(name, project, component, environment string) gen.ReleaseB
 }
 
 func expectRevisionsOf(mc *mocks.MockInterface, component, environment string, revs ...gen.ReleaseBindingRevision) {
+	for i := range revs {
+		revs[i].Spec.BindingSpec.Owner.ComponentName = component
+	}
 	mc.EXPECT().ListReleaseBindingRevisions(mock.Anything, testNS, mock.MatchedBy(func(p *gen.ListReleaseBindingRevisionsParams) bool {
 		return p.Component == component && p.Environment != nil && *p.Environment == environment
 	})).Return(&gen.ReleaseBindingRevisionList{Items: revs}, nil)
@@ -147,9 +152,9 @@ func TestList_AllBindings(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	require.Len(t, lines, 4)
 	assert.Equal(t, []string{"PROJECT", "BINDING", "ENVIRONMENT", "NAME", "CAUSE", "HEALTH", "ACTIVE", "KNOWN-GOOD", "AGE", "MESSAGE"}, strings.Fields(lines[0]))
-	assert.Equal(t, []string{"shop", "api-dev", "dev", "api-bbb-r2"}, strings.Fields(lines[1])[:4])
-	assert.Equal(t, []string{"shop", "api-dev", "dev", "api-aaa-r1"}, strings.Fields(lines[2])[:4])
-	assert.Equal(t, []string{"shop", "web-prod", "production", "web-aaa-r1"}, strings.Fields(lines[3])[:4])
+	assert.Equal(t, []string{"shop", "api-dev", "dev", "api-r2"}, strings.Fields(lines[1])[:4])
+	assert.Equal(t, []string{"shop", "api-dev", "dev", "api-r1"}, strings.Fields(lines[2])[:4])
+	assert.Equal(t, []string{"shop", "web-prod", "production", "web-r1"}, strings.Fields(lines[3])[:4])
 }
 
 func TestList_AllBindingsFiltered(t *testing.T) {
@@ -169,7 +174,7 @@ func TestList_AllBindingsFiltered(t *testing.T) {
 	})
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	require.Len(t, lines, 2)
-	assert.Equal(t, []string{"shop", "api-prod", "production", "api-aaa-r1"}, strings.Fields(lines[1])[:4])
+	assert.Equal(t, []string{"shop", "api-prod", "production", "api-r1"}, strings.Fields(lines[1])[:4])
 }
 
 // --project keeps only that project's bindings and drops the PROJECT column.
@@ -187,7 +192,7 @@ func TestList_AllBindingsByProject(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	require.Len(t, lines, 2)
 	assert.Equal(t, "BINDING", strings.Fields(lines[0])[0])
-	assert.Equal(t, []string{"api-dev", "dev", "api-aaa-r1"}, strings.Fields(lines[1])[:3])
+	assert.Equal(t, []string{"api-dev", "dev", "api-r1"}, strings.Fields(lines[1])[:3])
 }
 
 func TestList_AllBindingsNone(t *testing.T) {
@@ -211,7 +216,7 @@ func TestGet_Table(t *testing.T) {
 	})
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	require.Len(t, lines, 2)
-	assert.Equal(t, []string{"api-bbb-r2", "Deploy", "Degraded", "false", "false", "2h"}, strings.Fields(lines[1]))
+	assert.Equal(t, []string{"api-r2", "Deploy", "Degraded", "false", "false", "2h"}, strings.Fields(lines[1]))
 }
 
 func TestGet_YAML(t *testing.T) {
@@ -264,7 +269,7 @@ func deleteParams(dryRun bool) any {
 func TestDelete_ConfirmedDeletesTheRevision(t *testing.T) {
 	mc := mocks.NewMockInterface(t)
 	expectHistory(mc)
-	display := "api-bbb-r2"
+	display := "api-r2"
 	mc.EXPECT().DeleteReleaseBindingRevision(mock.Anything, testNS, "api-dev-r2", deleteParams(true)).
 		Return(&gen.DeleteBindingRevisionResponse{RevisionName: "api-dev-r2", Revision: 2, DryRun: true}, nil).Once()
 	mc.EXPECT().DeleteReleaseBindingRevision(mock.Anything, testNS, "api-dev-r2", deleteParams(false)).
@@ -277,9 +282,9 @@ func TestDelete_ConfirmedDeletesTheRevision(t *testing.T) {
 		require.NoError(t, r.Delete(DeleteParams{Namespace: testNS, Binding: testBinding, Revision: 2}))
 	})
 	assert.Contains(t, question, "Delete this revision?")
-	assert.Contains(t, out, "Revision:    api-bbb-r2")
+	assert.Contains(t, out, "Revision:    api-r2")
 	assert.Contains(t, out, "Status:      Inactive")
-	assert.Contains(t, out, "Successfully deleted revision 2: api-bbb-r2")
+	assert.Contains(t, out, "Successfully deleted revision 2: api-r2")
 }
 
 func TestDelete_RevisionNotFound(t *testing.T) {

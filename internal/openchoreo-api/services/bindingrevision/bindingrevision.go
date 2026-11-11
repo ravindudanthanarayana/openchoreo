@@ -95,7 +95,8 @@ type DeleteRequest struct {
 // DeleteResult describes a revision deletion, applied or dry-run.
 type DeleteResult struct {
 	RevisionName string
-	// RevisionDisplayName is how the revision is shown to people, {release}-r{N}.
+	// RevisionDisplayName is how the revision is shown to people, {owner}-r{N}:
+	// the component or resource name and the revision number.
 	RevisionDisplayName string
 	Revision            int64
 	Binding             string
@@ -240,7 +241,7 @@ type RollbackResult struct {
 	RevisionName string
 	Revision     int64
 	// RevisionDisplayName is how the target is shown to people,
-	// {release}-r{N} (e.g. frontend-v7-r1).
+	// {owner}-r{N} (e.g. frontend-r1).
 	RevisionDisplayName string
 	// TargetRevision is the revision whose spec is restored.
 	TargetRevision int64

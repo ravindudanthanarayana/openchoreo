@@ -2079,7 +2079,7 @@ type DeleteBindingRevisionResponse struct {
 	// Revision The deleted revision's number. Other revisions keep theirs.
 	Revision int64 `json:"revision"`
 
-	// RevisionDisplayName How the revision is shown to people, {release}-r{N}
+	// RevisionDisplayName How the revision is shown to people, {component or resource name}-r{N}
 	RevisionDisplayName *string `json:"revisionDisplayName,omitempty"`
 
 	// RevisionName The deleted revision's object name, {binding}-r{N}
@@ -4510,7 +4510,7 @@ type RollbackResponse struct {
 	// Revision Number of the revision active after the rollback; always the target revision
 	Revision int64 `json:"revision"`
 
-	// RevisionDisplayName How the target revision is shown to people, {release}-r{N}
+	// RevisionDisplayName How the target revision is shown to people, {component or resource name}-r{N}
 	RevisionDisplayName *string `json:"revisionDisplayName,omitempty"`
 
 	// RevisionName Object name of the revision active after the rollback ({binding}-r{N}). A rollback creates no revision, so this is always the target revision.

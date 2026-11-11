@@ -205,7 +205,7 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 	revertedFrom := active.Spec.Revision
 	result := &bindingrevision.RollbackResult{
 		RevisionName: target.Name,
-		RevisionDisplayName: revision.DisplayName(target.Spec.ComponentReleaseName,
+		RevisionDisplayName: revision.DisplayName(target.Spec.BindingSpec.Owner.ComponentName,
 			target.Spec.Revision),
 		Revision:       targetRevision,
 		TargetRevision: targetRevision,
@@ -328,7 +328,7 @@ func (s *releaseBindingService) DeleteReleaseBindingRevision(ctx context.Context
 	}
 	return &bindingrevision.DeleteResult{
 		RevisionName:        rev.Name,
-		RevisionDisplayName: revision.DisplayName(rev.Spec.ComponentReleaseName, rev.Spec.Revision),
+		RevisionDisplayName: revision.DisplayName(rev.Spec.BindingSpec.Owner.ComponentName, rev.Spec.Revision),
 		Revision:            rev.Spec.Revision,
 		Binding:             binding.Name,
 		Environment:         binding.Spec.Environment,

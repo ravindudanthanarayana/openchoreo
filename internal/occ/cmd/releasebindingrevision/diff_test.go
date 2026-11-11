@@ -52,11 +52,11 @@ func TestDiff_Differences(t *testing.T) {
 	expectDiffHistory(mc)
 
 	out := testutil.CaptureStdout(t, func() {
-		require.NoError(t, New(mc).Diff(DiffParams{Namespace: testNS, Binding: testBinding, From: "r1", To: "api-bbb-r2"}))
+		require.NoError(t, New(mc).Diff(DiffParams{Namespace: testNS, Binding: testBinding, From: "r1", To: "api-r2"}))
 	})
 	assert.Contains(t, out, `Comparing revisions of release binding "api-dev"`)
-	assert.Contains(t, out, "--- revision 1: api-aaa-r1 (Deploy, 1h ago)")
-	assert.Contains(t, out, "+++ revision 2: api-bbb-r2 (Deploy, 2h ago)")
+	assert.Contains(t, out, "--- revision 1: api-r1 (Deploy, 1h ago)")
+	assert.Contains(t, out, "+++ revision 2: api-r2 (Deploy, 2h ago)")
 	body := out[strings.Index(out, "\n\n")+2:]
 	assert.Equal(t, []string{
 		`+ componentTypeEnvironmentConfigs.replicas: 2`,
@@ -101,10 +101,10 @@ func TestDiff_RevisionErrors(t *testing.T) {
 		{name: "missing revision", from: "r1", to: "r9",
 			wantErr: `revision 9 of release binding "api-dev" not found; it may have been deleted`},
 		{name: "revision of another binding", from: "web-dev-r2", to: "r1",
-			wantErr: `revision "web-dev-r2" is not a revision of release binding "api-dev": its revision 2 is api-bbb-r2 (api-dev-r2)`},
+			wantErr: `revision "web-dev-r2" is not a revision of release binding "api-dev": its revision 2 is api-r2 (api-dev-r2)`},
 		{name: "invalid name", from: "r1", to: "latest",
 			wantErr: `revision name "latest" must be a revision name ending in -r<N>, r<N> or <N>`},
-		{name: "same revision twice", from: "r2", to: "api-bbb-r2",
+		{name: "same revision twice", from: "r2", to: "api-r2",
 			wantErr: "both revisions are revision 2; name two different revisions"},
 	}
 	for _, tt := range tests {

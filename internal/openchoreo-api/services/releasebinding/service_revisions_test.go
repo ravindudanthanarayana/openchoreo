@@ -693,7 +693,7 @@ func TestDeleteReleaseBindingRevision_DeletesAnInactiveRevision(t *testing.T) {
 		f.revs[1].Name, bindingrevision.DeleteRequest{Binding: testRBName})
 	require.NoError(t, err)
 	assert.Equal(t, &bindingrevision.DeleteResult{
-		RevisionName: f.revs[1].Name, RevisionDisplayName: releaseB + "-r2", Revision: 2,
+		RevisionName: f.revs[1].Name, RevisionDisplayName: testComponentName + "-r2", Revision: 2,
 		Binding: testRBName, Environment: testEnvironmentName,
 	}, got)
 

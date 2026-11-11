@@ -197,7 +197,7 @@ func (r *ResourceReleaseBindingRevision) Diff(params DiffParams) error {
 		named[i] = bindingrevision.Named{
 			Number:      revs[i].Spec.Revision,
 			ObjectName:  revs[i].Metadata.Name,
-			DisplayName: bindingrevision.DisplayName(revs[i].Spec.ResourceReleaseName, revs[i].Spec.Revision),
+			DisplayName: bindingrevision.DisplayName(revs[i].Spec.BindingSpec.Owner.ResourceName, revs[i].Spec.Revision),
 		}
 	}
 	from, err := bindingrevision.FindRevision("resource release binding", params.Binding, params.From, named)
@@ -259,7 +259,7 @@ func (r *ResourceReleaseBindingRevision) revisionsOf(ctx context.Context, namesp
 
 func toRow(rev *gen.ResourceReleaseBindingRevision) bindingrevision.Row {
 	return bindingrevision.StatusRow(bindingrevision.Row{
-		Name:      bindingrevision.DisplayName(rev.Spec.ResourceReleaseName, rev.Spec.Revision),
+		Name:      bindingrevision.DisplayName(rev.Spec.BindingSpec.Owner.ResourceName, rev.Spec.Revision),
 		Cause:     string(rev.Spec.Cause),
 		CreatedAt: rev.Metadata.CreationTimestamp,
 		Message:   ptr.Deref(rev.Spec.Message, ""),

@@ -44,11 +44,13 @@ func expectHistory(mc *mocks.MockInterface) {
 	rev := func(n int64, release, health string, active, knownGood bool) gen.ResourceReleaseBindingRevision {
 		created := time.Now().Add(-time.Duration(n) * time.Hour)
 		h := gen.BindingRevisionStatusHealth(health)
-		return gen.ResourceReleaseBindingRevision{
+		r := gen.ResourceReleaseBindingRevision{
 			Metadata: gen.ObjectMeta{Name: fmt.Sprintf("%s-r%d", testBinding, n), CreationTimestamp: &created},
 			Spec:     gen.ResourceReleaseBindingRevisionSpec{Revision: n, ResourceReleaseName: release, Cause: "Deploy", SnapshotHash: "h"},
 			Status:   &gen.BindingRevisionStatus{Health: &h, Active: &active, KnownGood: &knownGood},
 		}
+		r.Spec.BindingSpec.Owner.ResourceName = "db"
+		return r
 	}
 	mc.EXPECT().ListResourceReleaseBindingRevisions(mock.Anything, testNS, mock.MatchedBy(func(p *gen.ListResourceReleaseBindingRevisionsParams) bool {
 		return p.Resource == "db" && p.Environment != nil && *p.Environment == "dev"
@@ -89,7 +91,7 @@ func TestListCmd(t *testing.T) {
 
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	require.Len(t, lines, 3)
-	assert.Equal(t, []string{"db-bbb-r2", "Deploy", "Healthy", "true", "false", "2h"}, strings.Fields(lines[1]))
+	assert.Equal(t, []string{"db-r2", "Deploy", "Healthy", "true", "false", "2h"}, strings.Fields(lines[1]))
 }
 
 func TestList_BindingNotFound(t *testing.T) {
@@ -131,11 +133,13 @@ func TestList_AllBindings(t *testing.T) {
 		created := time.Now().Add(-time.Hour)
 		h := gen.BindingRevisionStatusHealth("Healthy")
 		active, knownGood := true, true
-		return gen.ResourceReleaseBindingRevision{
+		r := gen.ResourceReleaseBindingRevision{
 			Metadata: gen.ObjectMeta{Name: fmt.Sprintf("x-r%d", n), CreationTimestamp: &created},
 			Spec:     gen.ResourceReleaseBindingRevisionSpec{Revision: n, ResourceReleaseName: release, Cause: "Deploy", SnapshotHash: "h"},
 			Status:   &gen.BindingRevisionStatus{Health: &h, Active: &active, KnownGood: &knownGood},
 		}
+		r.Spec.BindingSpec.Owner.ResourceName = "db"
+		return r
 	}
 
 	mc := mocks.NewMockInterface(t)
@@ -157,8 +161,8 @@ func TestList_AllBindings(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	require.Len(t, lines, 3)
 	assert.Equal(t, []string{"PROJECT", "BINDING", "ENVIRONMENT", "NAME"}, strings.Fields(lines[0])[:4])
-	assert.Equal(t, []string{"shop", "db-dev", "dev", "db-dev-r1"}, strings.Fields(lines[1])[:4])
-	assert.Equal(t, []string{"shop", "db-prod", "production", "db-production-r1"}, strings.Fields(lines[2])[:4])
+	assert.Equal(t, []string{"shop", "db-dev", "dev", "db-r1"}, strings.Fields(lines[1])[:4])
+	assert.Equal(t, []string{"shop", "db-prod", "production", "db-r1"}, strings.Fields(lines[2])[:4])
 }
 
 func TestList_AllBindingsByProject(t *testing.T) {
@@ -174,13 +178,15 @@ func TestList_AllBindingsByProject(t *testing.T) {
 	}, nil)
 	h := gen.BindingRevisionStatusHealth("Healthy")
 	active := true
-	mc.EXPECT().ListResourceReleaseBindingRevisions(mock.Anything, testNS, mock.MatchedBy(func(p *gen.ListResourceReleaseBindingRevisionsParams) bool {
-		return p.Resource == "db"
-	})).Return(&gen.ResourceReleaseBindingRevisionList{Items: []gen.ResourceReleaseBindingRevision{{
+	dbRev := gen.ResourceReleaseBindingRevision{
 		Metadata: gen.ObjectMeta{Name: "db-dev-r1"},
 		Spec:     gen.ResourceReleaseBindingRevisionSpec{Revision: 1, ResourceReleaseName: "db-aaa", Cause: "Deploy", SnapshotHash: "h"},
 		Status:   &gen.BindingRevisionStatus{Health: &h, Active: &active},
-	}}}, nil)
+	}
+	dbRev.Spec.BindingSpec.Owner.ResourceName = "db"
+	mc.EXPECT().ListResourceReleaseBindingRevisions(mock.Anything, testNS, mock.MatchedBy(func(p *gen.ListResourceReleaseBindingRevisionsParams) bool {
+		return p.Resource == "db"
+	})).Return(&gen.ResourceReleaseBindingRevisionList{Items: []gen.ResourceReleaseBindingRevision{dbRev}}, nil)
 
 	out := testutil.CaptureStdout(t, func() {
 		require.NoError(t, New(mc).List(ListParams{Namespace: testNS, Project: "shop"}))
@@ -188,7 +194,7 @@ func TestList_AllBindingsByProject(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	require.Len(t, lines, 2)
 	assert.Equal(t, []string{"BINDING", "ENVIRONMENT", "NAME"}, strings.Fields(lines[0])[:3])
-	assert.Equal(t, []string{"db-dev", "dev", "db-aaa-r1"}, strings.Fields(lines[1])[:3])
+	assert.Equal(t, []string{"db-dev", "dev", "db-r1"}, strings.Fields(lines[1])[:3])
 }
 
 func TestListCmd_SkipsContextDefaults(t *testing.T) {
@@ -215,7 +221,7 @@ func TestDelete_WithYes(t *testing.T) {
 	out := testutil.CaptureStdout(t, func() {
 		require.NoError(t, r.Delete(DeleteParams{Namespace: testNS, Binding: testBinding, Revision: 1, Yes: true}))
 	})
-	assert.Contains(t, out, "Successfully deleted revision 1: db-aaa-r1")
+	assert.Contains(t, out, "Successfully deleted revision 1: db-r1")
 }
 
 func TestDelete_NotFound(t *testing.T) {

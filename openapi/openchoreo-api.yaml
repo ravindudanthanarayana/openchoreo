@@ -13827,7 +13827,7 @@ components:
           example: api-service-dev-r2
         revisionDisplayName:
           type: string
-          description: How the revision is shown to people, {release}-r{N}
+          description: How the revision is shown to people, {component or resource name}-r{N}
           example: api-service-v5-r2
         revision:
           type: integer
@@ -13864,7 +13864,7 @@ components:
           example: api-service-dev-r3
         revisionDisplayName:
           type: string
-          description: How the target revision is shown to people, {release}-r{N}
+          description: How the target revision is shown to people, {component or resource name}-r{N}
           example: api-service-6f9c2a-r3
         revision:
           type: integer

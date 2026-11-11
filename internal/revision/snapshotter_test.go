@@ -662,7 +662,7 @@ func TestReleaseBindingSnapshotter_EachEnvironmentCountsFromOne(t *testing.T) {
 }
 
 func TestDisplayName(t *testing.T) {
-	assert.Equal(t, "frontend-v7-r1", DisplayName("frontend-v7", 1))
+	assert.Equal(t, "frontend-r1", DisplayName("frontend", 1))
 }
 
 func TestReleaseBindingSnapshotter_LongNamesStayValid(t *testing.T) {

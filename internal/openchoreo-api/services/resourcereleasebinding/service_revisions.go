@@ -175,7 +175,7 @@ func (s *resourceReleaseBindingService) RollbackResourceReleaseBinding(ctx conte
 	revertedFrom := active.Spec.Revision
 	result := &bindingrevision.RollbackResult{
 		RevisionName: target.Name,
-		RevisionDisplayName: revision.DisplayName(target.Spec.ResourceReleaseName,
+		RevisionDisplayName: revision.DisplayName(target.Spec.BindingSpec.Owner.ResourceName,
 			target.Spec.Revision),
 		Revision:       targetRevision,
 		TargetRevision: targetRevision,
@@ -281,7 +281,7 @@ func (s *resourceReleaseBindingService) DeleteResourceReleaseBindingRevision(ctx
 	}
 	return &bindingrevision.DeleteResult{
 		RevisionName:        rev.Name,
-		RevisionDisplayName: revision.DisplayName(rev.Spec.ResourceReleaseName, rev.Spec.Revision),
+		RevisionDisplayName: revision.DisplayName(rev.Spec.BindingSpec.Owner.ResourceName, rev.Spec.Revision),
 		Revision:            rev.Spec.Revision,
 		Binding:             binding.Name,
 		Environment:         binding.Spec.Environment,

@@ -157,7 +157,7 @@ func normalizeNumber(n json.Number) (json.Number, error) {
 // Name returns the revision object name "{prefix}-r{n}", where prefix is the
 // binding's name: "frontend-development-r3". Numbers count per binding, so the
 // name is unique in the namespace. Clients show a revision as
-// "{release}-r{n}" (DisplayName), which is not unique across environments.
+// "{owner}-r{n}" (DisplayName), which is not unique across environments.
 //
 // If that would exceed the 253-character Kubernetes name limit, the prefix is
 // truncated and followed by "-" and the first 12 hex characters of the SHA-256
@@ -181,10 +181,11 @@ func Name(prefix string, n int64) string {
 	return truncated + "-" + hash + suffix
 }
 
-// DisplayName returns how a revision is shown to people: the release it binds
-// and its number, "{release}-r{n}", e.g. "frontend-v7-r1".
-func DisplayName(release string, n int64) string {
-	return release + numberSeparator + strconv.FormatInt(n, 10)
+// DisplayName returns how a revision is shown to people: the name of the
+// component or resource that owns its binding and its number, "{owner}-r{n}",
+// e.g. "frontend-r1".
+func DisplayName(owner string, n int64) string {
+	return owner + numberSeparator + strconv.FormatInt(n, 10)
 }
 
 // ParseNumber returns the revision number from a name produced by Name.

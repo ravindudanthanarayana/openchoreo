@@ -248,7 +248,7 @@ func TestDeleteResourceReleaseBindingRevision(t *testing.T) {
 		got, err := NewService(c, testutil.TestLogger()).DeleteResourceReleaseBindingRevision(ctx, testNamespace, r1,
 			bindingrevision.DeleteRequest{Binding: testBindingName})
 		require.NoError(t, err)
-		assert.Equal(t, &bindingrevision.DeleteResult{RevisionName: r1, RevisionDisplayName: rrReleaseA + "-r1", Revision: 1,
+		assert.Equal(t, &bindingrevision.DeleteResult{RevisionName: r1, RevisionDisplayName: testResourceName + "-r1", Revision: 1,
 			Binding: testBindingName, Environment: testEnvironment}, got)
 
 		err = c.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: r1}, &openchoreov1alpha1.ResourceReleaseBindingRevision{})

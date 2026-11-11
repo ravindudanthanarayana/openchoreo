@@ -63,8 +63,8 @@ func TestDiff_Differences(t *testing.T) {
 		require.NoError(t, New(mc).Diff(DiffParams{Namespace: testNS, Binding: testBinding, From: "r1", To: "db-dev-r2"}))
 	})
 	assert.Contains(t, out, `Comparing revisions of resource release binding "db-dev"`)
-	assert.Contains(t, out, "--- revision 1: db-aaa-r1 (Deploy, 1h ago)")
-	assert.Contains(t, out, "+++ revision 2: db-bbb-r2 (Deploy, 2h ago)")
+	assert.Contains(t, out, "--- revision 1: db-r1 (Deploy, 1h ago)")
+	assert.Contains(t, out, "+++ revision 2: db-r2 (Deploy, 2h ago)")
 	body := out[strings.Index(out, "\n\n")+2:]
 	assert.Equal(t, []string{
 		`~ resourceRelease: "db-aaa" -> "db-bbb"`,
@@ -81,7 +81,7 @@ func TestDiff_Identical(t *testing.T) {
 	expectDiffHistory(mc)
 
 	out := testutil.CaptureStdout(t, func() {
-		require.NoError(t, New(mc).Diff(DiffParams{Namespace: testNS, Binding: testBinding, From: "db-aaa-r3", To: "1"}))
+		require.NoError(t, New(mc).Diff(DiffParams{Namespace: testNS, Binding: testBinding, From: "db-r3", To: "1"}))
 	})
 	assert.Contains(t, out, "No differences: revisions 3 and 1 record the same binding spec.")
 }
@@ -95,7 +95,7 @@ func TestDiff_RevisionErrors(t *testing.T) {
 		{name: "missing revision", from: "r4", to: "r1",
 			wantErr: `revision 4 of resource release binding "db-dev" not found; it may have been deleted`},
 		{name: "revision of another binding", from: "r1", to: "cache-dev-r2",
-			wantErr: `revision "cache-dev-r2" is not a revision of resource release binding "db-dev": its revision 2 is db-bbb-r2 (db-dev-r2)`},
+			wantErr: `revision "cache-dev-r2" is not a revision of resource release binding "db-dev": its revision 2 is db-r2 (db-dev-r2)`},
 		{name: "same revision twice", from: "1", to: "r1",
 			wantErr: "both revisions are revision 1; name two different revisions"},
 	}

@@ -95,7 +95,7 @@ func TestListCmd_Success(t *testing.T) {
 		require.NoError(t, cmd.RunE(cmd, nil))
 	})
 	assert.Contains(t, out, "KNOWN-GOOD")
-	assert.Contains(t, out, "api-ccc")
+	assert.Contains(t, out, "api-r3")
 }
 
 func TestGetCmd_YAMLViaShorthand(t *testing.T) {

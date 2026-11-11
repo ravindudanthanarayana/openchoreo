@@ -82,7 +82,7 @@ func NamespaceOrContext(cmd *cobra.Command) string {
 
 // RevisionFromArgs returns the revision number a get command names: the
 // optional REVISION_NAME argument, or else --revision. REVISION_NAME may be the
-// revision's object name ({binding}-r{N}), its display name ({release}-r{N}),
+// revision's object name ({binding}-r{N}), its display name ({owner}-r{N}),
 // "r{N}" or "{N}". Naming the revision both ways is allowed when they agree.
 func RevisionFromArgs(cmd *cobra.Command, args []string) (int64, error) {
 	flag := GetRevision(cmd)
@@ -194,7 +194,7 @@ func ValidateOutput(format string) error {
 // ─────────────────────────────────────────────────────────────
 
 // Row is one revision as the table shows it. Name is its display name,
-// {release}-r{N} (see DisplayName).
+// {owner}-r{N} (see DisplayName).
 type Row struct {
 	// Project, Binding and Environment are only shown by PrintBindingTable.
 	Project     string
@@ -486,10 +486,11 @@ func printPlan(out io.Writer, kind, binding string, plan *gen.RollbackResponse, 
 	printWarnings(out, plan.Warnings)
 }
 
-// DisplayName returns how a revision is shown: {release}-r{N}, e.g.
-// frontend-v7-r1. Object names are {binding}-r{N}.
-func DisplayName(release string, n int64) string {
-	return fmt.Sprintf("%s-r%d", release, n)
+// DisplayName returns how a revision is shown: {owner}-r{N}, where owner is
+// the component or resource name, e.g. frontend-r1. Object names are
+// {binding}-r{N}.
+func DisplayName(owner string, n int64) string {
+	return fmt.Sprintf("%s-r%d", owner, n)
 }
 
 // displayName returns the target's display name, or its object name from a

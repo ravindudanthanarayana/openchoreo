@@ -87,7 +87,7 @@ func TestListReleaseBindingRevisions(t *testing.T) {
 		assert.Equal(t, true, items[0]["active"])
 		assert.Equal(t, false, items[0]["knownGood"], "false is reported, not omitted")
 		assert.Equal(t, "rel-a", items[1]["componentRelease"])
-		assert.Equal(t, "rel-a-r1", items[1]["displayName"], "shown as {release}-r{N}")
+		assert.Equal(t, testComponent+"-r1", items[1]["displayName"], "shown as {component}-r{N}")
 		assert.Equal(t, true, items[1]["knownGood"])
 		assert.Equal(t, "Healthy", items[1]["health"])
 		assert.Equal(t, "Deploy", items[1]["cause"])
