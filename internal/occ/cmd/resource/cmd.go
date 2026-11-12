@@ -24,6 +24,9 @@ func NewResourceCmd(f client.NewClientFunc) *cobra.Command {
 		newGetCmd(f),
 		newDeleteCmd(f),
 		newPromoteCmd(f),
+		newRevisionsCmd(f),
+		newRevisionCmd(f),
+		newRollbackCmd(f),
 	)
 	return cmd
 }

@@ -32,6 +32,9 @@ func NewComponentCmd(f client.NewClientFunc) *cobra.Command {
 		newWorkflowCmd(f),
 		newWorkflowRunCmd(f),
 		newReleaseLineCmd(f),
+		newRevisionsCmd(f),
+		newRevisionCmd(f),
+		newRollbackCmd(f),
 	)
 	return cmd
 }
