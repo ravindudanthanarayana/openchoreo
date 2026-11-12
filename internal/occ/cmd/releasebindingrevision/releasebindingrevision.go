@@ -176,53 +176,6 @@ func (r *ReleaseBindingRevision) Delete(params DeleteParams) error {
 	})
 }
 
-// Diff compares the binding specs two revisions of a release binding recorded,
-// From against To.
-func (r *ReleaseBindingRevision) Diff(params DiffParams) error {
-	if err := cmdutil.RequireFields("diff", "releasebindingrevision",
-		map[string]string{"namespace": params.Namespace, "binding": params.Binding}); err != nil {
-		return err
-	}
-	color, err := bindingrevision.UseColor(params.Color, os.Stdout)
-	if err != nil {
-		return err
-	}
-
-	revs, err := r.revisions(context.Background(), params.Namespace, params.Binding)
-	if err != nil {
-		return err
-	}
-	named := make([]bindingrevision.Named, len(revs))
-	for i := range revs {
-		named[i] = bindingrevision.Named{
-			Number:      revs[i].Spec.Revision,
-			ObjectName:  revs[i].Metadata.Name,
-			DisplayName: bindingrevision.DisplayName(revs[i].Spec.BindingSpec.Owner.ComponentName, revs[i].Spec.Revision),
-		}
-	}
-	from, err := bindingrevision.FindRevision("release binding", params.Binding, params.From, named)
-	if err != nil {
-		return err
-	}
-	to, err := bindingrevision.FindRevision("release binding", params.Binding, params.To, named)
-	if err != nil {
-		return err
-	}
-
-	return bindingrevision.RunDiff(bindingrevision.DiffOptions{
-		Kind:    "release binding",
-		Binding: params.Binding,
-		From:    diffSide(&revs[from]),
-		To:      diffSide(&revs[to]),
-		Out:     os.Stdout,
-		Color:   color,
-	})
-}
-
-func diffSide(rev *gen.ReleaseBindingRevision) bindingrevision.DiffSide {
-	return bindingrevision.DiffSide{Row: toRow(rev), Number: rev.Spec.Revision, Spec: rev.Spec.BindingSpec}
-}
-
 // revisions returns a binding's revisions, newest first. A binding is the one
 // binding of its component in its environment, so its history is that
 // component's revisions in that environment.
