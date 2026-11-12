@@ -20,30 +20,48 @@ type EvictionCandidate struct {
 	UndoTarget bool
 }
 
-// SelectEvictions returns the revisions to delete so that at most limit remain,
-// oldest by spec.revision first. A limit of zero or less means unlimited.
+// SelectEvictions returns the revisions to delete so that at most limit old
+// revisions remain, oldest by spec.revision first. Old revisions are all but the
+// active one, which is always kept and does not count -- as a Deployment's
+// revisionHistoryLimit counts old ReplicaSets. A limit of zero or less keeps no
+// old revision.
 //
-// Four kinds of revision are never selected: the active revision, the newest
-// known-good revision (the rollback target of last resort), revisions marked
-// Keep, and the UndoTarget -- otherwise a rollback to an old revision followed
-// by a new deploy would evict the very revision an undo returns to. When those alone outnumber the limit, every unprotected revision is
-// selected, the protected ones stay, and overLimit reports that the history is
+// Revisions marked Keep are never selected. While the limit is above zero,
+// neither are the newest known-good revision (the rollback target of last
+// resort) and the UndoTarget -- otherwise a rollback to an old revision followed
+// by a new deploy would evict the very revision an undo returns to. When the
+// spared revisions alone outnumber the limit, every other old revision is
+// selected, the spared ones stay, and overLimit reports that the history is
 // still above the limit.
+//
+// A limit of zero asks for no history at all, so it spares only Keep: the
+// newest known-good revision and the UndoTarget are selected too.
 func SelectEvictions(candidates []EvictionCandidate, limit int) (evict []EvictionCandidate, overLimit bool) {
-	if limit <= 0 || len(candidates) <= limit {
-		return nil, false
-	}
+	limit = max(limit, 0)
 
 	sorted := append([]EvictionCandidate(nil), candidates...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Number < sorted[j].Number })
 
+	old := 0
+	for _, c := range sorted {
+		if !c.Active {
+			old++
+		}
+	}
+	excess := old - limit
+	if excess <= 0 {
+		return nil, false
+	}
+
 	newestKnownGood := newestKnownGood(sorted)
-	excess := len(sorted) - limit
 	for _, c := range sorted {
 		if excess == 0 {
 			break
 		}
-		if c.Active || c.Keep || c.UndoTarget || c.Number == newestKnownGood {
+		if c.Active || c.Keep {
+			continue
+		}
+		if limit > 0 && (c.UndoTarget || c.Number == newestKnownGood) {
 			continue
 		}
 		evict = append(evict, c)
@@ -65,9 +83,9 @@ const (
 	ProtectionKeep Protection = `it is annotated openchoreo.dev/keep: "true"; remove the annotation to delete it`
 )
 
-// Protected returns why target may not be deleted, or "" when it may. These are
-// the revisions SelectEvictions never selects, except the UndoTarget, so
-// deleting a revision by hand is held to the same rules as the history limit.
+// Protected returns why target may not be deleted by hand, or "" when it may.
+// These are the revisions SelectEvictions spares under a limit above zero,
+// except the UndoTarget.
 // The UndoTarget is left deletable on purpose: it is often the failed revision
 // a user just rolled back from and wants gone. candidates are all of the
 // binding's revisions, target among them.

@@ -2581,6 +2581,9 @@ type EnvironmentSpec struct {
 
 	// IsProduction Whether this is a production environment
 	IsProduction *bool `json:"isProduction,omitempty"`
+
+	// RevisionHistoryLimit Number of old revisions kept, to allow rollback, for each ReleaseBinding and ResourceReleaseBinding in this environment. The active revision is always kept and does not count. 0 keeps no old revisions. A binding's own revisionHistoryLimit overrides it. When unset, the controller's --revision-history-limit applies.
+	RevisionHistoryLimit *int32 `json:"revisionHistoryLimit,omitempty"`
 }
 
 // EnvironmentSpecDataPlaneRefKind Kind of data plane (DataPlane or ClusterDataPlane)
@@ -3656,6 +3659,9 @@ type ReleaseBindingSpec struct {
 	// ReleaseName Reference to component release
 	ReleaseName *string `json:"releaseName,omitempty"`
 
+	// RevisionHistoryLimit Number of old revisions kept for this binding to allow rollback. The active revision is always kept and does not count. 0 keeps no old revisions, so the binding cannot be rolled back. When unset, the Environment's revisionHistoryLimit applies, then the controller's --revision-history-limit. Changing it creates no revision, and a rollback leaves it as it is.
+	RevisionHistoryLimit *int32 `json:"revisionHistoryLimit,omitempty"`
+
 	// State Controls the state of the Release created by this binding
 	State *ReleaseBindingSpecState `json:"state,omitempty"`
 
@@ -4318,6 +4324,9 @@ type ResourceReleaseBindingSpec struct {
 
 	// RetainPolicy Per-env override for retention. Falls back to ResourceType.spec.retainPolicy when unset.
 	RetainPolicy *ResourceReleaseBindingSpecRetainPolicy `json:"retainPolicy,omitempty"`
+
+	// RevisionHistoryLimit Number of old revisions kept for this binding to allow rollback. The active revision is always kept and does not count. 0 keeps no old revisions, so the binding cannot be rolled back. When unset, the Environment's revisionHistoryLimit applies, then the controller's --revision-history-limit. Changing it creates no revision, and a rollback leaves it as it is.
+	RevisionHistoryLimit *int32 `json:"revisionHistoryLimit,omitempty"`
 }
 
 // ResourceReleaseBindingSpecRetainPolicy Per-env override for retention. Falls back to ResourceType.spec.retainPolicy when unset.

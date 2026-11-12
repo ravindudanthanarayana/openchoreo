@@ -39,14 +39,6 @@ const (
 	// AnnotationKeyKeepRevision exempts a ReleaseBindingRevision or
 	// ResourceReleaseBindingRevision from history-limit eviction when set to "true".
 	AnnotationKeyKeepRevision = "openchoreo.dev/keep"
-
-	// AnnotationKeyRevisionHistoryLimit is set on a ReleaseBinding or
-	// ResourceReleaseBinding to the number of revisions kept for it, overriding
-	// the controller's --revision-history-limit. "0" keeps every revision. Once a
-	// new revision takes the binding over the limit, its oldest revisions are
-	// deleted first. It is an annotation rather than a spec field so that changing
-	// it records no revision and a rollback does not restore an earlier limit.
-	AnnotationKeyRevisionHistoryLimit = "openchoreo.dev/revision-history-limit"
 )
 
 // RevisionCause records why a binding revision was created.

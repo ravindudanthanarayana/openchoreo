@@ -186,6 +186,9 @@ func (s *releaseBindingService) RollbackReleaseBinding(ctx context.Context, name
 	}
 
 	restored := *target.Spec.BindingSpec.DeepCopy()
+	// The history limit configures the history and is not part of what a
+	// revision records, so a rollback leaves the binding's current one in place.
+	restored.RevisionHistoryLimit = binding.Spec.RevisionHistoryLimit
 
 	currentHash, err := revision.ReleaseBindingSpecHash(&binding.Spec)
 	if err != nil {

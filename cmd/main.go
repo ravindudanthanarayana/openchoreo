@@ -431,8 +431,10 @@ func main() {
 		"How long a binding revision must stay Healthy before it is marked known-good. "+
 			"0 marks it on its first Healthy observation.")
 	flag.IntVar(&revisions.historyLimit, "revision-history-limit", revision.DefaultHistoryLimit,
-		"Number of revisions kept per ReleaseBinding and ResourceReleaseBinding; the oldest are deleted first. "+
-			"0 keeps every revision. A binding's openchoreo.dev/revision-history-limit annotation overrides it.")
+		"Number of old revisions kept per ReleaseBinding and ResourceReleaseBinding to allow rollback; the "+
+			"oldest are deleted first. The active revision is always kept and does not count. 0 keeps no old "+
+			"revision. An Environment's spec.revisionHistoryLimit overrides it for that environment, and a "+
+			"binding's spec.revisionHistoryLimit overrides both. Must not be negative.")
 	opts := zap.Options{
 		Development: true,
 	}

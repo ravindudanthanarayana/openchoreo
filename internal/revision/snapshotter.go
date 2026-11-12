@@ -66,20 +66,16 @@ const (
 	EventReasonRevisionReactivated = "RevisionReactivated"
 
 	// EventReasonRevisionHistoryLimitExceeded is emitted on a binding whose
-	// protected revisions alone exceed the history limit.
+	// spared revisions alone exceed the history limit.
 	EventReasonRevisionHistoryLimitExceeded = "RevisionHistoryLimitExceeded"
-
-	// EventReasonInvalidRevisionHistoryLimit is emitted on a binding whose
-	// openchoreo.dev/revision-history-limit annotation is not a non-negative
-	// integer; the controller's limit is used instead.
-	EventReasonInvalidRevisionHistoryLimit = "InvalidRevisionHistoryLimit"
 
 	// DefaultKnownGoodWindow is how long a revision must stay Healthy before it
 	// is marked known-good, when no window is configured.
 	DefaultKnownGoodWindow = 60 * time.Second
 
-	// DefaultHistoryLimit is the number of revisions kept per binding when no
-	// limit is configured: 0 keeps every revision.
+	// DefaultHistoryLimit is the number of old revisions kept per binding when
+	// no limit is configured: 0 keeps none, so revisions do not accumulate
+	// unless an Environment or a binding asks for a history.
 	DefaultHistoryLimit = 0
 
 	// KeepRevisionValue is the value of openchoreo.dev/keep that exempts a
@@ -106,6 +102,8 @@ type Adapter[B client.Object, R client.Object] interface {
 	Status(rev R) *openchoreov1alpha1.BindingRevisionStatus
 	// HashInput returns the part of the binding spec whose changes create a revision.
 	HashInput(binding B) any
+	// HistoryLimit returns the binding's spec.revisionHistoryLimit, nil when unset.
+	HistoryLimit(binding B) *int32
 	// Labels returns the kind-specific labels for the binding's revisions.
 	Labels(binding B) map[string]string
 	// Build returns a revision with its spec filled in. Metadata is set by the Snapshotter.
@@ -126,9 +124,10 @@ type Options struct {
 	// it is marked known-good. Zero marks it known-good on its first Healthy
 	// observation.
 	KnownGoodWindow time.Duration
-	// HistoryLimit is the number of revisions kept per binding; older ones are
-	// deleted after each new revision. Zero or less keeps every revision. A
-	// binding's openchoreo.dev/revision-history-limit annotation overrides it.
+	// HistoryLimit is the number of old revisions kept for a binding that sets
+	// no spec.revisionHistoryLimit: its Environment's limit, or else the
+	// controller's. The active revision is always kept and does not count. Zero
+	// or less keeps no old revisions.
 	HistoryLimit int
 	// Recorder receives events about the binding. Optional.
 	Recorder record.EventRecorder
@@ -257,9 +256,9 @@ func (s *Snapshotter[B, R]) Record(ctx context.Context, binding B) (Result, erro
 	if recorded {
 		errs = append(errs, s.clearChangeAnnotations(ctx, binding))
 	}
-	if result.Created {
-		errs = append(errs, s.evict(ctx, binding, revs, result.Number))
-	}
+	// Trimmed on every call, not only after a new revision: lowering a limit
+	// on the binding or its Environment creates no revision.
+	errs = append(errs, s.evict(ctx, binding, revs, result.Number, result.Created))
 	return result, kerrors.NewAggregate(errs)
 }
 
@@ -585,15 +584,15 @@ func (s *Snapshotter[B, R]) updateStatus(ctx context.Context, rev R,
 }
 
 // evict deletes the binding's oldest revisions beyond its history limit (see
-// historyLimit), keeping the active revision, the revision active before it (the
-// target of an undo), the newest known-good revision and revisions annotated
-// openchoreo.dev/keep: "true" (see SelectEvictions). When those alone exceed
-// the limit it keeps them and records a warning event on the binding.
-func (s *Snapshotter[B, R]) evict(ctx context.Context, binding B, revs []R, active int64) error {
+// historyLimit and SelectEvictions). The active revision is always kept, and so
+// are revisions annotated openchoreo.dev/keep: "true". Under a limit above zero
+// the revision active before the active one (the target of an undo) and the
+// newest known-good revision are kept too. When the kept revisions alone exceed
+// the limit and announce is set, a warning event is recorded on the binding;
+// announce is set when a revision was just created, so that an unchanged
+// history is not reported on every reconcile.
+func (s *Snapshotter[B, R]) evict(ctx context.Context, binding B, revs []R, active int64, announce bool) error {
 	limit := s.historyLimit(binding)
-	if limit <= 0 {
-		return nil
-	}
 
 	// The revision active before the active one is the target of an undo.
 	undoTarget := int64(0)
@@ -625,35 +624,29 @@ func (s *Snapshotter[B, R]) evict(ctx context.Context, binding B, revs []R, acti
 			errs = append(errs, fmt.Errorf("delete revision %q: %w", c.Name, err))
 		}
 	}
-	if overLimit && s.Recorder != nil {
+	if overLimit && announce && s.Recorder != nil {
+		kept := 0
+		for _, c := range candidates {
+			if !c.Active {
+				kept++
+			}
+		}
 		s.Recorder.Eventf(binding, corev1.EventTypeWarning, EventReasonRevisionHistoryLimitExceeded,
-			"%d revisions are kept, above the history limit of %d: the active revision, the revision active "+
-				"before it, the newest known-good revision and revisions annotated %s=%s are never deleted",
-			len(revs)-len(evict), limit, openchoreov1alpha1.AnnotationKeyKeepRevision, KeepRevisionValue)
+			"%d old revisions are kept, above the history limit of %d: revisions annotated %s=%s are never "+
+				"deleted, and under a limit above 0 neither are the revision active before the current one "+
+				"and the newest known-good revision",
+			kept-len(evict), limit, openchoreov1alpha1.AnnotationKeyKeepRevision, KeepRevisionValue)
 	}
 	return kerrors.NewAggregate(errs)
 }
 
-// historyLimit returns the number of revisions kept for binding: its
-// openchoreo.dev/revision-history-limit annotation when set, otherwise
-// HistoryLimit. An annotation that is not a non-negative integer is ignored with
-// a warning event, so a typo never deletes revisions the user meant to keep
-// beyond what the controller's own limit would.
+// historyLimit returns the number of old revisions kept for binding: its
+// spec.revisionHistoryLimit when set, otherwise HistoryLimit. Never negative.
 func (s *Snapshotter[B, R]) historyLimit(binding B) int {
-	value, ok := binding.GetAnnotations()[openchoreov1alpha1.AnnotationKeyRevisionHistoryLimit]
-	if !ok {
-		return s.HistoryLimit
+	if limit := s.Adapter.HistoryLimit(binding); limit != nil {
+		return max(int(*limit), 0)
 	}
-	limit, err := strconv.Atoi(strings.TrimSpace(value))
-	if err != nil || limit < 0 {
-		if s.Recorder != nil {
-			s.Recorder.Eventf(binding, corev1.EventTypeWarning, EventReasonInvalidRevisionHistoryLimit,
-				"Annotation %s=%q is not a non-negative integer; using the controller's limit of %d",
-				openchoreov1alpha1.AnnotationKeyRevisionHistoryLimit, value, s.HistoryLimit)
-		}
-		return s.HistoryLimit
-	}
-	return limit
+	return max(s.HistoryLimit, 0)
 }
 
 // now returns the current time from Options.Now, or time.Now.

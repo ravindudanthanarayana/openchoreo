@@ -101,7 +101,7 @@ spec:
                dig: an upgrade with --reuse-values from a chart without this value has no key. */}}
         - --referenced-config-rollout={{ dig "referencedConfigRollout" "enabled" false .Values.features }}
         {{- /* Rendered whenever set, not only when truthy: "0" and 0 are meaningful
-               (known-good on the first Healthy observation; keep every revision). */}}
+               (known-good on the first Healthy observation; keep no old revision). */}}
         {{- with .Values.controllerManager.manager }}
         {{- if not (kindIs "invalid" .revisionKnownGoodWindow) }}
         - --revision-known-good-window={{ .revisionKnownGoodWindow }}

@@ -2189,7 +2189,7 @@
             },
             "revisionHistoryLimit": {
               "default": 0,
-              "description": "Number of revisions kept per ReleaseBinding and ResourceReleaseBinding, passed as --revision-history-limit. 0 (the default) keeps every revision. A binding can set its own limit with the openchoreo.dev/revision-history-limit annotation. Over the limit, the oldest revisions are deleted first, except the active revision, the revision active before it, the newest known-good revision and revisions annotated openchoreo.dev/keep=\"true\".",
+              "description": "Number of old revisions kept per ReleaseBinding and ResourceReleaseBinding to allow rollback, passed as --revision-history-limit. The active revision is always kept and does not count. 0 (the default) keeps no old revision, so bindings have no rollback history unless a limit is set here, on an Environment (spec.revisionHistoryLimit) or on a binding (spec.revisionHistoryLimit, which overrides the Environment). Over the limit, the oldest revisions are deleted first, except revisions annotated openchoreo.dev/keep=\"true\" and, under a limit above 0, the revision active before the current one and the newest known-good revision.",
               "minimum": 0,
               "title": "revisionHistoryLimit",
               "type": "integer"

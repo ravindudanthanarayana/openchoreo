@@ -114,6 +114,24 @@ func TestRollbackResourceReleaseBinding(t *testing.T) {
 		assert.NotContains(t, b.Annotations, openchoreov1alpha1.AnnotationKeyRevisionCause)
 	})
 
+	t.Run("the binding's history limit is kept and is not a change", func(t *testing.T) {
+		c := testutil.NewFakeClient(rrbObjects(t, true)...)
+		b := getRRB(t, c)
+		b.Spec.RevisionHistoryLimit = ptr.To(int32(4))
+		require.NoError(t, c.Update(ctx, b))
+
+		result, err := NewService(c, testutil.TestLogger()).RollbackResourceReleaseBinding(ctx, testNamespace,
+			testBindingName, bindingrevision.RollbackRequest{Revision: 1})
+		require.NoError(t, err)
+		for _, change := range result.Changes {
+			assert.NotContains(t, change.Field, "revisionHistoryLimit")
+		}
+
+		b = getRRB(t, c)
+		assert.Equal(t, rrReleaseA, b.Spec.ResourceRelease)
+		assert.Equal(t, ptr.To(int32(4)), b.Spec.RevisionHistoryLimit, "the revision records no limit to restore")
+	})
+
 	t.Run("a message is written with the restored spec", func(t *testing.T) {
 		c := testutil.NewFakeClient(rrbObjects(t, true)...)
 		_, err := NewService(c, testutil.TestLogger()).RollbackResourceReleaseBinding(ctx, testNamespace,

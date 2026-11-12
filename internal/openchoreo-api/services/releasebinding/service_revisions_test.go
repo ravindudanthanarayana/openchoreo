@@ -47,6 +47,9 @@ type fixture struct {
 	extra   []client.Object
 }
 
+// testReleaseLine is the release line of the tests' release-line bindings.
+const testReleaseLine = "next"
+
 func specFor(release string, replicas string) openchoreov1alpha1.ReleaseBindingSpec {
 	spec := openchoreov1alpha1.ReleaseBindingSpec{
 		Owner:       openchoreov1alpha1.ReleaseBindingOwner{ProjectName: testProjectName, ComponentName: testComponentName},
@@ -614,7 +617,7 @@ func TestListReleaseBindingRevisions_OneBindingPerReleaseLine(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 	lineSpec := specFor(releaseA, "")
-	lineSpec.Owner.ReleaseLine = "next"
+	lineSpec.Owner.ReleaseLine = testReleaseLine
 	f.extra = append(f.extra, newRevision(t, "test-rb-next", types.UID("next-uid"), 1, lineSpec, t0))
 	svc := NewService(f.client(), testutil.TestLogger())
 
@@ -1070,11 +1073,11 @@ func TestRollbackReleaseBinding_AutoDeploy(t *testing.T) {
 // "next" and, when withLine is true, that line's ReleaseLine with the given
 // spec.autoDeploy (nil inherits the component's).
 func releaseLineObjects(f *fixture, componentAutoDeploy bool, withLine bool, lineAutoDeploy *bool) []client.Object {
-	f.binding.Spec.Owner.ReleaseLine = "next"
+	f.binding.Spec.Owner.ReleaseLine = testReleaseLine
 	objs := autoDeployObjects(f, componentAutoDeploy)
 	if withLine {
 		objs = append(objs, &openchoreov1alpha1.ReleaseLine{
-			ObjectMeta: metav1.ObjectMeta{Name: "next", Namespace: testNamespace},
+			ObjectMeta: metav1.ObjectMeta{Name: testReleaseLine, Namespace: testNamespace},
 			Spec: openchoreov1alpha1.ReleaseLineSpec{
 				Owner:      openchoreov1alpha1.ReleaseLineOwner{ProjectName: testProjectName, ComponentName: testComponentName},
 				AutoDeploy: lineAutoDeploy,

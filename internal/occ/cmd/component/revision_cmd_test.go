@@ -20,13 +20,15 @@ import (
 
 const (
 	revNS      = "ns"
-	revBinding = "api-dev"
+	revOwner   = "api"
+	revEnv     = "dev"
+	revBinding = revOwner + "-" + revEnv
 )
 
 // expectRevisionHistory sets up a binding with revisions 2 (active) and 1.
 func expectRevisionHistory(mc *mocks.MockInterface) {
-	spec := &gen.ReleaseBindingSpec{Environment: "dev"}
-	spec.Owner.ComponentName = "api"
+	spec := &gen.ReleaseBindingSpec{Environment: revEnv}
+	spec.Owner.ComponentName = revOwner
 	spec.Owner.ProjectName = "shop"
 	mc.EXPECT().GetReleaseBinding(mock.Anything, revNS, revBinding).
 		Return(&gen.ReleaseBinding{Metadata: gen.ObjectMeta{Name: revBinding}, Spec: spec}, nil)
@@ -40,11 +42,11 @@ func expectRevisionHistory(mc *mocks.MockInterface) {
 			Spec:     gen.ReleaseBindingRevisionSpec{Revision: n, ComponentReleaseName: release, Cause: "Deploy", SnapshotHash: "h"},
 			Status:   &gen.BindingRevisionStatus{Health: &h, Active: &active, KnownGood: &knownGood},
 		}
-		r.Spec.BindingSpec.Owner.ComponentName = "api"
+		r.Spec.BindingSpec.Owner.ComponentName = revOwner
 		return r
 	}
 	mc.EXPECT().ListReleaseBindingRevisions(mock.Anything, revNS, mock.MatchedBy(func(p *gen.ListReleaseBindingRevisionsParams) bool {
-		return p.Component == "api" && p.Environment != nil && *p.Environment == "dev"
+		return p.Component == revOwner && p.Environment != nil && *p.Environment == revEnv
 	})).Return(&gen.ReleaseBindingRevisionList{Items: []gen.ReleaseBindingRevision{
 		rev(2, "api-bbb", true),
 		rev(1, "api-aaa", false),

@@ -102,7 +102,7 @@ var _ = Describe("ReleaseBinding Controller — revision health", func() {
 		GinkgoHelper()
 		cr := &openchoreov1alpha1.ComponentRelease{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: crName}, cr)).To(Succeed())
-		requeueAfter, err := r.observeRevisionHealth(ctx, r.revisionSnapshotter(), fetchRB(rbName), cr)
+		requeueAfter, err := r.observeRevisionHealth(ctx, r.revisionSnapshotter(nil), fetchRB(rbName), cr)
 		Expect(err).NotTo(HaveOccurred())
 		return requeueAfter
 	}
@@ -244,9 +244,10 @@ var _ = Describe("ReleaseBinding Controller — revision health", func() {
 		Expect(revisionNamed(1).Status).To(Equal(r1.Status))
 	})
 
-	It("keeps the only known-good revision when 12 revisions exceed a limit of 10", func() {
+	It("keeps the only known-good revision when 12 revisions exceed a limit of 9 old revisions", func() {
 		r.RevisionKnownGoodWindow = 0
-		r.RevisionHistoryLimit = 10
+		// Nine old revisions and the active one: ten in all.
+		r.RevisionHistoryLimit = 9
 
 		By("r1, then r2 which becomes the only known-good revision")
 		reconcileRB()

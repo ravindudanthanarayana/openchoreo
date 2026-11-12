@@ -19,6 +19,16 @@ type EnvironmentSpec struct {
 	DataPlaneRef *DataPlaneRef `json:"dataPlaneRef,omitempty"`
 	IsProduction bool          `json:"isProduction,omitempty"`
 	Gateway      GatewaySpec   `json:"gateway,omitempty"`
+
+	// RevisionHistoryLimit is the number of old revisions kept, to allow
+	// rollback, for each ReleaseBinding and ResourceReleaseBinding in this
+	// environment. The active revision is always kept and does not count. 0
+	// keeps no old revisions. A binding's own spec.revisionHistoryLimit
+	// overrides it. When unset, the controller's --revision-history-limit
+	// applies.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	RevisionHistoryLimit *int32 `json:"revisionHistoryLimit,omitempty"`
 }
 
 // EnvironmentStatus defines the observed state of Environment.
