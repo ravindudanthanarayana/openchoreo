@@ -151,7 +151,7 @@ var _ = Describe("ResourceReleaseBinding controller — revisions", func() {
 			Scheme:   k8sClient.Scheme(),
 			Pipeline: resourcepipeline.NewPipeline(),
 			// High enough that these tests lose no revision; the controller's
-			// own default is 0, which keeps no old revision.
+			// own default is 10.
 			RevisionHistoryLimit: 100,
 		}
 
@@ -356,7 +356,7 @@ var _ = Describe("ResourceReleaseBinding controller — revisions", func() {
 			}
 		}
 
-		It("keeps only the active revision under the controller's default limit of 0", func() {
+		It("keeps only the active revision under a controller limit of 0", func() {
 			reconciler.RevisionHistoryLimit = 0
 			threeRevisions()
 

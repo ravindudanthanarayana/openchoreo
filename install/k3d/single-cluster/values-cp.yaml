@@ -44,9 +44,3 @@ gateway:
 features:
   secretManagement:
     enabled: true
-
-# Keep a rollback history for each binding. The chart's default of 0 keeps no
-# old revision, so nothing could be rolled back.
-controllerManager:
-  manager:
-    revisionHistoryLimit: 10

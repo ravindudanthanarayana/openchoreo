@@ -104,7 +104,7 @@ var _ = Describe("ReleaseBinding Controller — revision history limit", func() 
 		}
 	})
 
-	It("keeps only the active revision under the controller's default limit of 0", func() {
+	It("keeps only the active revision under a controller limit of 0", func() {
 		r.RevisionHistoryLimit = 0
 		reconcileRB()
 		override(2)

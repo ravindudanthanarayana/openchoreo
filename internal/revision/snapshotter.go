@@ -74,9 +74,9 @@ const (
 	DefaultKnownGoodWindow = 60 * time.Second
 
 	// DefaultHistoryLimit is the number of old revisions kept per binding when
-	// no limit is configured: 0 keeps none, so revisions do not accumulate
-	// unless an Environment or a binding asks for a history.
-	DefaultHistoryLimit = 0
+	// no limit is configured, as a Deployment's revisionHistoryLimit defaults
+	// to 10.
+	DefaultHistoryLimit = 10
 
 	// KeepRevisionValue is the value of openchoreo.dev/keep that exempts a
 	// revision from history-limit eviction.

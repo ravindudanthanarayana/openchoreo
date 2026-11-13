@@ -197,7 +197,7 @@ func releaseFixture(name, project, component, envName string, extraFinalizers ..
 
 // testRevisionHistoryLimit is the revision history limit of test reconcilers:
 // high enough that tests which are not about the limit lose no revision. The
-// controller's own default is 0, which keeps no old revision.
+// controller's own default is 10.
 const testRevisionHistoryLimit = 100
 
 // testReconciler returns a Reconciler wired to the global envtest client.

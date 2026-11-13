@@ -468,11 +468,25 @@ func numberRange(from, to int64) []int64 {
 // high enough that nothing they record is trimmed.
 const testHistoryLimit = 100
 
-// The default limit is 0, which keeps no old revision: only the active one.
-func TestRecord_DefaultLimitKeepsOnlyTheActiveRevision(t *testing.T) {
+// The default limit keeps ten old revisions besides the active one.
+func TestRecord_DefaultLimitKeepsTenOldRevisions(t *testing.T) {
+	require.Equal(t, 10, DefaultHistoryLimit)
 	binding := newBinding("frontend-development")
 	c := newTestClient(t, binding.DeepCopy())
 	s := NewReleaseBindingSnapshotter(c, newTestScheme(t), Options{HistoryLimit: DefaultHistoryLimit})
+
+	recordRevisions(t, s, binding, 11)
+	assert.Equal(t, numberRange(1, 11), revisionNumbers(t, c), "ten old revisions and the active one")
+
+	recordRevisions(t, s, binding, 2)
+	assert.Equal(t, numberRange(3, 13), revisionNumbers(t, c))
+}
+
+// A limit of 0 keeps no old revision: only the active one.
+func TestRecord_ZeroLimitKeepsOnlyTheActiveRevision(t *testing.T) {
+	binding := newBinding("frontend-development")
+	c := newTestClient(t, binding.DeepCopy())
+	s := NewReleaseBindingSnapshotter(c, newTestScheme(t), Options{HistoryLimit: 0})
 
 	recordRevisions(t, s, binding, 5)
 
